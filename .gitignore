@@ -1,2 +1,23 @@
-/kb_mvp/__pycache__
-/.claude
+# Claude
+/.claude/
+
+# Environment / secrets
+.env
+*.env.local
+*.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Runtime data
+data/
+
+# Test artifacts
+test_e2e_report.txt
