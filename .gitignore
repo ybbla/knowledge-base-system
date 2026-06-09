@@ -20,4 +20,4 @@ __pycache__/
 data/
 
 # Test artifacts
-test_e2e_report.txt
+test_e2e_report.*

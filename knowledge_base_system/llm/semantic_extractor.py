@@ -8,6 +8,7 @@ from app.core.models import (
     AssetRef,
     AssetRelation,
     KnowledgeChunk,
+    KnowledgeType,
     ParsedElement,
     Render,
     SourceRef,
@@ -17,6 +18,19 @@ from llm.prompts import build_extraction_messages
 from llm.volcengine_client import llm_client
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_knowledge_type(raw_value: str | None) -> KnowledgeType:
+    """Coerce a raw knowledge_type string to KnowledgeType enum.
+    Unknown / missing values fall back to declarative."""
+    if raw_value is None:
+        return KnowledgeType.declarative
+    try:
+        return KnowledgeType(raw_value)
+    except ValueError:
+        logger.warning("Unknown knowledge_type '%s', falling back to declarative", raw_value)
+        return KnowledgeType.declarative
+
 
 EXTRACT_SCHEMA = {"required": ["chunks"]}
 
@@ -272,7 +286,7 @@ class SemanticExtractor:
                 title=raw.get("title") or self._derive_title(content),
                 content=content,
                 content_hash=compute_hash(content),
-                knowledge_type=raw.get("knowledge_type", "declarative"),
+                knowledge_type=_safe_knowledge_type(raw.get("knowledge_type")),
                 asset_refs=asset_refs,
                 source_refs=source_refs,
                 ingest_job_id=ingest_job_id,

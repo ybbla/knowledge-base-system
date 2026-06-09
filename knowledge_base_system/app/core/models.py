@@ -43,9 +43,10 @@ class ChunkStatus(str, Enum):
 
 
 class KnowledgeType(str, Enum):
-    declarative = "declarative"
-    relational = "relational"
-    procedural = "procedural"
+    """知识块的语义类型。当前阶段统一使用 declarative，后续扩展其余类型。"""
+    declarative = "declarative"    # 陈述型：事实、定义、属性说明、概念解释
+    relational = "relational"      # 关系型：实体关联、依赖、包含、对比
+    procedural = "procedural"      # 流程型：步骤、操作顺序、条件分支、决策流程
 
 
 class ElementType(str, Enum):

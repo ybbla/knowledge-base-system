@@ -4,6 +4,8 @@
 
 将 ParsedElement 窗口输入 LLM，生成独立可读的 KnowledgeChunk，包含内容、标题、知识类型、资源引用和来源引用。
 
+`knowledge_type` 字段分为三类（`declarative` 陈述型 / `relational` 关系型 / `procedural` 流程型），LLM 在生成时即根据内容特征分类标注；当前下游检索链路对所有类型按陈述型统一处理，后续启用差异化策略时无需重新入库。
+
 > 同步自 change `implement-mvp-phase-1`，日期 2026-06-09。
 
 ## Requirements
@@ -40,7 +42,7 @@
 #### Scenario: 段落和表格合并为单个知识块
 
 - **WHEN** 窗口包含关于文档上传的段落和上传状态的表格
-- **THEN** LLM 返回一个 chunk，其 `content` 融合了段落文本和表格的自然语言描述，`knowledge_type="declarative"`，`source_refs` 引用两个元素
+- **THEN** LLM 返回一个 chunk，其 `content` 融合了段落文本和表格的自然语言描述，根据内容特征标注 `knowledge_type`（`declarative` / `relational` / `procedural`），`source_refs` 引用两个元素
 
 #### Scenario: 含图片的表格单元格
 
@@ -51,6 +53,12 @@
 
 - **WHEN** 窗口包含文本和一张辅助说明的截图
 - **THEN** LLM 生成一个 chunk，`content` 自然提及图片，`asset_refs` 包含图片的 asset_id、关系、关联文本、caption 和渲染指令
+
+#### Scenario: LLM 按内容分类标注 knowledge_type
+
+- **WHEN** LLM 生成 KnowledgeChunk 时
+- **THEN** 每个 chunk 的 `knowledge_type` 根据内容特征标注为 `declarative`（事实陈述/定义说明）、`relational`（实体关联/依赖关系）或 `procedural`（操作步骤/流程）
+- **AND** 当前下游检索链路对所有类型统一按陈述型处理，后续启用差异化策略时已有标注基础
 
 #### Scenario: LLM 输出 JSON 校验失败
 

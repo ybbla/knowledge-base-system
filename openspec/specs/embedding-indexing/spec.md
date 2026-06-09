@@ -2,7 +2,7 @@
 
 ## Purpose
 
-为 KnowledgeChunk 生成向量嵌入，维护内存向量索引和 BM25 索引，支持添加、删除和相似度/关键词搜索。
+为 KnowledgeChunk 生成向量嵌入，维护内存向量索引和 BM25 索引，支持添加、删除和相似度/关键词搜索。`knowledge_type` 字段作为索引元数据存储，当前所有类型统一按陈述型处理，后续可按类型做差异化检索。
 
 > 同步自 change `implement-mvp-phase-1`，日期 2026-06-09。
 
