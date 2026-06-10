@@ -36,7 +36,10 @@ class MemoryVectorIndex(VectorIndex):
         return self._metadata.get(chunk_id, {})
 
     def search(
-        self, query_vector: list[float], top_k: int
+        self,
+        query_vector: list[float],
+        top_k: int,
+        category: str | None = None,
     ) -> list[tuple[str, float]]:
         if not self._vectors:
             return []
@@ -54,12 +57,21 @@ class MemoryVectorIndex(VectorIndex):
         safe_norms = np.where(norms == 0, 1.0, norms)
         cosine = np.dot(matrix, q) / (safe_norms * q_norm)
 
-        # Top-k indices
-        if len(cosine) <= top_k:
-            top_indices = np.argsort(cosine)[::-1]
-        else:
-            top_indices = np.argpartition(cosine, -top_k)[-top_k:]
-            top_indices = top_indices[np.argsort(cosine[top_indices])[::-1]]
+        eligible_indices = [
+            i
+            for i, chunk_id in enumerate(self._chunk_ids)
+            if category is None
+            or self._metadata.get(chunk_id, {}).get("category") == category
+        ]
+        if not eligible_indices:
+            return []
+
+        sorted_indices = sorted(
+            eligible_indices,
+            key=lambda i: float(cosine[i]),
+            reverse=True,
+        )
+        top_indices = sorted_indices[:top_k]
 
         return [
             (self._chunk_ids[int(i)], float(cosine[i]))

@@ -54,7 +54,12 @@ class RetrievalPipeline:
         self._rewriter = QueryRewriter()
         self._reranker = Reranker()
 
-    def search(self, query: str, top_k: int | None = None) -> SearchResult:
+    def search(
+        self,
+        query: str,
+        top_k: int | None = None,
+        category: str | None = None,
+    ) -> SearchResult:
         """Execute full retrieval pipeline and return SearchResult."""
         final_k = top_k or settings.final_top_k
 
@@ -69,7 +74,9 @@ class RetrievalPipeline:
             query_vecs = embedding_client.embed_text([rewritten])
             query_vec = query_vecs[0]
             vec_results = self._vector_index.search(
-                query_vec, top_k=settings.vector_top_k
+                query_vec,
+                top_k=settings.vector_top_k,
+                category=category,
             )
         except Exception:
             logger.exception("Vector retrieval failed")
@@ -78,7 +85,9 @@ class RetrievalPipeline:
         # BM25
         try:
             bm25_results = self._bm25_index.search(
-                keywords_str, top_k=settings.bm25_top_k
+                keywords_str,
+                top_k=settings.bm25_top_k,
+                category=category,
             )
         except Exception:
             logger.exception("BM25 retrieval failed")
@@ -100,7 +109,6 @@ class RetrievalPipeline:
 
         # 5. LLM Rerank
         reranked = self._reranker.rerank(query, candidates)
-        rerank_map = {r["chunk_id"]: r for r in reranked}
 
         # 6. Build result items
         items: list[SearchResultItem] = []
@@ -144,6 +152,8 @@ class RetrievalPipeline:
                     title=chunk.title,
                     content=chunk.content,
                     score=rank_entry.get("relevance_score", score_map.get(cid, 0.0)),
+                    category=chunk.category,
+                    knowledge_type=chunk.knowledge_type,
                     score_components=ScoreComponents(
                         vector=vec_map.get(cid, 0.0),
                         bm25=bm25_map.get(cid, 0.0),
@@ -153,7 +163,6 @@ class RetrievalPipeline:
                     source_refs=chunk.source_refs,
                     metadata={
                         "title_path": chunk.metadata.get("title_path", []),
-                        "knowledge_type": chunk.knowledge_type.value,
                     },
                 )
             )

@@ -2,11 +2,11 @@
 
 ## Purpose
 
-为 KnowledgeChunk 生成向量嵌入，维护内存向量索引和 BM25 索引，支持添加、删除和按 `category`/`knowledge_type` 过滤的搜索。`knowledge_type` 字段作为索引元数据存储，当前所有类型统一按陈述型处理，后续可按类型做差异化检索。
+为 KnowledgeChunk 生成向量嵌入，维护内存向量索引和 BM25 索引，支持添加、删除和按 `category`/`knowledge_type` 过滤的搜索。
 
-> 同步自 change `implement-mvp-phase-1`，日期 2026-06-09；更新自 change `align-data-model-and-api-with-updated-design`，日期 2026-06-10。
+> 同步自 change `align-data-model-and-api-with-updated-design`。
 
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: 为 KnowledgeChunk 生成向量嵌入
 
@@ -46,31 +46,3 @@
 
 - **WHEN** 一个 chunk 被删除或替代
 - **THEN** 其向量从索引中移除
-
-### Requirement: 维护内存 BM25 索引
-
-系统 SHALL 维护一个内存 BM25 索引，支持添加、删除和关键词搜索操作。
-
-#### Scenario: 向 BM25 索引添加文档
-
-- **WHEN** 创建了一个包含中文文本的 KnowledgeChunk
-- **THEN** `content` 文本经过分词后以 `chunk_id` 为键添加到 BM25 索引
-
-#### Scenario: BM25 搜索返回 top-k
-
-- **WHEN** 以 `top_k=50` 提交关键词查询
-- **THEN** 索引返回按 BM25 分数排序的前 50 个 `chunk_id`
-
-#### Scenario: BM25 处理精确词匹配
-
-- **WHEN** 查询包含通用文本中少见的专业术语或错误码
-- **THEN** BM25 应将包含这些精确词的 chunk 排在仅语义相似的 chunk 之上
-
-### Requirement: 索引接口抽象存储后端
-
-系统 SHALL 定义抽象基类 `VectorIndex` 和 `BM25Index`，以便后续用 Milvus 替换内存实现而不修改调用方。
-
-#### Scenario: 内存实现满足接口
-
-- **WHEN** 实例化 `MemoryVectorIndex` 或 `MemoryBM25Index`
-- **THEN** 它们应实现各自抽象基类中定义的所有方法

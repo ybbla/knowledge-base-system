@@ -46,6 +46,7 @@ class SemanticExtractor:
         elements: list[ParsedElement],
         assets: list[Asset],
         ingest_job_id: str,
+        category: str = "\u901a\u7528",
     ) -> list[KnowledgeChunk]:
         """Main entry: window elements, call LLM, return KnowledgeChunks."""
         if not elements:
@@ -55,7 +56,7 @@ class SemanticExtractor:
         all_chunks: list[KnowledgeChunk] = []
 
         for window in windows:
-            chunks = self._process_window(window, assets, ingest_job_id)
+            chunks = self._process_window(window, assets, ingest_job_id, category)
             all_chunks.extend(chunks)
 
         return all_chunks
@@ -130,6 +131,7 @@ class SemanticExtractor:
         elements: list[ParsedElement],
         assets: list[Asset],
         ingest_job_id: str,
+        category: str,
     ) -> list[KnowledgeChunk]:
         """Send one window to LLM and parse resulting chunks."""
         title_path = self._get_title_path(elements)
@@ -142,7 +144,7 @@ class SemanticExtractor:
             logger.exception("LLM extraction failed for window: %s", title_path)
             return []
 
-        return self._build_chunks(data, elements, assets, ingest_job_id)
+        return self._build_chunks(data, elements, assets, ingest_job_id, category)
 
     @staticmethod
     def _get_title_path(elements: list[ParsedElement]) -> list[str]:
@@ -178,6 +180,7 @@ class SemanticExtractor:
         elements: list[ParsedElement],
         assets: list[Asset],
         ingest_job_id: str,
+        category: str,
     ) -> list[KnowledgeChunk]:
         """Convert LLM output to KnowledgeChunk objects."""
         chunks: list[KnowledgeChunk] = []
@@ -287,6 +290,7 @@ class SemanticExtractor:
                 content=content,
                 content_hash=compute_hash(content),
                 knowledge_type=_safe_knowledge_type(raw.get("knowledge_type")),
+                category=category,
                 asset_refs=asset_refs,
                 source_refs=source_refs,
                 ingest_job_id=ingest_job_id,

@@ -110,7 +110,7 @@ class IngestionPipeline:
 
             # 3. Semantic extraction
             chunks = self._extractor.extract(
-                elements, assets, doc.ingest_job_id
+                elements, assets, doc.ingest_job_id, doc.category
             )
             job.chunk_count = len(chunks)
 
@@ -156,6 +156,7 @@ class IngestionPipeline:
                 vector,
                 metadata={
                     "doc_id": chunk.doc_id,
+                    "category": chunk.category,
                     "knowledge_type": chunk.knowledge_type.value,
                     "title_path": chunk.metadata.get("title_path", []),
                     "source_refs": [
@@ -169,4 +170,8 @@ class IngestionPipeline:
                     "metadata": chunk.metadata,
                 },
             )
-            self._bm25_index.add(chunk.chunk_id, chunk.content)
+            self._bm25_index.add(
+                chunk.chunk_id,
+                chunk.content,
+                metadata={"category": chunk.category},
+            )

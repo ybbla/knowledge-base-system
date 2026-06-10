@@ -10,14 +10,21 @@ class MemoryBM25Index(BM25Index):
     def __init__(self) -> None:
         self._chunk_ids: list[str] = []
         self._corpus: list[list[str]] = []
+        self._metadata: dict[str, dict] = {}
         self._bm25: BM25Okapi | None = None
         self._dirty = False
 
-    def add(self, chunk_id: str, text: str) -> None:
+    def add(
+        self,
+        chunk_id: str,
+        text: str,
+        metadata: dict | None = None,
+    ) -> None:
         self.delete(chunk_id)
         tokens = self._tokenize(text)
         self._chunk_ids.append(chunk_id)
         self._corpus.append(tokens)
+        self._metadata[chunk_id] = metadata or {}
         self._dirty = True
 
     def delete(self, chunk_id: str) -> None:
@@ -25,11 +32,17 @@ class MemoryBM25Index(BM25Index):
             idx = self._chunk_ids.index(chunk_id)
             self._chunk_ids.pop(idx)
             self._corpus.pop(idx)
+            self._metadata.pop(chunk_id, None)
             self._dirty = True
         except ValueError:
             pass
 
-    def search(self, query: str, top_k: int) -> list[tuple[str, float]]:
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        category: str | None = None,
+    ) -> list[tuple[str, float]]:
         if not self._corpus:
             return []
 
@@ -41,15 +54,15 @@ class MemoryBM25Index(BM25Index):
         tokens = self._tokenize(query)
         scores = self._bm25.get_scores(tokens)
 
-        # Top-k
-        if len(scores) <= top_k:
-            sorted_indices = sorted(
-                range(len(scores)), key=lambda i: scores[i], reverse=True
-            )
-        else:
-            sorted_indices = sorted(
-                range(len(scores)), key=lambda i: scores[i], reverse=True
-            )[:top_k]
+        eligible_indices = [
+            i
+            for i, chunk_id in enumerate(self._chunk_ids)
+            if category is None
+            or self._metadata.get(chunk_id, {}).get("category") == category
+        ]
+        sorted_indices = sorted(
+            eligible_indices, key=lambda i: scores[i], reverse=True
+        )[:top_k]
 
         return [
             (self._chunk_ids[i], float(scores[i]))

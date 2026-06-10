@@ -120,6 +120,7 @@ class Document(BaseModel):
     source_type: str
     source_uri: str
     source_hash: str = ""
+    category: str = "\u901a\u7528"
     version: int = 1
     status: DocStatus = DocStatus.pending
     parent_doc_id: str | None = None
@@ -170,6 +171,7 @@ class KnowledgeChunk(BaseModel):
     content: str
     content_hash: str = ""
     knowledge_type: KnowledgeType = KnowledgeType.declarative
+    category: str = "\u901a\u7528"
     status: ChunkStatus = ChunkStatus.active
     asset_refs: list[AssetRef] = Field(default_factory=list)
     source_refs: list[SourceRef] = Field(default_factory=list)
@@ -188,6 +190,8 @@ class SearchResultItem(BaseModel):
     title: str = ""
     content: str
     score: float
+    category: str
+    knowledge_type: KnowledgeType
     score_components: ScoreComponents = Field(default_factory=ScoreComponents)
     asset_refs: list[dict[str, Any]] = Field(default_factory=list)
     source_refs: list[SourceRef] = Field(default_factory=list)

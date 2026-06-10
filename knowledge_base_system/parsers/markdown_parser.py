@@ -1,5 +1,7 @@
 import re
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
@@ -49,8 +51,11 @@ class MarkdownParser(DocumentParser):
     def _read_content(self, doc: Document) -> str:
         raw = doc.metadata.get("raw_content", "")
         if not raw and doc.source_uri.startswith("file://"):
-            import pathlib
-            filepath = pathlib.Path(doc.source_uri.replace("file:///", ""))
+            parsed = urlparse(doc.source_uri)
+            if parsed.netloc:
+                filepath = Path(parsed.netloc) / unquote(parsed.path).lstrip("/")
+            else:
+                filepath = Path(unquote(parsed.path.lstrip("/")))
             if filepath.exists():
                 raw = filepath.read_text(encoding="utf-8")
         return raw

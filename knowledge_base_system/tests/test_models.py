@@ -12,6 +12,7 @@ from app.core.models import (
     AssetRelation,
     ElementType,
     AssetType,
+    KnowledgeType,
     compute_hash,
     new_id,
 )
@@ -50,6 +51,7 @@ class TestDocument:
         assert doc.doc_id.startswith("doc_")
         assert doc.version == 1
         assert doc.status == "pending"
+        assert doc.category == "\u901a\u7528"
 
     def test_serialization(self):
         doc = Document(title="Test", source_type="markdown", source_uri="file:///test.md")
@@ -92,6 +94,7 @@ class TestKnowledgeChunk:
         assert len(chunk.asset_refs) == 1
         assert chunk.asset_refs[0].relation == AssetRelation.evidence
         assert chunk.content_hash  # auto-computed
+        assert chunk.category == "\u901a\u7528"
 
     def test_source_refs(self):
         chunk = KnowledgeChunk(
@@ -123,6 +126,8 @@ class TestSearchResult:
             title="Test",
             content="Content",
             score=0.95,
+            category="\u901a\u7528",
+            knowledge_type=KnowledgeType.declarative,
         )
         sr = SearchResult(query="test", total_count=1, results=[item])
         assert len(sr.results) == 1

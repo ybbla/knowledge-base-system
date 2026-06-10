@@ -15,5 +15,9 @@ class SearchRequest(BaseModel):
 @router.post("")
 async def search(request: SearchRequest):
     """Search knowledge base and return ranked results."""
-    result = retrieval_pipeline.search(request.query, top_k=request.top_k)
+    result = retrieval_pipeline.search(
+        request.query,
+        top_k=request.top_k,
+        category=request.filters.get("category"),
+    )
     return result.model_dump(mode="json")
