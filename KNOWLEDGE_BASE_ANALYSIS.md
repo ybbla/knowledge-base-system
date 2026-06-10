@@ -178,10 +178,11 @@ Hybrid Index
   "doc_id": "doc_001",
   "title": "产品使用手册",
   "source_type": "docx",
-  "source_uri": "file:///docs/manual.docx",
+  "source_uri": "minio://kb-input/abc123/manual.docx",
   "source_hash": "sha256:...",
   "version": 1,
   "status": "active",
+  "category": "产品使用",
   "parent_doc_id": null,
   "root_doc_id": "doc_001",
   "ingest_job_id": "job_001",
@@ -201,6 +202,7 @@ Hybrid Index
 - `source_hash`：原始内容 hash，用于识别重复文档、判断内容是否变化。
 - `version`：同一文档来源的版本号，后续增量更新时递增。
 - `status`：文档状态，建议包括 `active`、`deleted`、`failed`。
+- `category`：业务分类，由用户上传时自行定义，未指定则为 `"通用"`。
 - `parent_doc_id`：如果该文档来自嵌入文档或链接文档，记录直接父文档。
 - `root_doc_id`：递归解析链路的根文档，方便按原始上传文档聚合。
 - `ingest_job_id`：所属入库任务，用于排查处理过程和回放。
@@ -287,7 +289,7 @@ Hybrid Index
 
 - `asset_type`：资源类型（`image` / `video` / `audio` / `attachment`），决定后续处理链路。
 - `original_uri`：资源的原始来源地址，用于追溯和重新下载。
-- `storage_uri`：资源转存后的 MinIO 地址；外部不可下载资源可为 null，并通过 `status`、`error_message`。
+- `storage_uri`：资源转存后的 MinIO 地址；外部不可下载资源可为 null，并通过 `status`、`error_message` 标明。
 - `content_hash`：资源内容 hash，用于去重——同一图片出现在多个文档中靠 hash 识别。
 - `doc_id`：资源来自哪个文档，溯源第一跳。
 - `source_element_id`：资源在解析元素中的精确位置，同一文档多处引用同一资源时靠它区分。
@@ -310,6 +312,7 @@ Hybrid Index
   "content": "系统支持通过网页端上传知识文档。上传后，页面会展示解析状态，包括处理中、成功和失败。用户可以根据状态判断文档是否已经进入知识库。界面截图展示了上传状态列表。",
   "content_hash": "sha256:...",
   "knowledge_type": "declarative",
+  "category": "产品使用",
   "status": "active",
   "asset_refs": [
     {
@@ -349,10 +352,17 @@ Hybrid Index
 - `title`：知识块的短标题，用于检索结果展示，与 `content` 首句的区别是 title 可包含概括性措辞。
 - `content`：可直接向量化的自然语言正文，图片和视频语义应自然融合进去。
 - `content_hash`：知识块正文 hash，用于重复块识别和变更检测。
+  > **后续演进策略（分层漏斗去重）**：当前采用简单规范化 hash，未来可演进为三层漏斗：
+  > 1. L1 规范化 sha256 → 精确重复（~0.01ms，当前方案）
+  > 2. L2 SimHash → 文本近似重复（~1ms）
+  > 3. L3 向量余弦相似度 → 语义重复（~50ms，需调 Embedding）
+  > 
+  > L3 在知识库规模增长、不同团队上传语义相近文档时价值最大。当前暂不采用。
 - `knowledge_type`：知识块的语义类型，LLM 在生成时即按内容分类标注。当前下游检索链路统一按陈述型处理，后续为不同类型启用差异化策略时无需重新生成知识块：
   - `declarative`（陈述型）：事实、定义、属性说明、概念解释等陈述性知识。
   - `relational`（关系型）：实体之间的关联、依赖、包含、对比等关系性知识。
   - `procedural`（流程型）：步骤、操作顺序、条件分支、决策流程等过程性知识。
+- `category`：业务分类，从所属 Document 继承，用于检索过滤。
 - `status`：知识块状态，建议包括 `active`、`superseded`、`deleted`。
 - `asset_refs`：知识块与资源的关联，不只保存链接，还说明关系和渲染方式。
 - `source_refs`：知识块来源，可引用多个解析元素，保证可追溯。
@@ -381,6 +391,8 @@ Hybrid Index
       "chunk_id": "chunk_001",
       "title": "上传文档解析状态判断",
       "content": "系统支持通过网页端上传知识文档...",
+      "category": "产品使用",
+      "knowledge_type": "declarative",
       "score": 0.92,
       "score_components": {
         "vector": 0.89,
@@ -412,8 +424,7 @@ Hybrid Index
         }
       ],
       "metadata": {
-        "title_path": ["产品使用手册", "上传文档"],
-        "knowledge_type": "declarative"
+        "title_path": ["产品使用手册", "上传文档"]
       }
     }
   ]
@@ -423,10 +434,19 @@ Hybrid Index
 关键字段说明：
 
 - `search_id`：检索请求唯一标识，用于日志关联和问题排查。
+- `query`：原始查询，按请求原样返回。
+- `rewritten_query`：查询重写后的文本，便于调试和评估重写质量。
 - `total_count`：符合过滤条件的知识块总数，用于前端分页。
-- `score`：融合后最终分数，按此降序排列。
-- `score_components`：各检索通道的独立分数，key 为通道名（vector / bm25 / rerank 等），便于调参和问题定位。
-- `asset_refs`：已 resolve 的资源引用。在 KnowledgeChunk 的 `asset_refs` 基础上补充 `storage_uri`（从 Asset 解析的可渲染地址），同时保留 `linked_text`（关联到 content 中具体段落）和 `render`（渲染意图）。
+- `results[].chunk_id`：知识块标识，用于去重和回溯。
+- `results[].title`：知识块标题，用于结果展示。
+- `results[].content`：知识块正文，检索结果中可截断展示，完整内容通过 `chunk_id` 查询。
+- `results[].category`：业务分类，继承自所属文档，与检索请求中 `filters.category` 对应。
+- `results[].knowledge_type`：知识语义类型，同 KnowledgeChunk 定义。
+- `results[].score`：融合后最终分数，按此降序排列。
+- `results[].score_components`：各检索通道的独立分数，key 为通道名（vector / bm25 / rerank 等），便于调参和问题定位。
+- `results[].asset_refs`：已 resolve 的资源引用。在 KnowledgeChunk 的 `asset_refs` 基础上补充 `storage_uri`（从 Asset 解析的可渲染地址），同时保留 `linked_text`（关联到 content 中具体段落）和 `render`（渲染意图）。
+- `results[].source_refs`：知识块来源引用，同 KnowledgeChunk 定义，包含文档、版本、元素 ID 和原文位置，用于前端展示引用标注。
+- `results[].metadata`：扩展元数据，至少包含 `title_path`（标题层级路径），用于结果中展示上下文路径。
 
 ## 5. 文档解析策略
 
@@ -708,7 +728,7 @@ LLM 应输出严格 JSON，便于程序落库。
 用户可以在知识库页面上传文档。上传后，系统会显示解析状态...
 ```
 
-`title_path`、`knowledge_type`、文档状态、语言等字段保留在知识块或索引元数据中，用于过滤、展示、BM25 或重排，不进入 embedding 输入，避免稀释正文语义。
+`category`、`knowledge_type`、`title_path`、文档状态、语言等字段保留在知识块或索引元数据中，用于过滤、展示、BM25 或重排，不进入 embedding 输入，避免稀释正文语义。
 
 ### 7.2 Milvus 目标设计
 
@@ -719,6 +739,7 @@ Milvus collection 可包含：
 - `embedding`
 - `content`
 - `sparse_vector` 或 BM25 相关字段
+- `category`
 - `knowledge_type`
 - `title_path`
 - `source_refs`
@@ -747,7 +768,7 @@ LLM 重写为：
 
 ```json
 {
-  "rewritten_query": "用户上传知识文档后，如何查看文档解析状态，以及如何判断解析成功或失败？",
+  "rewritten_query": "用户上传知识文档后，如何查看文档解析状态，以及如何判断解析成功或失败",
   "keywords": ["上传", "文档", "解析状态", "成功", "失败"],
   "intent": "查询文档上传后的解析状态判断方法"
 }
@@ -859,6 +880,44 @@ knowledge_base_system/
 
 ### 10.1 文档入库
 
+文档入库分为两步：**上传文件到对象存储** → **提交入库任务**。
+
+#### 10.1.1 上传文件
+
+```http
+POST /upload
+Content-Type: multipart/form-data
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:---:|------|
+| `file` | binary | ✅ | 文档文件 |
+| `title` | string | ❌ | 文档标题，不传则取文件名 |
+| `category` | string | ❌ | 业务分类，由用户自行定义，默认 `"通用"` |
+
+服务端接收文件流后写入 MinIO，返回 `source_uri`。
+
+响应（200）：
+
+```json
+{
+  "source_uri": "minio://kb-input/abc123/manual.docx",
+  "source_hash": "sha256:a1b2c3...",
+  "file_name": "manual.docx",
+  "size": 2048576
+}
+```
+
+> **后续可加校验链**：文件经过应用服务器，天然支持在入口处校验——
+> 1. 魔数检测（拒绝扩展名与内容不符的文件）
+> 2. 大小限制（拒绝超大文件）
+> 3. 格式有效性（docx/pptx 完整性检查）
+> 4. content hash 去重（相同文件秒拒）
+> 
+> 校验全部通过后再写 MinIO，不合法的文件在入口即拒绝，不污染存储。阶段 1 暂不实现。
+
+#### 10.1.2 提交入库任务
+
 ```http
 POST /ingest
 Content-Type: application/json
@@ -868,19 +927,16 @@ Content-Type: application/json
 {
   "documents": [
     {
-      "title": "用户手册",
-      "source_type": "markdown",
-      "content": "# 上传文档\n用户可以上传文档...\n\n| 状态 | 说明 |\n|---|---|\n| 成功 | 已进入知识库 |"
-    },
-    {
-      "title": "常见问题",
-      "source_type": "html",
-      "content": "<h1>常见问题</h1><p>用户可以在知识库页面查看文档解析状态。</p>"
-    },
-    {
       "title": "产品说明书",
       "source_type": "docx",
-      "source_uri": "minio://kb-input/manual.docx"
+      "source_uri": "minio://kb-input/abc123/manual.docx",
+      "category": "产品使用"
+    },
+    {
+      "title": "新员工入职指南",
+      "source_type": "markdown",
+      "source_uri": "minio://kb-input/abc456/guide.md",
+      "category": "HR 制度"
     }
   ],
   "options": {
@@ -890,18 +946,17 @@ Content-Type: application/json
 }
 ```
 
-响应：
+响应（202）：
 
 ```json
 {
   "job_id": "job_001",
   "status": "accepted",
-  "doc_ids": ["doc_001", "doc_002", "doc_003"],
-  "warnings": []
+  "doc_ids": ["doc_001", "doc_002"]
 }
 ```
 
-> 入库支持一次提交多个文档，且不同文档可以使用不同 `source_type`。系统会为每个文档创建独立的 Document 记录，并根据 `source_type` 选择对应解析器。入库为异步处理：API 收到请求后将文档内容或来源地址写入对象存储并生成 `source_uri`，创建 Document 记录（`status=pending`），投递入库任务后立即返回 `accepted`。客户端可通过 `GET /ingest/{job_id}` 查询整体进度和每个文档的处理状态。`options.extract_assets` 控制是否下载并处理图片、视频等资源，阶段 1 可设为 `false`（仅识别链接）。
+> 入库支持一次提交多个文档，每个文档的 `source_uri` 来自 `/upload`。系统为每个文档创建 Document 记录（`status=pending`），根据 `source_type` 选择解析器，投递异步任务后立即返回 `accepted`。通过 `GET /ingest/{job_id}` 查询进度和各文档处理状态。`options.extract_assets` 控制是否下载并处理图片、视频等嵌入资源，阶段 1 可设为 `false`。
 
 ### 10.2 检索
 
@@ -915,13 +970,12 @@ Content-Type: application/json
   "query": "上传后怎么看解析成功没有？",
   "top_k": 5,
   "filters": {
-    "knowledge_type": ["declarative"],
-    "knowledge_domain": ["用户手册", "产品使用"]
+    "category": ["产品使用", "HR 制度"]
   }
 }
 ```
 
-`filters.knowledge_domain` 用于按知识领域过滤检索范围，例如用户手册、产品使用、售后支持、内部制度等。知识领域可来自文档入库时的元数据，也可在语义抽取或人工管理阶段写入知识块 `metadata`。
+`filters.category` 按业务分类过滤检索范围。分类由用户上传文档时自行定义，未指定则默认为 `"通用"`。
 
 响应：
 
@@ -936,6 +990,8 @@ Content-Type: application/json
       "chunk_id": "chunk_001",
       "title": "上传文档解析状态判断",
       "content": "用户上传文档后，系统会展示解析状态...",
+      "category": "产品使用",
+      "knowledge_type": "declarative",
       "score": 0.92,
       "score_components": {
         "vector": 0.89,
@@ -955,8 +1011,7 @@ Content-Type: application/json
         }
       ],
       "metadata": {
-        "title_path": ["用户手册", "上传文档"],
-        "knowledge_type": "declarative"
+        "title_path": ["用户手册", "上传文档"]
       }
     }
   ]
@@ -1280,7 +1335,7 @@ VOLCENGINE_EMBEDDING_MODEL=Doubao-embedding-vision
 - 用户输入口语化问题后，系统能重写查询。
 - 系统能同时执行向量检索和 BM25 检索。
 - 系统能融合和重排结果。
-- 返回结果包含 `content`、`score`、`score_components`、`asset_refs`、`source_refs`、`metadata`。
+- 返回结果包含 `content`、`category`、`knowledge_type`、`score`、`score_components`、`asset_refs`、`source_refs`、`metadata`。
 
 ### 工程验收
 
