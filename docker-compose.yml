@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: kb-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: knowledge_base
+      POSTGRES_USER: kbuser
+      POSTGRES_PASSWORD: kbpass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kbuser -d knowledge_base"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    # pgvector extension is pre-installed in this image. Enable with:
+    #   docker compose exec postgres psql -U kbuser -d knowledge_base -c "CREATE EXTENSION IF NOT EXISTS vector;"
+    # Needed for Phase 3 (Milvus alternative). Phase 2 only uses JSON columns.
+
+volumes:
+  pgdata:
+    name: kb-pgdata

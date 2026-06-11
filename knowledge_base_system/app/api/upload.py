@@ -4,9 +4,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, UploadFile
 
+from app.core.paths import UPLOAD_DIR, UPLOAD_URI_PREFIX
+
 router = APIRouter(prefix="/upload", tags=["upload"])
 
-UPLOAD_DIR = Path("data/uploads")
 DEFAULT_CATEGORY = "\u901a\u7528"
 
 
@@ -28,7 +29,7 @@ async def upload_file(
     stored_path.write_bytes(content)
 
     return {
-        "source_uri": f"file://{stored_path.as_posix()}",
+        "source_uri": f"file://{UPLOAD_URI_PREFIX}/{stored_name}",
         "source_hash": f"sha256:{hashlib.sha256(content).hexdigest()}",
         "file_name": original_name,
         "size": len(content),

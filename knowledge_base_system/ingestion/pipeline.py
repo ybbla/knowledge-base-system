@@ -15,7 +15,7 @@ from indexing.base import BM25Index, VectorIndex
 from ingestion.recursive_loader import RecursiveLoader
 from llm.semantic_extractor import SemanticExtractor
 from llm.volcengine_client import embedding_client
-from parsers.base import DocumentParser
+from parsers.registry import ParserRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -37,19 +37,23 @@ class IngestionPipeline:
 
     def __init__(
         self,
-        parser: DocumentParser,
+        parser_registry: ParserRegistry,
         extractor: SemanticExtractor,
         vector_index: VectorIndex,
         bm25_index: BM25Index,
         asset_store: AssetStore,
         chunk_store: Any = None,
+        document_repo: Any = None,
+        element_repo: Any = None,
     ) -> None:
-        self._parser = parser
+        self._parser_registry = parser_registry
         self._extractor = extractor
         self._vector_index = vector_index
         self._bm25_index = bm25_index
         self._asset_store = asset_store
         self._chunk_store = chunk_store
+        self._document_repo = document_repo
+        self._element_repo = element_repo
         self._jobs: dict[str, JobStatus] = {}
 
     def submit(
@@ -84,8 +88,14 @@ class IngestionPipeline:
         job.started_at = datetime.now(timezone.utc)
 
         try:
+            doc.status = DocStatus.processing
+            doc.updated_at = datetime.now(timezone.utc)
+            if self._document_repo:
+                self._document_repo.create(doc)
+
             # 1. Parse document
-            result = self._parser.parse(doc)
+            parser = self._parser_registry.get(doc.source_type)
+            result = parser.parse(doc)
             doc = result.doc
             elements = result.elements
             assets = result.assets
@@ -98,7 +108,7 @@ class IngestionPipeline:
 
             # 2. Recursive loading for embedded docs
             loader = RecursiveLoader(
-                parser_fn=self._parser.parse,
+                parser_fn=parser.parse,
                 max_depth=options.get("max_depth"),
                 max_elements=options.get("max_elements_per_doc"),
             )
@@ -106,7 +116,12 @@ class IngestionPipeline:
             for d in all_docs:
                 if d.doc_id != doc.doc_id:
                     job.doc_ids.append(d.doc_id)
+                    if self._document_repo:
+                        self._document_repo.create(d)
             elements.extend(all_elements)  # include elements from embedded docs
+
+            if self._element_repo and elements:
+                self._element_repo.create_batch(elements)
 
             # 3. Semantic extraction
             chunks = self._extractor.extract(
@@ -121,11 +136,19 @@ class IngestionPipeline:
             # Update doc status
             doc.status = DocStatus.active
             doc.updated_at = datetime.now(timezone.utc)
+            if self._document_repo:
+                self._document_repo.update(doc)
             job.status = "completed"
 
         except Exception as exc:
             logger.exception("Ingestion job %s failed", job.job_id)
             doc.status = DocStatus.failed
+            doc.updated_at = datetime.now(timezone.utc)
+            if self._document_repo:
+                try:
+                    self._document_repo.update(doc)
+                except Exception:
+                    logger.exception("Failed to persist failed document status")
             job.status = "failed"
             job.error = str(exc)
 

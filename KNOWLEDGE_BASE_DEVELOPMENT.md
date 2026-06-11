@@ -1204,27 +1204,26 @@ VOLCENGINE_EMBEDDING_MODEL=Doubao-embedding-vision
 
 ## 14. 评测方案
 
-至少准备一组小型人工评测集：
+至少准备一组小型评测集（≥ 20 条 query），覆盖不同查询意图。评测集采用大模型辅助标注：将 query、候选 chunk_id 和 chunk 内容提供给大模型，生成期望命中的 chunk 与内容关键词，再由人工抽检/确认；每条记录最终用于二值判断（命中/未命中）。
 
 ```json
 [
   {
     "query": "上传文档后如何判断解析成功？",
-    "expected_doc_id": "doc_001",
-    "expected_content_contains": ["上传文档", "解析状态", "成功"],
-    "min_relevant_chunks": 1
+    "expected_chunk_ids": ["chunk_001"],
+    "expected_content_contains": ["上传文档", "解析状态", "成功"]
   }
 ]
 ```
 
-指标：
+自动化指标（基于评测集自动计算，每次代码变更后重跑）：
 
-- Recall@5
-- MRR@5
-- nDCG@10
-- 重排后 top1 命中率
-- LLM 语义块人工可读性评分
-- 多媒体关联准确率
+- Recall@5 — 期望 chunk 在 top-5 中出现的比例，衡量"用户能在前 5 条找到答案吗"
+- MRR — 第一个命中 chunk 排名的倒数均值，衡量"正确答案排得有多靠前"
+
+人工评估（按需抽样）：
+
+- 语义块可读性：独立性、语义集中度、表格转写质量，各 1-5 分（阶段 5 后加入多媒体融合自然度）
 
 ## 15. 分阶段路线图
 
@@ -1235,41 +1234,45 @@ VOLCENGINE_EMBEDDING_MODEL=Doubao-embedding-vision
 - 图片/视频链接识别
 - LLM 生成知识块
 - Embedding
-- 向量检索（内存）
-- BM25 检索（内存）
+- 向量检索（内存，numpy cosine）
+- BM25 检索（内存，jieba + rank_bm25）
 - 查询重写
-- 融合召回
+- 融合召回（RRF）
 - LLM 重排
 
-### 阶段 2：资源存储
+### 阶段 2：多格式增强 + PostgreSQL 状态持久化
 
-- 接入 MinIO
-- 图片下载和上传
+- DOCX 解析（python-docx）
+- DOCX 内嵌图片提取与多模态描述
+- Docker 部署 PostgreSQL
+- Document / ParsedElement / Asset / KnowledgeChunk 元数据持久化
+- 解析器注册机制（支持多格式动态选择）
+- 建立评测集与自动化评测脚本（Recall@5、MRR）
+- 重启应用数据不丢失
+- 保留内存实现作为开发模式
+
+### 阶段 3：向量索引持久化 + 资源存储
+
+- 接入 Milvus，向量检索和 BM25 检索迁移至 Milvus
+- 接入 MinIO，图片下载和上传
 - 视频链接资源化
 - 资产 hash 去重
-- 前端可渲染资源 URL
-
-### 阶段 3：索引持久化
-
-- 接入 Milvus
-- 向量索引迁移至 Milvus
-- BM25 迁移至 Milvus / Elasticsearch
 - 混合检索参数调优
+- 检索结果返回可渲染资源 URL
 
-### 阶段 4：多格式增强
+### 阶段 4：多格式增强（续）
 
-- DOCX
-- PDF
-- XLSX
+- PDF（PyMuPDF）
+- HTML（BeautifulSoup）
+- XLSX（openpyxl）
 - PPTX
 - HTML iframe / 附件解析
 
 ### 阶段 5：多模态增强
 
-- 图片视觉理解
-- 视频关键帧
-- 音频转写
-- 字幕解析
+- 图片视觉理解（多模态模型生成 extracted_text）
+- 视频语义理解（多模态模型直出总结和关键主题）
+- 长视频兜底（关键帧提取 → 音频转写 → 字幕解析 → LLM 汇总摘要）
 - 多媒体知识块二次更新
 
 ### 阶段 6：知识类型升级
@@ -1286,8 +1289,7 @@ VOLCENGINE_EMBEDDING_MODEL=Doubao-embedding-vision
 - LLM 已按内容自动分类标注 knowledge_type，字段贯穿全链路（生成 → 落库 → 索引 → 检索结果）
 
 待完成：
-- 检索时按 knowledge_type 过滤和加权，为不同知识类型启用差异化的检索策略
-- 针对不同知识类型使用不同的 Prompt 策略和 chunk schema
+- 三类标注当前统一按陈述型处理；后续知识图谱（关系型→实体关系抽取）和 Skill 编排（流程型→步骤序列化）接入时，按类型启用差异化 Prompt 策略和 chunk schema
 
 ## 16. 推荐技术选型
 
@@ -1297,27 +1299,25 @@ VOLCENGINE_EMBEDDING_MODEL=Doubao-embedding-vision
 - FastAPI
 - Pydantic
 
+存储：
+
+- PostgreSQL（阶段 2，Document / ParsedElement / Asset / KnowledgeChunk 元数据持久化）
+- Milvus（阶段 3，向量索引 + BM25 全文检索）
+- MinIO（阶段 3，对象存储，图片/视频等多媒体资源）
+
 解析：
 
-- Markdown：markdown-it-py 或 mistune
+- Markdown：markdown-it-py
 - HTML：BeautifulSoup / lxml
 - DOCX：python-docx
 - PDF：PyMuPDF，后续可结合版面识别
 - XLSX：openpyxl
 
-检索：
-
-- Milvus hybrid search
-
-对象存储：
-
-- MinIO
-
 模型：
 
-- LLM：Doubao-Seed-2.0-pro（文本生成、查询重写、重排、表格语义化）
-- Embedding：Doubao-embedding-vision（文本和图片向量化）
-- Vision：Doubao-Seed-2.0-pro 多模态能力 或 专用视觉理解模型（图片描述、关键帧分析，阶段 5 启用）
+- LLM：Doubao-Seed-2.0-pro（文本生成、查询重写、重排、表格语义化、图片描述）
+- Embedding：Doubao-embedding-vision（文本和图片向量化，1024d）
+- Vision：Doubao-Seed-2.0-pro 多模态能力（图片描述，阶段 2 起用于 DOCX 内嵌图片；关键帧分析留到阶段 5）
 
 ## 17. 验收标准
 

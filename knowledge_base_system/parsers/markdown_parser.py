@@ -1,11 +1,10 @@
 import re
-from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
+from app.core.paths import resolve_file_uri
 from app.core.models import (
     Asset,
     AssetType,
@@ -22,10 +21,10 @@ from parsers.base import DocumentParser, ParseResult
 class MarkdownParser(DocumentParser):
     """Parse Markdown and plain-text documents into ParsedElements."""
 
-    _SUPPORTED = {"markdown", "md", "txt", "text"}
+    SUPPORTED_TYPES = {"markdown", "md", "txt", "text"}
 
     def supports(self, source_type: str) -> bool:
-        return source_type.lower() in self._SUPPORTED
+        return source_type.lower() in self.SUPPORTED_TYPES
 
     def parse(self, doc: Document) -> ParseResult:
         md = MarkdownIt("commonmark", {"breaks": True, "html": False})
@@ -51,11 +50,7 @@ class MarkdownParser(DocumentParser):
     def _read_content(self, doc: Document) -> str:
         raw = doc.metadata.get("raw_content", "")
         if not raw and doc.source_uri.startswith("file://"):
-            parsed = urlparse(doc.source_uri)
-            if parsed.netloc:
-                filepath = Path(parsed.netloc) / unquote(parsed.path).lstrip("/")
-            else:
-                filepath = Path(unquote(parsed.path.lstrip("/")))
+            filepath = resolve_file_uri(doc.source_uri)
             if filepath.exists():
                 raw = filepath.read_text(encoding="utf-8")
         return raw

@@ -1,0 +1,102 @@
+[
+  {
+    "query": "上传文档后如何判断解析成功？",
+    "expected_chunk_ids": ["chunk_db097291b02a"],
+    "expected_content_contains": ["上传", "解析", "成功"]
+  },
+  {
+    "query": "知识文档支持哪些格式？",
+    "expected_chunk_ids": ["chunk_eb03f9e1d093"],
+    "expected_content_contains": ["Markdown", "TXT", "格式"]
+  },
+  {
+    "query": "单个文件上传的大小限制是多少？",
+    "expected_chunk_ids": ["chunk_dfe49702a9b2"],
+    "expected_content_contains": ["文件", "MB", "大小"]
+  },
+  {
+    "query": "解析状态有哪些类型？",
+    "expected_chunk_ids": ["chunk_a271cd6ce3f2"],
+    "expected_content_contains": ["处理中", "成功", "失败"]
+  },
+  {
+    "query": "上传完成后可以做什么？",
+    "expected_chunk_ids": ["chunk_dc2a5821edb5"],
+    "expected_content_contains": ["搜索", "检索"]
+  },
+  {
+    "query": "系统如何检索知识库内容？",
+    "expected_chunk_ids": ["chunk_41f1f4c8b108"],
+    "expected_content_contains": ["知识库", "检索"]
+  },
+  {
+    "query": "文档进入知识库后能否被搜索？",
+    "expected_chunk_ids": ["chunk_db097291b02a"],
+    "expected_content_contains": ["文档", "知识库", "搜索"]
+  },
+  {
+    "query": "Markdown 文档上传后会经历什么流程？",
+    "expected_chunk_ids": ["chunk_eb03f9e1d093"],
+    "expected_content_contains": ["Markdown", "上传", "解析"]
+  },
+  {
+    "query": "TXT 格式是否支持入库？",
+    "expected_chunk_ids": ["chunk_eb03f9e1d093"],
+    "expected_content_contains": ["TXT", "格式"]
+  },
+  {
+    "query": "用户什么时候需要重新上传文件？",
+    "expected_chunk_ids": ["chunk_a271cd6ce3f2"],
+    "expected_content_contains": ["失败", "重新上传"]
+  },
+  {
+    "query": "处理中文档状态代表什么？",
+    "expected_chunk_ids": ["chunk_a271cd6ce3f2"],
+    "expected_content_contains": ["处理中", "解析"]
+  },
+  {
+    "query": "成功状态说明文档处于什么阶段？",
+    "expected_chunk_ids": ["chunk_db097291b02a"],
+    "expected_content_contains": ["成功", "知识库"]
+  },
+  {
+    "query": "业务分类未指定时默认是什么？",
+    "expected_chunk_ids": ["chunk_dfe49702a9b2"],
+    "expected_content_contains": ["分类", "默认"]
+  },
+  {
+    "query": "批量上传是否被支持？",
+    "expected_chunk_ids": ["chunk_dfe49702a9b2"],
+    "expected_content_contains": ["批量", "上传"]
+  },
+  {
+    "query": "上传状态截图链接属于什么内容？",
+    "expected_chunk_ids": ["chunk_dc2a5821edb5"],
+    "expected_content_contains": ["截图", "上传状态"]
+  },
+  {
+    "query": "检索结果应该来自哪里？",
+    "expected_chunk_ids": ["chunk_41f1f4c8b108"],
+    "expected_content_contains": ["知识库", "内容"]
+  },
+  {
+    "query": "如何确认文档已经进入知识库？",
+    "expected_chunk_ids": ["chunk_db097291b02a"],
+    "expected_content_contains": ["成功", "知识库"]
+  },
+  {
+    "query": "上传失败后用户该如何处理？",
+    "expected_chunk_ids": ["chunk_a271cd6ce3f2"],
+    "expected_content_contains": ["失败", "重新上传"]
+  },
+  {
+    "query": "文档大小限制与上传规则是什么？",
+    "expected_chunk_ids": ["chunk_dfe49702a9b2"],
+    "expected_content_contains": ["文件", "10 MB", "上传"]
+  },
+  {
+    "query": "系统支持哪些知识文档上传能力？",
+    "expected_chunk_ids": ["chunk_eb03f9e1d093"],
+    "expected_content_contains": ["Markdown", "TXT", "批量上传"]
+  }
+]

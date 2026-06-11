@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -23,6 +24,13 @@ class Settings(BaseSettings):
 
     # LLM retry
     max_json_retries: int = 3
+
+    # Backend mode (no prefix — read from raw env vars)
+    backend: str = Field(default="memory", validation_alias="BACKEND")
+    database_url: str = Field(
+        default="postgresql://kbuser:kbpass@localhost:5432/knowledge_base",
+        validation_alias="DATABASE_URL",
+    )
 
 
 settings = Settings()

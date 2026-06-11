@@ -2,15 +2,15 @@
 
 ## Purpose
 
-将 Markdown/TXT 文档解析为结构化元素树（ParsedElement），创建 Document 和 Asset 记录，并递归处理嵌入文档。Document 包含业务分类 `category`，入库请求通过 `source_uri` 引用文件内容。
+将 Markdown/TXT/DOCX 文档解析为结构化元素树（ParsedElement），创建 Document 和 Asset 记录，并递归处理嵌入文档。Document 包含业务分类 `category`，入库请求通过 `source_uri` 引用文件内容。
 
 > 同步自 change `implement-mvp-phase-1`，日期 2026-06-09；更新自 change `align-data-model-and-api-with-updated-design`，日期 2026-06-10。
 
 ## Requirements
 
-### Requirement: 将 Markdown 文档解析为结构化元素
+### Requirement: 将文档解析为结构化元素
 
-系统 SHALL 将 Markdown 和 TXT 文档解析为 ParsedElement 树，保留文档结构。
+系统 SHALL 根据文档的 `source_type` 通过解析器注册表自动选择对应解析器，将文档解析为 ParsedElement 树，保留文档结构。当前支持的格式包括 Markdown/TXT 和 DOCX。
 
 #### Scenario: 解析含标题、段落和列表的简单 Markdown
 
@@ -43,10 +43,16 @@
 - **WHEN** Markdown 文档包含带语言标注的围栏代码块
 - **THEN** 解析器生成 `code` 元素，`text` 为代码内容，`metadata.language` 为标注的语言
 
+#### Scenario: 根据 source_type 自动选择解析器
+
+- **WHEN** 提交 `source_type="docx"` 的文档
+- **THEN** 管线通过 ParserRegistry 获取 DocxParser 并执行解析
+- **AND** 提交 `source_type="markdown"` 的文档时通过 ParserRegistry 获取 MarkdownParser
+
 #### Scenario: 不支持的文档类型
 
-- **WHEN** 提交 `source_type` 不在支持列表中的文档
-- **THEN** 系统返回不支持格式的错误
+- **WHEN** 提交 `source_type` 不在任何已注册解析器支持列表中的文档
+- **THEN** 系统返回不支持格式的错误，包含已支持的 source_type 列表
 
 ### Requirement: 解析过程中创建 Document 和 Asset 记录
 

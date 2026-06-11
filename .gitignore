@@ -17,7 +17,13 @@ __pycache__/
 .idea/
 
 # Runtime data
-data/
+/data/uploads/
+/data/runtime/
+/data/source_documents/
+/data/simulated_inputs/
+/knowledge_base_system/data/
 
 # Test artifacts
 test_e2e_report.*
+/knowledge_base_system/tests/results/
+/knowledge_base_system/tests/fixtures/generated_inputs/
