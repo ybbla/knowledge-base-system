@@ -2,7 +2,7 @@
 
 本脚本是知识库系统的端到端集成测试，只模拟 **唯一外部依赖**（输入文件），其余全部走真实代码链路。
 
-测试输入文件从 ``tests/fixtures/simulated_inputs`` 读取，
+测试输入文件从仓库根目录 ``data/simulated_inputs`` 读取，
 然后依次执行完整的 4 步 API 链路：
 
 .. code-block:: text
@@ -53,7 +53,7 @@ from __future__ import annotations
 # 4. 可通过 --input、--title、--category、--timeout 指定输入文件、标题、分类和超时时间。
 #
 # 执行流程：
-# 1. 读取 tests/fixtures/simulated_inputs/product_manual_source.md 或 --input 指定文件。
+# 1. 读取 data/simulated_inputs/product_manual_source.md 或 --input 指定文件。
 # 2. 通过 TestClient 加载真实 FastAPI app，不需要单独启动 uvicorn。
 # 3. 依次执行 POST /upload、POST /ingest、轮询 GET /ingest/{job_id}、POST /search。
 # 4. 每一步记录请求摘要、响应内容、校验项、耗时和异常信息。
@@ -84,7 +84,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 TESTS_DIR = SCRIPT_DIR.parent
 PACKAGE_ROOT = TESTS_DIR.parent  # knowledge_base_system/
 REPO_ROOT = PACKAGE_ROOT.parent  # 项目根目录
-INPUT_DIR = TESTS_DIR / "fixtures" / "simulated_inputs"
+INPUT_DIR = REPO_ROOT / "data" / "simulated_inputs"
 DEFAULT_INPUT = INPUT_DIR / "product_manual_source.md"
 REPORT_PATH = TESTS_DIR / "results" / "e2e" / "e2e_real_chain_file_report.md"
 

@@ -18,3 +18,34 @@ schema: spec-driven
 #       - Always include a "Non-goals" section
 #     tasks:
 #       - Break tasks into chunks of max 2 hours
+
+context: |
+  # 项目概述
+  项目名称：知识库系统
+  项目类型：软件开发
+
+  # 语言和文档规范
+  语言：中文（简体）
+  所有产出物必须用简体中文撰写。
+  
+  # 代码规范
+  - API 遵循 RESTful 设计
+  - 所有公共 API 需保持向后兼容
+
+# 每产物规则 - 针对特定产物的额外指导
+rules:
+  proposal:
+    - 必须包含回滚计划
+    - 说明对现有功能的影响
+  specs:
+    - 使用 Given/When/Then 格式编写场景
+    - 优先引用现有模式，避免重复发明
+    - 包含边界条件和异常场景
+  design:
+    - 说明关键技术决策的理由
+    - 列出受影响的文件和模块
+    - 考虑性能和安全影响
+  tasks:
+    - 任务粒度适中（每个任务约 1-2 小时工作量）
+    - 按模块分组，使用层级编号
+    - 包含必要的测试任务

@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.core.deps import chunk_store, ingestion_pipeline
+from app.core.deps import ingestion_pipeline
 from app.core.models import Document
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])

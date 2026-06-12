@@ -82,7 +82,19 @@ class DbKnowledgeChunk(Base):
     knowledge_type = Column(String(32), default="declarative")
     category = Column(String(128), default="通用")
     status = Column(String(32), default="active")
+    index_status = Column(String(32), default="pending")
+    indexed_at = Column(DateTime(timezone=True), nullable=True)
+    index_error = Column(Text, nullable=True)
     asset_refs = Column(JSONBType, default=list)
     source_refs = Column(JSONBType, default=list)
     ingest_job_id = Column(String(64), default="")
     meta = Column("metadata", JSONBType, default=dict)
+
+
+class DbIdfStat(Base):
+    __tablename__ = "idf_stats"
+
+    token = Column(String(256), primary_key=True)
+    token_id = Column(Integer, nullable=False)
+    df = Column(Integer, default=0)
+    total_docs = Column(Integer, default=0)

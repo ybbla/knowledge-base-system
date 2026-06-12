@@ -1,7 +1,5 @@
 import logging
 
-from sqlalchemy.orm import Session
-
 from app.core.models import Asset, AssetStatus, AssetType
 from app.db.engine import create_session_factory
 from app.db.models import DbAsset

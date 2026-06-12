@@ -1,6 +1,7 @@
 import hashlib
 import io
 import logging
+import re
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -8,8 +9,6 @@ from typing import Any
 from docx import Document as DocxDocument
 from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.ns import qn
-from docx.table import Table as DocxTable
-
 from app.core.paths import resolve_file_uri
 from app.core.models import (
     Asset,
@@ -19,7 +18,6 @@ from app.core.models import (
     ParsedElement,
     SourceLocation,
     compute_hash,
-    new_id,
 )
 from parsers.base import DocumentParser, ParseResult
 
@@ -30,6 +28,10 @@ class DocxParser(DocumentParser):
     """Parse DOCX documents into ParsedElements and Assets."""
 
     SUPPORTED_TYPES = {"docx"}
+    VIDEO_URL_RE = re.compile(
+        r"https?://[^\s\])<\"']*(?:youtube\.com|youtu\.be|vimeo\.com|\.mp4|\.webm|\.mov|\.m4v)[^\s\])<\"']*",
+        re.IGNORECASE,
+    )
 
     def supports(self, source_type: str) -> bool:
         return source_type.lower() in self.SUPPORTED_TYPES
@@ -51,6 +53,7 @@ class DocxParser(DocumentParser):
 
         # Extract images from zip
         assets = self._extract_images(doc, state._image_counter, elements)
+        assets.extend(self._extract_videos(doc, elements))
 
         doc.source_hash = compute_hash(raw)
 
@@ -279,6 +282,7 @@ class DocxParser(DocumentParser):
                         extracted_text=None,
                         metadata={"width": None, "height": None},
                     )
+                    object.__setattr__(asset, "_data", data)
                     # Create an image ParsedElement for each image
                     el = ParsedElement(
                         doc_id=doc.doc_id,
@@ -299,6 +303,53 @@ class DocxParser(DocumentParser):
         except (zipfile.BadZipFile, KeyError) as exc:
             logger.warning("Failed to extract images from docx: %s", exc)
 
+        return assets
+
+    def _extract_videos(
+        self,
+        doc: Document,
+        elements: list[ParsedElement],
+    ) -> list[Asset]:
+        """从段落文本中识别视频链接并创建 pending Asset。"""
+        assets: list[Asset] = []
+        seen: set[str] = set()
+        for el in list(elements):
+            for match in self.VIDEO_URL_RE.finditer(el.text or ""):
+                url = match.group(0)
+                if url in seen:
+                    continue
+                seen.add(url)
+                ext = url.lower().split("?", 1)[0].rsplit(".", 1)[-1]
+                mime = {
+                    "mp4": "video/mp4",
+                    "webm": "video/webm",
+                    "mov": "video/quicktime",
+                    "m4v": "video/mp4",
+                }.get(ext, "video/*")
+                asset = Asset(
+                    doc_id=doc.doc_id,
+                    source_element_id=el.element_id,
+                    asset_type=AssetType.video,
+                    original_uri=url,
+                    storage_uri=None,
+                    mime_type=mime,
+                    extracted_text=None,
+                    metadata={"source": "video_link"},
+                )
+                video_el = ParsedElement(
+                    doc_id=doc.doc_id,
+                    doc_version=doc.version,
+                    sequence_order=max(
+                        (item.sequence_order for item in elements),
+                        default=0,
+                    ) + 1,
+                    element_type=ElementType.video,
+                    text=f"[视频: {url}]",
+                    asset_ids=[asset.asset_id],
+                    source_location=el.source_location,
+                )
+                elements.append(video_el)
+                assets.append(asset)
         return assets
 
     def _has_unsupported_object(self, p_el) -> bool:

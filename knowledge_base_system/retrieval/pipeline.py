@@ -1,8 +1,9 @@
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from app.core.config import settings
+from app.core.config import get_settings
 from app.core.models import (
     KnowledgeChunk,
     ScoreComponents,
@@ -12,11 +13,20 @@ from app.core.models import (
 from assets.base import AssetStore
 from indexing.base import BM25Index, VectorIndex
 from indexing.fusion import rrf_fusion
+from indexing.milvus_hybrid import hybrid_search as milvus_hybrid_search
 from llm.query_rewriter import QueryRewriter
 from llm.reranker import Reranker
 from llm.volcengine_client import embedding_client
 
 logger = logging.getLogger(__name__)
+
+
+def _renderable_storage_uri(storage_uri: str | None) -> str | None:
+    if not storage_uri:
+        return storage_uri
+    if storage_uri.startswith(("http://", "https://", "file://", "minio://")):
+        return storage_uri
+    return f"file:///{Path(storage_uri).resolve().as_posix()}"
 
 
 @dataclass
@@ -61,44 +71,94 @@ class RetrievalPipeline:
         category: str | None = None,
     ) -> SearchResult:
         """Execute full retrieval pipeline and return SearchResult."""
-        final_k = top_k or settings.final_top_k
+        cfg = get_settings(reload_env=True)
+        final_k = top_k or cfg.final_top_k
 
         # 1. Query rewrite
         rewrite_result = self._rewriter.rewrite(query)
         rewritten = rewrite_result["rewritten_query"]
         keywords_str = " ".join(rewrite_result.get("keywords", [query]))
 
-        # 2. Dual-path retrieval
-        # Vector
+        # 2. 双路检索：Milvus 可用时优先走原生 Hybrid Search。
+        query_vec: list[float] | None = None
         try:
             query_vecs = embedding_client.embed_text([rewritten])
             query_vec = query_vecs[0]
-            vec_results = self._vector_index.search(
-                query_vec,
-                top_k=settings.vector_top_k,
-                category=category,
-            )
         except Exception:
-            logger.exception("Vector retrieval failed")
-            vec_results = []
+            logger.exception("Vector embedding failed")
+            query_vec = None
 
-        # BM25
-        try:
-            bm25_results = self._bm25_index.search(
-                keywords_str,
-                top_k=settings.bm25_top_k,
-                category=category,
-            )
-        except Exception:
-            logger.exception("BM25 retrieval failed")
-            bm25_results = []
+        hybrid_results: list[tuple[str, float]] = []
+        if query_vec is not None and cfg.milvus_enabled:
+            try:
+                manager = getattr(self._vector_index, "manager")
+                encode_query = getattr(self._bm25_index, "encode_query")
+                sparse_query = encode_query(keywords_str)
+                hybrid_results = milvus_hybrid_search(
+                    manager,
+                    query_vec,
+                    sparse_query,
+                    top_k=cfg.fusion_top_k,
+                    category=category,
+                    rrf_k=cfg.rrf_k,
+                )
+            except Exception:
+                logger.exception("Milvus hybrid retrieval failed, fallback to app RRF")
 
-        # 3. RRF fusion
-        fused = rrf_fusion(vec_results, bm25_results)
+        # 单路检索在 Hybrid 成功时用于补充分数明细；
+        # Hybrid 失败时则作为应用层 RRF fallback 的候选来源。
+        vec_results: list[tuple[str, float]] = []
+        bm25_results: list[tuple[str, float]] = []
+        if hybrid_results:
+            try:
+                vec_results = self._vector_index.search(
+                    query_vec,
+                    top_k=cfg.vector_top_k,
+                    category=category,
+                )
+            except Exception:
+                logger.exception("Vector score detail retrieval failed")
+                vec_results = []
 
-        # Sort by fused score and take top 20
-        sorted_fused = sorted(fused.items(), key=lambda x: x[1], reverse=True)
-        top_fused = sorted_fused[: settings.fusion_top_k]
+            try:
+                bm25_results = self._bm25_index.search(
+                    keywords_str,
+                    top_k=cfg.bm25_top_k,
+                    category=category,
+                )
+            except Exception:
+                logger.exception("BM25 score detail retrieval failed")
+                bm25_results = []
+        else:
+            try:
+                if query_vec is None:
+                    vec_results = []
+                else:
+                    vec_results = self._vector_index.search(
+                        query_vec,
+                        top_k=cfg.vector_top_k,
+                        category=category,
+                    )
+            except Exception:
+                logger.exception("Vector retrieval failed")
+                vec_results = []
+
+            try:
+                bm25_results = self._bm25_index.search(
+                    keywords_str,
+                    top_k=cfg.bm25_top_k,
+                    category=category,
+                )
+            except Exception:
+                logger.exception("BM25 retrieval failed")
+                bm25_results = []
+
+        if hybrid_results:
+            top_fused = hybrid_results[: cfg.fusion_top_k]
+        else:
+            fused = rrf_fusion(vec_results, bm25_results, k=cfg.rrf_k)
+            sorted_fused = sorted(fused.items(), key=lambda x: x[1], reverse=True)
+            top_fused = sorted_fused[: cfg.fusion_top_k]
 
         if not top_fused:
             return SearchResult(query=query, rewritten_query=rewritten)
@@ -113,12 +173,8 @@ class RetrievalPipeline:
         # 6. Build result items
         items: list[SearchResultItem] = []
         score_map: dict[str, float] = dict(top_fused)
-        vec_map: dict[str, float] = {
-            cid: score for cid, score in vec_results
-        }
-        bm25_map: dict[str, float] = {
-            cid: score for cid, score in bm25_results
-        }
+        vec_map = {cid: score for cid, score in vec_results}
+        bm25_map = {cid: score for cid, score in bm25_results}
 
         # Follow reranked order
         for rank_entry in reranked[:final_k]:
@@ -131,11 +187,19 @@ class RetrievalPipeline:
             resolved_assets: list[dict[str, Any]] = []
             for ref in chunk.asset_refs:
                 asset = self._asset_store.get(ref.asset_id) if self._asset_store else None
+                storage_uri = _renderable_storage_uri(asset.storage_uri if asset else None)
+                if (
+                    storage_uri
+                    and storage_uri.startswith("minio://")
+                    and self._asset_store
+                    and hasattr(self._asset_store, "presign_uri")
+                ):
+                    storage_uri = self._asset_store.presign_uri(storage_uri)
                 resolved_assets.append(
                     {
                         "asset_id": ref.asset_id,
                         "relation": ref.relation.value,
-                        "storage_uri": asset.storage_uri if asset else None,
+                        "storage_uri": storage_uri,
                         "original_uri": asset.original_uri if asset else None,
                         "linked_text": ref.linked_text or "",
                         "caption": ref.caption or "",

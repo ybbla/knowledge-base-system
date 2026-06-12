@@ -138,6 +138,9 @@ class TestDbModels:
         assert result.content == "Content with keywords."
         assert result.category == "产品使用"
         assert result.knowledge_type == "declarative"
+        assert result.index_status == "pending"
+        assert result.indexed_at is None
+        assert result.index_error is None
 
         # JSONB round-trip
         assert len(result.asset_refs) == 1

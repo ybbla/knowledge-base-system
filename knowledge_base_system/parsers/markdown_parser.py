@@ -7,13 +7,13 @@ from markdown_it.token import Token
 from app.core.paths import resolve_file_uri
 from app.core.models import (
     Asset,
+    AssetStatus,
     AssetType,
     Document,
     ElementType,
     ParsedElement,
     SourceLocation,
     compute_hash,
-    new_id,
 )
 from parsers.base import DocumentParser, ParseResult
 
@@ -22,6 +22,18 @@ class MarkdownParser(DocumentParser):
     """Parse Markdown and plain-text documents into ParsedElements."""
 
     SUPPORTED_TYPES = {"markdown", "md", "txt", "text"}
+    VIDEO_URL_RE = re.compile(
+        r"https?://[^\s\])<\"']*(?:youtube\.com|youtu\.be|vimeo\.com|\.mp4|\.webm|\.mov|\.m4v)[^\s\])<\"']*",
+        re.IGNORECASE,
+    )
+    VIDEO_TAG_RE = re.compile(
+        r"<video[^>]+src=[\"'](?P<src>[^\"']+)[\"'][^>]*>",
+        re.IGNORECASE,
+    )
+    MD_VIDEO_RE = re.compile(
+        r"!\[(?P<alt>[^\]]*video[^\]]*)\]\((?P<src>[^)]+)\)",
+        re.IGNORECASE,
+    )
 
     def supports(self, source_type: str) -> bool:
         return source_type.lower() in self.SUPPORTED_TYPES
@@ -40,6 +52,7 @@ class MarkdownParser(DocumentParser):
             self._process_token(token, state, assets)
 
         elements = state.flush_elements()
+        self._extract_video_assets(content, state, elements, assets)
         self._link_assets_to_elements(elements, assets)
 
         # Update document hash
@@ -215,12 +228,62 @@ class MarkdownParser(DocumentParser):
             src = token.attrs.get("src", "")
             alt = token.attrs.get("alt", "")
 
+        asset_type = AssetType.video if self._is_video_link(src, alt) else AssetType.image
         return Asset(
             doc_id=state.doc_id,
-            asset_type=AssetType.image,
+            asset_type=asset_type,
             original_uri=src,
             mime_type=self._guess_mime(src),
+            status=AssetStatus.pending,
             metadata={"alt": alt},
+        )
+
+    def _extract_video_assets(
+        self,
+        content: str,
+        state: "_ParseState",
+        elements: list[ParsedElement],
+        assets: list[Asset],
+    ) -> None:
+        seen = {asset.original_uri for asset in assets if asset.asset_type == AssetType.video}
+        candidates: list[tuple[str, str]] = []
+        candidates.extend((m.group("src"), "video") for m in self.VIDEO_TAG_RE.finditer(content))
+        candidates.extend((m.group("src"), m.group("alt")) for m in self.MD_VIDEO_RE.finditer(content))
+        candidates.extend((m.group(0), "video") for m in self.VIDEO_URL_RE.finditer(content))
+
+        for src, label in candidates:
+            if src in seen:
+                continue
+            seen.add(src)
+            asset = Asset(
+                doc_id=state.doc_id,
+                asset_type=AssetType.video,
+                original_uri=src,
+                storage_uri=None,
+                mime_type=self._guess_mime(src),
+                status=AssetStatus.pending,
+                extracted_text=None,
+                metadata={"alt": label},
+            )
+            element = ParsedElement(
+                doc_id=state.doc_id,
+                doc_version=state.doc_version,
+                sequence_order=state._next_seq(),
+                element_type=ElementType.video,
+                text=f"[视频: {src}]",
+                asset_ids=[asset.asset_id],
+                source_location=SourceLocation(),
+            )
+            asset.source_element_id = element.element_id
+            assets.append(asset)
+            elements.append(element)
+
+    @classmethod
+    def _is_video_link(cls, src: str, alt: str = "") -> bool:
+        return (
+            "video" in alt.lower()
+            or bool(cls.VIDEO_URL_RE.search(src))
+            or src.lower().split("?", 1)[0].endswith((".mp4", ".webm", ".mov", ".m4v"))
         )
 
     @staticmethod

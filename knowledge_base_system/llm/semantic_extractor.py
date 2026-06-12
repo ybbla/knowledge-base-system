@@ -142,9 +142,13 @@ class SemanticExtractor:
             data = llm_client.chat_json(messages, schema=EXTRACT_SCHEMA)
         except Exception:
             logger.exception("LLM extraction failed for window: %s", title_path)
-            return []
+            return self._fallback_chunks(elements, assets, ingest_job_id, category)
 
-        return self._build_chunks(data, elements, assets, ingest_job_id, category)
+        chunks = self._build_chunks(data, elements, assets, ingest_job_id, category)
+        if not chunks:
+            logger.warning("LLM extraction returned no chunks, using fallback chunk")
+            return self._fallback_chunks(elements, assets, ingest_job_id, category)
+        return chunks
 
     @staticmethod
     def _get_title_path(elements: list[ParsedElement]) -> list[str]:
@@ -311,3 +315,64 @@ class SemanticExtractor:
         if len(first) > 40:
             first = first[:40] + "..."
         return first
+
+    def _fallback_chunks(
+        self,
+        elements: list[ParsedElement],
+        assets: list[Asset],
+        ingest_job_id: str,
+        category: str,
+    ) -> list[KnowledgeChunk]:
+        """LLM 不可用或返回空结果时，保留可检索的解析文本。"""
+        text_parts = [el.text.strip() for el in elements if el.text and el.text.strip()]
+        content = "\n".join(text_parts).strip()
+        if not content:
+            return []
+
+        source_refs = [
+            SourceRef(
+                doc_id=el.doc_id,
+                doc_version=el.doc_version,
+                element_id=el.element_id,
+                source_location=el.source_location,
+            )
+            for el in elements
+        ]
+        asset_by_id = {asset.asset_id: asset for asset in assets}
+        asset_refs: list[AssetRef] = []
+        seen_assets: set[str] = set()
+        for el in elements:
+            for asset_id in el.asset_ids:
+                if asset_id in seen_assets or asset_id not in asset_by_id:
+                    continue
+                asset = asset_by_id[asset_id]
+                asset_refs.append(
+                    AssetRef(
+                        asset_id=asset.asset_id,
+                        relation=AssetRelation.illustration,
+                        caption=asset.metadata.get("alt") or asset.original_uri,
+                    )
+                )
+                seen_assets.add(asset_id)
+
+        doc_id = elements[0].doc_id
+        doc_version = elements[0].doc_version
+        return [
+            KnowledgeChunk(
+                doc_id=doc_id,
+                doc_version=doc_version,
+                title=self._derive_title(content),
+                content=content,
+                content_hash=compute_hash(content),
+                knowledge_type=KnowledgeType.declarative,
+                category=category,
+                asset_refs=asset_refs,
+                source_refs=source_refs,
+                ingest_job_id=ingest_job_id,
+                metadata={
+                    "title_path": self._get_title_path(elements),
+                    "language": "zh-CN",
+                    "fallback": "llm_empty_or_failed",
+                },
+            )
+        ]

@@ -49,6 +49,41 @@ def test_upload_defaults_and_writes_file(monkeypatch, tmp_path):
     assert stored.read_bytes() == b"# Manual\nBody"
 
 
+def test_upload_falls_back_to_local_when_minio_unavailable(monkeypatch, tmp_path):
+    class _FailingMinioAssetStore:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.client = None
+
+        def ensure_buckets(self) -> None:
+            raise RuntimeError("minio unavailable")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(upload_api, "UPLOAD_DIR", Path("data/uploads"))
+    monkeypatch.setattr(
+        upload_api,
+        "get_settings",
+        lambda reload_env=False: SimpleNamespace(
+            minio_enabled=True,
+            minio_bucket_input="kb-input",
+        ),
+    )
+    monkeypatch.setattr(upload_api, "MinioAssetStore", _FailingMinioAssetStore)
+
+    response = client.post(
+        "/upload",
+        files={"file": ("manual.md", b"# Manual\nBody", "text/markdown")},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["source_uri"].startswith("file://data/uploads/")
+    assert data["size"] == len(b"# Manual\nBody")
+
+    stored = Path(data["source_uri"].replace("file://", ""))
+    assert stored.exists()
+    assert stored.read_bytes() == b"# Manual\nBody"
+
+
 def test_ingest_requires_source_uri():
     response = client.post(
         "/ingest",

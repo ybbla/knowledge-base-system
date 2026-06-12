@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from app.core.config import settings
+from app.core.config import get_settings
 from app.core.errors import LLMError
 
 logger = logging.getLogger(__name__)
@@ -27,15 +27,10 @@ def _extract_json(text: str) -> str:
 class LLMClient:
     """Volcengine ARK LLM client."""
 
-    def __init__(self) -> None:
-        self._base = settings.base_url.rstrip("/")
-        self._model = settings.llm_model
-        self._api_key = settings.api_key
-        self._max_retries = settings.max_json_retries
-
-    def _headers(self) -> dict[str, str]:
+    @staticmethod
+    def _headers(api_key: str) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {self._api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
 
@@ -46,18 +41,25 @@ class LLMClient:
         temperature: float = 0.3,
     ) -> dict[str, Any]:
         """Send a chat request and return parsed JSON. Retries on failure."""
+        settings = get_settings(reload_env=True)
+        base = settings.base_url.rstrip("/")
+        model = settings.llm_model
+        api_key = settings.api_key
+        max_retries = settings.max_json_retries
+        if not api_key:
+            raise LLMError("VOLCENGINE_API_KEY is not configured")
         last_error: str = ""
-        for attempt in range(self._max_retries + 1):
+        for attempt in range(max_retries + 1):
             try:
                 body: dict[str, Any] = {
-                    "model": self._model,
+                    "model": model,
                     "messages": messages,
                     "temperature": temperature,
                 }
 
                 resp = httpx.post(
-                    f"{self._base}/chat/completions",
-                    headers=self._headers(),
+                    f"{base}/chat/completions",
+                    headers=self._headers(api_key),
                     json=body,
                     timeout=120.0,
                 )
@@ -75,17 +77,17 @@ class LLMClient:
 
                 return result
 
-            except (json.JSONDecodeError, KeyError, httpx.HTTPError) as exc:
+            except (json.JSONDecodeError, KeyError, ValueError, httpx.HTTPError) as exc:
                 last_error = str(exc)
                 logger.warning(
                     "LLM call attempt %d/%d failed: %s",
                     attempt + 1,
-                    self._max_retries + 1,
+                    max_retries + 1,
                     last_error,
                 )
-                if attempt == self._max_retries:
+                if attempt == max_retries:
                     raise LLMError(
-                        f"LLM call failed after {self._max_retries + 1} attempts: {last_error}"
+                        f"LLM call failed after {max_retries + 1} attempts: {last_error}"
                     ) from exc
 
         raise LLMError(f"LLM call failed: {last_error}")
@@ -102,27 +104,29 @@ class LLMClient:
 class EmbeddingClient:
     """Volcengine ARK Embedding client (multimodal API)."""
 
-    def __init__(self) -> None:
-        self._base = settings.base_url.rstrip("/")
-        self._model = settings.embedding_model
-        self._api_key = settings.api_key
-
-    def _headers(self) -> dict[str, str]:
+    @staticmethod
+    def _headers(api_key: str) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {self._api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
 
     def embed_text(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for a list of texts. Calls API once per text."""
+        settings = get_settings(reload_env=True)
+        base = settings.base_url.rstrip("/")
+        model = settings.embedding_model
+        api_key = settings.api_key
+        if not api_key:
+            raise LLMError("VOLCENGINE_API_KEY is not configured")
         embeddings: list[list[float]] = []
         for text in texts:
             try:
                 resp = httpx.post(
-                    f"{self._base}/embeddings/multimodal",
-                    headers=self._headers(),
+                    f"{base}/embeddings/multimodal",
+                    headers=self._headers(api_key),
                     json={
-                        "model": self._model,
+                        "model": model,
                         "input": [{"type": "text", "text": text}],
                         "dimensions": 1024,
                         "encoding_format": "float",

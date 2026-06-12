@@ -12,6 +12,14 @@ class VectorIndex(ABC):
         metadata: dict | None = None,
     ) -> None: ...
 
+    def add_batch(
+        self,
+        items: list[tuple[str, list[float], dict | None]],
+    ) -> None:
+        """批量添加向量；默认逐条写入，具体实现可覆盖为真正批量写入。"""
+        for chunk_id, vector, metadata in items:
+            self.add(chunk_id, vector, metadata)
+
     @abstractmethod
     def delete(self, chunk_id: str) -> None: ...
 
@@ -35,6 +43,14 @@ class BM25Index(ABC):
         text: str,
         metadata: dict | None = None,
     ) -> None: ...
+
+    def add_batch(
+        self,
+        items: list[tuple[str, str, dict | None]],
+    ) -> None:
+        """批量添加文本索引；默认逐条写入，具体实现可覆盖为真正批量写入。"""
+        for chunk_id, text, metadata in items:
+            self.add(chunk_id, text, metadata)
 
     @abstractmethod
     def delete(self, chunk_id: str) -> None: ...

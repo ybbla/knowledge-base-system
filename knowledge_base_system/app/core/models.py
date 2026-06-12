@@ -42,6 +42,13 @@ class ChunkStatus(str, Enum):
     deleted = "deleted"
 
 
+class ChunkIndexStatus(str, Enum):
+    pending = "pending"
+    indexing = "indexing"
+    indexed = "indexed"
+    failed = "failed"
+
+
 class KnowledgeType(str, Enum):
     """知识块的语义类型。当前阶段统一使用 declarative，后续扩展其余类型。"""
     declarative = "declarative"    # 陈述型：事实、定义、属性说明、概念解释
@@ -173,6 +180,9 @@ class KnowledgeChunk(BaseModel):
     knowledge_type: KnowledgeType = KnowledgeType.declarative
     category: str = "\u901a\u7528"
     status: ChunkStatus = ChunkStatus.active
+    index_status: ChunkIndexStatus = ChunkIndexStatus.pending
+    indexed_at: datetime | None = None
+    index_error: str | None = None
     asset_refs: list[AssetRef] = Field(default_factory=list)
     source_refs: list[SourceRef] = Field(default_factory=list)
     ingest_job_id: str = ""

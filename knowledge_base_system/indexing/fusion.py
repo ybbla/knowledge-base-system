@@ -1,4 +1,4 @@
-from app.core.config import settings
+from app.core.config import get_settings
 
 
 def rrf_fusion(
@@ -10,7 +10,7 @@ def rrf_fusion(
 
     Returns {chunk_id: fused_score}, higher is better.
     """
-    k = k or settings.rrf_k
+    k = k or get_settings(reload_env=True).rrf_k
     scores: dict[str, float] = {}
 
     for rank, (chunk_id, _) in enumerate(vector_results, start=1):

@@ -1,6 +1,5 @@
 import logging
 from datetime import datetime, timezone
-from typing import Any
 
 from app.core.models import Document
 from app.db.engine import create_session_factory

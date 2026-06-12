@@ -30,7 +30,9 @@ class RecursiveLoader:
 
         Returns (all_docs, all_elements).
         """
-        root_doc.metadata["raw_content"] = raw_content
+        # 仅在 raw_content 非空或 metadata 中尚无 raw_content 时设置，避免空值覆盖已有数据
+        if raw_content or "raw_content" not in root_doc.metadata:
+            root_doc.metadata["raw_content"] = raw_content
         all_docs: list[Document] = []
         all_elements: list = []
         self._parse_recursive(root_doc, depth=0, all_docs=all_docs, all_elements=all_elements)

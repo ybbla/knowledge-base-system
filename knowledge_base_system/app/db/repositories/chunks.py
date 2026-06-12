@@ -1,10 +1,10 @@
 import logging
-
-from sqlalchemy.orm import Session
+from datetime import datetime, timezone
 
 from app.core.models import (
     AssetRef,
     AssetRelation,
+    ChunkIndexStatus,
     KnowledgeChunk,
     KnowledgeType,
     Render,
@@ -34,6 +34,9 @@ class PgChunkStore:
             knowledge_type=chunk.knowledge_type.value,
             category=chunk.category,
             status=chunk.status.value,
+            index_status=chunk.index_status.value,
+            indexed_at=chunk.indexed_at,
+            index_error=chunk.index_error,
             asset_refs=[ref.model_dump(mode="json") for ref in chunk.asset_refs],
             source_refs=[ref.model_dump(mode="json") for ref in chunk.source_refs],
             ingest_job_id=chunk.ingest_job_id,
@@ -80,6 +83,9 @@ class PgChunkStore:
             knowledge_type=KnowledgeType(db_chunk.knowledge_type),
             category=db_chunk.category,
             status=db_chunk.status,
+            index_status=ChunkIndexStatus(db_chunk.index_status or "pending"),
+            indexed_at=db_chunk.indexed_at,
+            index_error=db_chunk.index_error,
             asset_refs=asset_refs,
             source_refs=source_refs,
             ingest_job_id=db_chunk.ingest_job_id,
@@ -115,6 +121,47 @@ class PgChunkStore:
                 query = query.filter_by(category=category)
             db_chunks = query.order_by(DbKnowledgeChunk.chunk_id).all()
             return [self._from_db(c) for c in db_chunks]
+
+    def list_by_index_status(
+        self,
+        statuses: list[ChunkIndexStatus | str],
+        limit: int | None = None,
+    ) -> list[KnowledgeChunk]:
+        values = [
+            status.value if isinstance(status, ChunkIndexStatus) else status
+            for status in statuses
+        ]
+        with self._session_factory() as session:
+            query = (
+                session.query(DbKnowledgeChunk)
+                .filter(DbKnowledgeChunk.index_status.in_(values))
+                .order_by(DbKnowledgeChunk.chunk_id)
+            )
+            if limit is not None:
+                query = query.limit(limit)
+            return [self._from_db(c) for c in query.all()]
+
+    def update_index_status(
+        self,
+        chunk_ids: list[str],
+        status: ChunkIndexStatus | str,
+        error: str | None = None,
+    ) -> None:
+        if not chunk_ids:
+            return
+        value = status.value if isinstance(status, ChunkIndexStatus) else status
+        indexed_at = datetime.now(timezone.utc) if value == ChunkIndexStatus.indexed.value else None
+        with self._session_factory() as session:
+            rows = (
+                session.query(DbKnowledgeChunk)
+                .filter(DbKnowledgeChunk.chunk_id.in_(chunk_ids))
+                .all()
+            )
+            for row in rows:
+                row.index_status = value
+                row.indexed_at = indexed_at
+                row.index_error = error
+            session.commit()
 
     def count(self) -> int:
         with self._session_factory() as session:
