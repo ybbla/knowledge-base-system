@@ -1,0 +1,43 @@
+## MODIFIED Requirements
+
+### Requirement: 注册多个解析器并按 source_type 分发
+
+系统 SHALL 维护一个解析器注册表，支持注册多个 `DocumentParser` 实现，并根据 `source_type` 返回匹配的解析器。
+
+#### Scenario: 注册 MarkdownParser、DocxParser、XlsxParser、HtmlParser 和 PptxParser
+
+- **WHEN** 向注册表注册 `MarkdownParser`（`SUPPORTED_TYPES={"markdown", "md", "txt", "text"}`）、`DocxParser`（`SUPPORTED_TYPES={"docx"}`）、`XlsxParser`（`SUPPORTED_TYPES={"xlsx"}`）、`HtmlParser`（`SUPPORTED_TYPES={"html", "htm"}`）和 `PptxParser`（`SUPPORTED_TYPES={"pptx"}`）
+- **THEN** `registry.get("markdown")` 返回 MarkdownParser 实例
+- **AND** `registry.get("docx")` 返回 DocxParser 实例
+- **AND** `registry.get("xlsx")` 返回 XlsxParser 实例
+- **AND** `registry.get("html")` 和 `registry.get("htm")` 返回 HtmlParser 实例
+- **AND** `registry.get("pptx")` 返回 PptxParser 实例
+- **AND** `registry.get("MD")`、`registry.get("XLSX")`、`registry.get("HTML")` 和 `registry.get("PPTX")` 大小写不敏感返回对应解析器实例
+
+#### Scenario: 未注册的 source_type
+
+- **WHEN** 调用 `registry.get("pdf")` 但未注册 PDF 解析器
+- **THEN** 抛出明确错误，提示 `"Unsupported source_type: pdf"`，且错误信息列出已注册的 source_type
+
+#### Scenario: 重复注册覆盖
+
+- **WHEN** 向注册表注册两个均声明支持 `"markdown"` 的解析器
+- **THEN** 后注册的解析器覆盖先前的，且记录 WARNING 日志
+
+### Requirement: 入库管线使用注册表选择解析器
+
+系统 SHALL 在 `IngestionPipeline` 中通过注册表而非硬编码解析器来解析文档。
+
+#### Scenario: 根据 source_type 自动选择解析器
+
+- **WHEN** 提交 `source_type="docx"` 的文档入库
+- **THEN** 管线通过注册表获取 DocxParser 并执行解析
+- **AND** 提交 `source_type="markdown"` 的文档时使用 MarkdownParser
+- **AND** 提交 `source_type="xlsx"` 的文档时使用 XlsxParser
+- **AND** 提交 `source_type="html"` 或 `"htm"` 的文档时使用 HtmlParser
+- **AND** 提交 `source_type="pptx"` 的文档时使用 PptxParser
+
+#### Scenario: 无匹配解析器时返回错误
+
+- **WHEN** 提交 `source_type="pdf"` 的文档入库，但 PDF 解析器未注册
+- **THEN** 入库 job 状态变为 `failed`，错误信息包含 `"Unsupported source_type"`

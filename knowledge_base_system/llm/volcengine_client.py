@@ -3,7 +3,8 @@ import logging
 import re
 from typing import Any
 
-import httpx
+from openai import OpenAI
+from volcenginesdkarkruntime import Ark
 
 from app.core.config import get_settings
 from app.core.errors import LLMError
@@ -12,27 +13,27 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_json(text: str) -> str:
-    """Extract JSON from LLM response, handling markdown code fences."""
-    # Try to find JSON in ```json ... ``` block
+    """从 LLM 响应中提取 JSON，处理 markdown 代码块。"""
     m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if m:
         return m.group(1).strip()
-    # Try to find a JSON object directly
     m = re.search(r"\{[\s\S]*\}", text)
     if m:
         return m.group(0).strip()
     return text.strip()
 
 
-class LLMClient:
-    """Volcengine ARK LLM client."""
+def _build_openai_client() -> OpenAI:
+    """创建 OpenAI 客户端。"""
+    settings = get_settings(reload_env=True)
+    return OpenAI(
+        base_url=settings.base_url,
+        api_key=settings.api_key,
+    )
 
-    @staticmethod
-    def _headers(api_key: str) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+
+class LLMClient:
+    """火山引擎方舟 LLM 客户端 — 基于 OpenAI SDK 直连。"""
 
     def chat_json(
         self,
@@ -40,110 +41,96 @@ class LLMClient:
         schema: dict[str, Any] | None = None,
         temperature: float = 0.3,
     ) -> dict[str, Any]:
-        """Send a chat request and return parsed JSON. Retries on failure."""
+        """发送聊天请求，返回解析后的 JSON。失败自动重试。"""
         settings = get_settings(reload_env=True)
-        base = settings.base_url.rstrip("/")
         model = settings.llm_model
-        api_key = settings.api_key
         max_retries = settings.max_json_retries
-        if not api_key:
-            raise LLMError("VOLCENGINE_API_KEY is not configured")
+
+        if not settings.api_key:
+            raise LLMError("VOLCENGINE_API_KEY 未配置")
+
+        client = _build_openai_client()
         last_error: str = ""
+
         for attempt in range(max_retries + 1):
             try:
-                body: dict[str, Any] = {
-                    "model": model,
-                    "messages": messages,
-                    "temperature": temperature,
-                }
-
-                resp = httpx.post(
-                    f"{base}/chat/completions",
-                    headers=self._headers(api_key),
-                    json=body,
-                    timeout=120.0,
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,  # type: ignore[arg-type]
+                    temperature=temperature,
                 )
-                resp.raise_for_status()
-                data = resp.json()
-                text = data["choices"][0]["message"]["content"]
+                text = response.choices[0].message.content or ""
 
-                # Extract and parse JSON from response
                 json_text = _extract_json(text)
                 result = json.loads(json_text)
 
-                # Validate against schema if provided
                 if schema is not None:
                     self._validate(result, schema)
 
                 return result
 
-            except (json.JSONDecodeError, KeyError, ValueError, httpx.HTTPError) as exc:
+            except (json.JSONDecodeError, KeyError, ValueError) as exc:
                 last_error = str(exc)
                 logger.warning(
-                    "LLM call attempt %d/%d failed: %s",
+                    "LLM 调用第 %d/%d 次失败: %s",
                     attempt + 1,
                     max_retries + 1,
                     last_error,
                 )
                 if attempt == max_retries:
                     raise LLMError(
-                        f"LLM call failed after {max_retries + 1} attempts: {last_error}"
+                        f"LLM 调用在 {max_retries + 1} 次尝试后失败: {last_error}"
                     ) from exc
 
-        raise LLMError(f"LLM call failed: {last_error}")
+        raise LLMError(f"LLM 调用失败: {last_error}")
 
     @staticmethod
     def _validate(data: dict[str, Any], schema: dict[str, Any]) -> None:
-        """Basic JSON schema validation (required fields check)."""
+        """基础 JSON Schema 校验（必填字段检查）。"""
         required = schema.get("required", [])
         for field in required:
             if field not in data:
-                raise ValueError(f"Missing required field: {field}")
+                raise ValueError(f"缺少必填字段: {field}")
 
 
 class EmbeddingClient:
-    """Volcengine ARK Embedding client (multimodal API)."""
-
-    @staticmethod
-    def _headers(api_key: str) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+    """火山引擎方舟 Embedding 客户端 — 基于 Ark SDK，调用 multimodal_embeddings。"""
 
     def embed_text(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for a list of texts. Calls API once per text."""
+        """生成文本嵌入向量，逐条调用 multimodal_embeddings API。
+
+        参数:
+            texts: 待嵌入的文本列表
+
+        返回:
+            嵌入向量列表，与输入顺序一一对应
+        """
+        if not texts:
+            return []
+
         settings = get_settings(reload_env=True)
-        base = settings.base_url.rstrip("/")
+
+        if not settings.api_key:
+            raise LLMError("VOLCENGINE_API_KEY 未配置")
+
+        client = Ark(api_key=settings.api_key)
         model = settings.embedding_model
-        api_key = settings.api_key
-        if not api_key:
-            raise LLMError("VOLCENGINE_API_KEY is not configured")
         embeddings: list[list[float]] = []
-        for text in texts:
-            try:
-                resp = httpx.post(
-                    f"{base}/embeddings/multimodal",
-                    headers=self._headers(api_key),
-                    json={
-                        "model": model,
-                        "input": [{"type": "text", "text": text}],
-                        "dimensions": 1024,
-                        "encoding_format": "float",
-                    },
-                    timeout=60.0,
+
+        try:
+            for text in texts:
+                resp = client.multimodal_embeddings.create(
+                    model=model,
+                    input=[{"type": "text", "text": text}],
+                    dimensions=1024,
                 )
-                resp.raise_for_status()
-                data = resp.json()
-                # Response: {"data": {"embedding": [...], "object": "embedding"}}
-                emb = data["data"]["embedding"]
-                embeddings.append(emb)
-            except (KeyError, httpx.HTTPError) as exc:
-                raise LLMError(f"Embedding call failed: {exc}") from exc
+                embeddings.append(list(resp.data.embedding))
+            return embeddings
 
-        return embeddings
+        except Exception as exc:
+            raise LLMError(f"Embedding 调用失败: {exc}") from exc
 
 
-# Singleton instances
+# 模块级单例
 llm_client = LLMClient()
 embedding_client = EmbeddingClient()

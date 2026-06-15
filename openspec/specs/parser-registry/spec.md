@@ -10,12 +10,15 @@
 
 系统 SHALL 维护一个解析器注册表，支持注册多个 `DocumentParser` 实现，并根据 `source_type` 返回匹配的解析器。
 
-#### Scenario: 注册 MarkdownParser 和 DocxParser
+#### Scenario: 注册 MarkdownParser、DocxParser、XlsxParser、HtmlParser 和 PptxParser
 
-- **WHEN** 向注册表注册 `MarkdownParser`（`SUPPORTED_TYPES={"markdown", "md", "txt", "text"}`）和 `DocxParser`（`SUPPORTED_TYPES={"docx"}`）
+- **WHEN** 向注册表注册 `MarkdownParser`（`SUPPORTED_TYPES={"markdown", "md", "txt", "text"}`）、`DocxParser`（`SUPPORTED_TYPES={"docx"}`）、`XlsxParser`（`SUPPORTED_TYPES={"xlsx"}`）、`HtmlParser`（`SUPPORTED_TYPES={"html", "htm"}`）和 `PptxParser`（`SUPPORTED_TYPES={"pptx"}`）
 - **THEN** `registry.get("markdown")` 返回 MarkdownParser 实例
 - **AND** `registry.get("docx")` 返回 DocxParser 实例
-- **AND** `registry.get("MD")` 大小写不敏感返回 MarkdownParser 实例
+- **AND** `registry.get("xlsx")` 返回 XlsxParser 实例
+- **AND** `registry.get("html")` 和 `registry.get("htm")` 返回 HtmlParser 实例
+- **AND** `registry.get("pptx")` 返回 PptxParser 实例
+- **AND** `registry.get("MD")`、`registry.get("XLSX")`、`registry.get("HTML")` 和 `registry.get("PPTX")` 大小写不敏感返回对应解析器实例
 
 #### Scenario: 未注册的 source_type
 
@@ -36,6 +39,9 @@
 - **WHEN** 提交 `source_type="docx"` 的文档入库
 - **THEN** 管线通过注册表获取 DocxParser 并执行解析
 - **AND** 提交 `source_type="markdown"` 的文档时使用 MarkdownParser
+- **AND** 提交 `source_type="xlsx"` 的文档时使用 XlsxParser
+- **AND** 提交 `source_type="html"` 或 `"htm"` 的文档时使用 HtmlParser
+- **AND** 提交 `source_type="pptx"` 的文档时使用 PptxParser
 
 #### Scenario: 无匹配解析器时返回错误
 

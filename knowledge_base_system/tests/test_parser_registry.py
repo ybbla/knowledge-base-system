@@ -3,7 +3,12 @@ import logging
 import pytest
 
 from parsers.base import DocumentParser, ParseResult
+from parsers.docx_parser import DocxParser
+from parsers.html_parser import HtmlParser
+from parsers.markdown_parser import MarkdownParser
+from parsers.pptx_parser import PptxParser
 from parsers.registry import ParserRegistry, UnsupportedFormatError
+from parsers.xlsx_parser import XlsxParser
 
 
 class _FakeParserA(DocumentParser):
@@ -70,3 +75,17 @@ class TestParserRegistry:
         registry.register(_FakeParserA())
         assert "alpha" in registry.supported_types
         assert "beta" in registry.supported_types
+
+    def test_register_real_document_parsers(self):
+        registry = ParserRegistry()
+        registry.register(MarkdownParser(), DocxParser(), XlsxParser(), HtmlParser(), PptxParser())
+
+        assert isinstance(registry.get("markdown"), MarkdownParser)
+        assert isinstance(registry.get("docx"), DocxParser)
+        assert isinstance(registry.get("xlsx"), XlsxParser)
+        assert isinstance(registry.get("XLSX"), XlsxParser)
+        assert isinstance(registry.get("html"), HtmlParser)
+        assert isinstance(registry.get("htm"), HtmlParser)
+        assert isinstance(registry.get("HTML"), HtmlParser)
+        assert isinstance(registry.get("pptx"), PptxParser)
+        assert isinstance(registry.get("PPTX"), PptxParser)

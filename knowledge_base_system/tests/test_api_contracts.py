@@ -29,6 +29,11 @@ class _FakeIngestionPipeline:
 def test_upload_defaults_and_writes_file(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(upload_api, "UPLOAD_DIR", Path("data/uploads"))
+    monkeypatch.setattr(
+        upload_api,
+        "get_settings",
+        lambda reload_env=False: SimpleNamespace(minio_enabled=False),
+    )
 
     response = client.post(
         "/upload",

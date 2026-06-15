@@ -131,15 +131,12 @@ class IngestionPipeline:
                 max_depth=options.get("max_depth"),
                 max_elements=options.get("max_elements_per_doc"),
             )
-            # 优先使用已读取的 raw_content（MinIO 源已在上面设置到 doc.metadata 中）
-            effective_raw = doc.metadata.get("raw_content", raw_content)
-            all_docs, all_elements = loader.load(doc, effective_raw)
+            all_docs, embedded_elements = loader.load_embedded(doc, elements)
             for d in all_docs:
-                if d.doc_id != doc.doc_id:
-                    job.doc_ids.append(d.doc_id)
-                    if self._document_repo:
-                        self._document_repo.create(d)
-            elements.extend(all_elements)  # include elements from embedded docs
+                job.doc_ids.append(d.doc_id)
+                if self._document_repo:
+                    self._document_repo.create(d)
+            elements.extend(embedded_elements)
 
             if self._element_repo and elements:
                 self._element_repo.create_batch(elements)
