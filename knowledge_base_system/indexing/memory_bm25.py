@@ -57,8 +57,13 @@ class MemoryBM25Index(BM25Index):
         eligible_indices = [
             i
             for i, chunk_id in enumerate(self._chunk_ids)
-            if category is None
-            or self._metadata.get(chunk_id, {}).get("category") == category
+            if (
+                self._metadata.get(chunk_id, {}).get("status", "active") == "active"
+                and (
+                    category is None
+                    or self._metadata.get(chunk_id, {}).get("category") == category
+                )
+            )
         ]
         sorted_indices = sorted(
             eligible_indices, key=lambda i: scores[i], reverse=True

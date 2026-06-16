@@ -110,13 +110,7 @@ retrieval_pipeline = RetrievalPipeline(
 
 
 def rebuild_retrieval_indexes_from_chunks(category: str | None = None) -> int:
-    """Rebuild in-memory retrieval indexes from the configured chunk store.
-
-    Phase 2 persists chunks in PostgreSQL but still keeps Vector/BM25 indexes
-    in memory. This helper is intentionally explicit so evaluation or startup
-    checks can repopulate the existing /search path without introducing a
-    separate PG-only retrieval implementation.
-    """
+    """从已持久化的知识块重建内存检索索引。仅恢复 status='active' 的块。"""
     if hasattr(chunk_store, "list_all"):
         chunks = chunk_store.list_all(category=category)
     else:
@@ -124,8 +118,11 @@ def rebuild_retrieval_indexes_from_chunks(category: str | None = None) -> int:
         if category is not None:
             chunks = [chunk for chunk in chunks if chunk.category == category]
 
+    # ── 仅索引活跃知识块 ──
+    chunks = [c for c in chunks if c.status.value == "active"]
+
     for chunk in chunks:
-        bm25_index.add(chunk.chunk_id, chunk.content, metadata={"category": chunk.category})
+        bm25_index.add(chunk.chunk_id, chunk.content, metadata={"category": chunk.category, "status": "active"})
 
     if chunks:
         vectors = embedding_client.embed_text([chunk.content for chunk in chunks])
@@ -137,6 +134,7 @@ def rebuild_retrieval_indexes_from_chunks(category: str | None = None) -> int:
                     "doc_id": chunk.doc_id,
                     "category": chunk.category,
                     "knowledge_type": chunk.knowledge_type.value,
+                    "status": chunk.status.value,
                     "title_path": chunk.metadata.get("title_path", []),
                     "source_refs": [
                         ref.model_dump(mode="json") for ref in chunk.source_refs
@@ -160,6 +158,8 @@ def recover_pending_chunk_indexes(limit: int | None = None) -> int:
         [ChunkIndexStatus.pending, ChunkIndexStatus.indexing],
         limit=limit,
     )
+    # ── 仅恢复活跃知识块（superseded 的不应被重新索引） ──
+    chunks = [c for c in chunks if c.status.value == "active"]
     if not chunks:
         return 0
 

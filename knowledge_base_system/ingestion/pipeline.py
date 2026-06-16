@@ -18,7 +18,7 @@ from app.core.models import (
     ParsedElement,
 )
 from assets.base import AssetStore
-from assets.image_processor import process_image
+from assets.image_processor import process_image, process_video
 from assets.minio_store import MinioAssetStore, read_uri_bytes
 from indexing.base import BM25Index, VectorIndex
 from ingestion.recursive_loader import RecursiveLoader
@@ -77,14 +77,15 @@ class IngestionPipeline:
         doc: Document,
         raw_content: str = "",
         options: dict[str, Any] | None = None,
+        is_update: bool = False,
     ) -> JobStatus:
-        """Submit a document for ingestion. Returns immediately with job status."""
+        """提交文档入库任务。is_update=True 时走增量更新流程。"""
         job = JobStatus(doc.ingest_job_id or doc.doc_id)
         self._jobs[job.job_id] = job
 
         thread = threading.Thread(
             target=self._run,
-            args=(doc, raw_content, job, options or {}),
+            args=(doc, raw_content, job, options or {}, is_update),
             daemon=True,
         )
         thread.start()
@@ -99,6 +100,7 @@ class IngestionPipeline:
         raw_content: str,
         job: JobStatus,
         options: dict[str, Any],
+        is_update: bool = False,
     ) -> None:
         job.status = "processing"
         job.started_at = datetime.now(timezone.utc)
@@ -106,57 +108,14 @@ class IngestionPipeline:
         try:
             doc.status = DocStatus.processing
             doc.updated_at = datetime.now(timezone.utc)
-            if self._document_repo:
-                self._document_repo.create(doc)
 
-            # 1. 解析文档。MinIO 源文件先读取为 raw_content 交给现有解析器。
-            if doc.source_uri.startswith("minio://"):
-                raw = read_uri_bytes(doc.source_uri, self._minio_store)
-                if doc.source_type.lower() in {"markdown", "md", "txt", "text"}:
-                    doc.metadata["raw_content"] = raw.decode("utf-8")
-                else:
-                    doc.metadata["raw_content"] = raw
-            parser = self._parser_registry.get(doc.source_type)
-            result = parser.parse(doc)
-            doc = result.doc
-            elements = result.elements
-            assets = result.assets
-            assets = self._prepare_assets(assets)
-            job.asset_count = len(assets)
-            job.doc_ids.append(doc.doc_id)
+            if is_update and self._document_repo:
+                # ── 更新分支：乐观锁检查，旧 chunk 淘汰由 _update_existing_doc 处理 ──
+                self._run_update(doc, raw_content, job, options)
+            else:
+                # ── 新建分支 ──
+                self._run_create(doc, raw_content, job, options)
 
-            # 2. Recursive loading for embedded docs
-            loader = RecursiveLoader(
-                parser_fn=parser.parse,
-                max_depth=options.get("max_depth"),
-                max_elements=options.get("max_elements_per_doc"),
-            )
-            all_docs, embedded_elements = loader.load_embedded(doc, elements)
-            for d in all_docs:
-                job.doc_ids.append(d.doc_id)
-                if self._document_repo:
-                    self._document_repo.create(d)
-            elements.extend(embedded_elements)
-
-            if self._element_repo and elements:
-                self._element_repo.create_batch(elements)
-
-            # 3. Semantic extraction
-            chunks = self._extractor.extract(
-                elements, assets, doc.ingest_job_id, doc.category
-            )
-            self._attach_unreferenced_video_assets(chunks, assets)
-            job.chunk_count = len(chunks)
-
-            # 4. Embedding and indexing
-            if chunks:
-                self._index_chunks(chunks)
-
-            # Update doc status
-            doc.status = DocStatus.active
-            doc.updated_at = datetime.now(timezone.utc)
-            if self._document_repo:
-                self._document_repo.update(doc)
             job.status = "completed"
 
         except Exception as exc:
@@ -173,6 +132,171 @@ class IngestionPipeline:
 
         job.finished_at = datetime.now(timezone.utc)
 
+    def _run_create(
+        self,
+        doc: Document,
+        raw_content: str,
+        job: JobStatus,
+        options: dict[str, Any],
+    ) -> None:
+        """新建文档入库流程。"""
+        if self._document_repo:
+            self._document_repo.create(doc)
+
+        # 1. 解析文档
+        if doc.source_uri.startswith("minio://"):
+            raw = read_uri_bytes(doc.source_uri, self._minio_store)
+            if doc.source_type.lower() in {"markdown", "md", "txt", "text"}:
+                doc.metadata["raw_content"] = raw.decode("utf-8")
+            else:
+                doc.metadata["raw_content"] = raw
+        parser = self._parser_registry.get(doc.source_type)
+        result = parser.parse(doc)
+        doc = result.doc
+        elements = result.elements
+        assets = result.assets
+        assets = self._prepare_assets(assets)
+        job.asset_count = len(assets)
+        job.doc_ids.append(doc.doc_id)
+
+        # 2. 递归加载嵌入子文档
+        loader = RecursiveLoader(
+            parser_fn=parser.parse,
+            max_depth=options.get("max_depth"),
+            max_elements=options.get("max_elements_per_doc"),
+        )
+        all_docs, embedded_elements = loader.load_embedded(doc, elements)
+        for d in all_docs:
+            job.doc_ids.append(d.doc_id)
+            if self._document_repo:
+                self._document_repo.create(d)
+        elements.extend(embedded_elements)
+
+        if self._element_repo and elements:
+            self._element_repo.create_batch(elements)
+
+        # 3. 语义抽取
+        chunks = self._extractor.extract(
+            elements, assets, doc.ingest_job_id, doc.category
+        )
+        self._attach_unreferenced_video_assets(chunks, assets)
+        job.chunk_count = len(chunks)
+
+        # 4. 索引
+        if chunks:
+            self._index_chunks(chunks)
+
+        # 5. 更新文档状态
+        doc.status = DocStatus.active
+        doc.updated_at = datetime.now(timezone.utc)
+        if self._document_repo:
+            self._document_repo.update(doc)
+
+    def _run_update(
+        self,
+        doc: Document,
+        raw_content: str,
+        job: JobStatus,
+        options: dict[str, Any],
+    ) -> None:
+        """增量更新已有文档，级联处理嵌入子文档。"""
+        # 0. 乐观锁：先更新 status 为 processing，version += 1
+        doc.version += 1
+        if self._document_repo:
+            self._document_repo.update(doc)
+
+        # 1. 级联查找所有需要更新的文档（root + children）
+        docs_to_update: list[Document] = [doc]
+        if self._document_repo:
+            children = self._document_repo.list(root_doc_id=doc.doc_id)
+            for child in children:
+                child.version = doc.version
+                child.status = DocStatus.processing
+                self._document_repo.update(child)
+                docs_to_update.append(child)
+
+        all_new_chunks: list[KnowledgeChunk] = []
+        all_old_chunk_ids: list[str] = []
+
+        for target_doc in docs_to_update:
+            # 收集旧知识块 ID（用于后续 Milvus 状态同步）
+            if self._chunk_store and hasattr(self._chunk_store, "list_by_doc_id"):
+                old_chunks = self._chunk_store.list_by_doc_id(target_doc.doc_id)
+                all_old_chunk_ids.extend(
+                    c.chunk_id for c in old_chunks if c.status.value == "active"
+                )
+
+            # 2. 解析文档
+            if target_doc.source_uri.startswith("minio://"):
+                raw = read_uri_bytes(target_doc.source_uri, self._minio_store)
+                if target_doc.source_type.lower() in {"markdown", "md", "txt", "text"}:
+                    target_doc.metadata["raw_content"] = raw.decode("utf-8")
+                else:
+                    target_doc.metadata["raw_content"] = raw
+            parser = self._parser_registry.get(target_doc.source_type)
+            result = parser.parse(target_doc)
+            target_doc = result.doc
+            elements = result.elements
+            assets = result.assets
+            assets = self._prepare_assets(assets)
+            job.asset_count += len(assets)
+            job.doc_ids.append(target_doc.doc_id)
+
+            # 3. 递归加载嵌入子文档（更新模式下子文档可能变化）
+            loader = RecursiveLoader(
+                parser_fn=parser.parse,
+                max_depth=options.get("max_depth"),
+                max_elements=options.get("max_elements_per_doc"),
+            )
+            all_docs, embedded_elements = loader.load_embedded(target_doc, elements)
+            for d in all_docs:
+                if d.doc_id not in [td.doc_id for td in docs_to_update]:
+                    job.doc_ids.append(d.doc_id)
+                    if self._document_repo:
+                        d.version = doc.version
+                        d.status = DocStatus.active
+                        self._document_repo.create(d)
+            elements.extend(embedded_elements)
+
+            # 4. 持久化解析元素（doc_version 使用新版本号）
+            for el in elements:
+                el.doc_version = doc.version
+            if self._element_repo and elements:
+                self._element_repo.create_batch(elements)
+
+            # 5. 语义抽取
+            chunks = self._extractor.extract(
+                elements, assets, target_doc.ingest_job_id, target_doc.category
+            )
+            self._attach_unreferenced_video_assets(chunks, assets)
+            job.chunk_count += len(chunks)
+            all_new_chunks.extend(chunks)
+
+        # 6. 索引新知识块（先写后淘汰）
+        if all_new_chunks:
+            self._index_chunks(all_new_chunks)
+
+        # 7. 标记旧知识块为 superseded（PostgreSQL + Milvus 双标记，原子操作）
+        if all_old_chunk_ids:
+            try:
+                if self._chunk_store and hasattr(self._chunk_store, "bulk_update_status_by_doc_id"):
+                    for target_doc in docs_to_update:
+                        self._chunk_store.bulk_update_status_by_doc_id(
+                            target_doc.doc_id, "superseded"
+                        )
+                self._vector_index.update_status_batch(all_old_chunk_ids, "superseded")
+                self._bm25_index.update_status_batch(all_old_chunk_ids, "superseded")
+            except Exception:
+                logger.exception("旧知识块状态同步失败（PG+Milvus），索引中可能残留旧版本块")
+
+        # 8. 更新文档状态
+        for target_doc in docs_to_update:
+            target_doc.status = DocStatus.active
+            target_doc.updated_at = datetime.now(timezone.utc)
+            target_doc.version = doc.version
+            if self._document_repo:
+                self._document_repo.update(target_doc)
+
     def _prepare_assets(self, assets: list[Asset]) -> list[Asset]:
         """应用资源数量限制，并处理图片资源生命周期。"""
         for idx, asset in enumerate(assets):
@@ -184,6 +308,8 @@ class IngestionPipeline:
 
             if asset.asset_type == AssetType.image:
                 process_image(asset, self._asset_store, self._minio_store)
+            elif asset.asset_type == AssetType.video:
+                process_video(asset, self._asset_store)
             else:
                 self._asset_store.put(asset)
         return assets
@@ -293,6 +419,7 @@ class IngestionPipeline:
             "content": chunk.content,
             "category": chunk.category,
             "knowledge_type": chunk.knowledge_type.value,
+            "status": chunk.status.value,
             "title_path": chunk.metadata.get("title_path", []),
             "source_refs": [
                 ref.model_dump(mode="json")

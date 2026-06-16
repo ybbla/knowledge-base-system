@@ -2,7 +2,7 @@ import hashlib
 import logging
 from pathlib import Path
 
-from app.core.config import settings
+from app.core.config import get_settings, settings
 from app.core.models import Asset, AssetStatus
 from assets.base import AssetStore
 from assets.minio_store import MinioAssetStore, make_minio_key, read_uri_bytes
@@ -54,6 +54,21 @@ def process_image(
             asset_store.put(asset)
             return asset
 
+        # 视觉理解：调用多模态模型生成图片内容描述
+        cfg = get_settings(reload_env=True)
+        if cfg.image_vision_enabled:
+            try:
+                from llm.volcengine_client import llm_client
+
+                description = llm_client.describe_image(data, mime_type)
+                if description:
+                    asset.extracted_text = description
+                else:
+                    logger.warning("图片 %s 视觉理解返回空结果", asset.asset_id)
+            except Exception:
+                logger.exception("图片 %s 视觉理解失败，继续上传 MinIO", asset.asset_id)
+                # 视觉失败不阻塞入库——图片仍然上传
+
         if minio_store is not None:
             file_name = asset.metadata.get("file_name") or Path(asset.original_uri).name
             key = make_minio_key(asset.doc_id, file_name or f"{asset.asset_id}.bin", asset.asset_id)
@@ -76,6 +91,37 @@ def process_image(
         asset.error_message = str(exc)
         asset_store.put(asset)
         return asset
+
+
+def process_video(
+    asset: Asset,
+    asset_store: AssetStore,
+) -> Asset:
+    """处理视频 Asset：尝试调用多模态模型生成内容总结。
+
+    仅对可获取字节（`_data` 属性非空）的视频调用视觉理解。
+    外链视频（无字节）直接跳过，不调用视觉模型。
+    """
+    data = getattr(asset, "_data", None)
+    if data is None:
+        # 外链视频，无字节可处理
+        asset_store.put(asset)
+        return asset
+
+    try:
+        from llm.volcengine_client import llm_client
+
+        description = llm_client.describe_video(data, asset.mime_type or "video/mp4")
+        if description:
+            asset.extracted_text = description
+        else:
+            logger.warning("视频 %s 视觉理解返回空结果", asset.asset_id)
+    except Exception:
+        logger.exception("视频 %s 视觉理解失败", asset.asset_id)
+        # 失败不阻塞——Asset 仍然落存储
+
+    asset_store.put(asset)
+    return asset
 
 
 def sniff_image_mime(data: bytes) -> str | None:

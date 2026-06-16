@@ -24,9 +24,9 @@ def hybrid_search(
 
     from pymilvus import AnnSearchRequest, RRFRanker
 
-    expr = None
+    expr = 'status == "active"'
     if category is not None:
-        expr = f'category == "{_escape_expr_value(category)}"'
+        expr = f'(category == "{_escape_expr_value(category)}") && (status == "active")'
 
     dense_req = AnnSearchRequest(
         data=[[float(v) for v in dense_vector]],

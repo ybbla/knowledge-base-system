@@ -60,8 +60,13 @@ class MemoryVectorIndex(VectorIndex):
         eligible_indices = [
             i
             for i, chunk_id in enumerate(self._chunk_ids)
-            if category is None
-            or self._metadata.get(chunk_id, {}).get("category") == category
+            if (
+                self._metadata.get(chunk_id, {}).get("status", "active") == "active"
+                and (
+                    category is None
+                    or self._metadata.get(chunk_id, {}).get("category") == category
+                )
+            )
         ]
         if not eligible_indices:
             return []

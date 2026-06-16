@@ -184,6 +184,7 @@ def ingest(client: TestClient, up_body: dict, source_type: str, category: str) -
             "title": up_body.get("title", ""),
             "source_type": source_type,
             "source_uri": up_body.get("source_uri", ""),
+            "source_hash": up_body.get("source_hash", ""),
             "category": category,
         }],
         "options": {"max_depth": 1, "extract_assets": True},

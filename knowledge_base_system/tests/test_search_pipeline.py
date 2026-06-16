@@ -117,6 +117,7 @@ class TestSearchPipeline:
                         "title": "Product Manual",
                         "source_type": "markdown",
                         "source_uri": upload_data["source_uri"],
+                        "source_hash": upload_data.get("source_hash", ""),
                         "category": "manuals",
                     }
                 ],

@@ -23,6 +23,10 @@ class VectorIndex(ABC):
     @abstractmethod
     def delete(self, chunk_id: str) -> None: ...
 
+    def update_status_batch(self, chunk_ids: list[str], status: str) -> None:
+        """批量更新知识块状态（默认空实现，子类按需覆盖）。"""
+        pass
+
     @abstractmethod
     def search(
         self,
@@ -54,6 +58,10 @@ class BM25Index(ABC):
 
     @abstractmethod
     def delete(self, chunk_id: str) -> None: ...
+
+    def update_status_batch(self, chunk_ids: list[str], status: str) -> None:
+        """批量更新知识块状态（默认空实现，子类按需覆盖）。"""
+        pass
 
     @abstractmethod
     def search(

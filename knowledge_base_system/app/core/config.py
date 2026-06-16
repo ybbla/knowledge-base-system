@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     max_asset_size_mb: int = Field(default=100, validation_alias="MAX_ASSET_SIZE_MB")
     max_assets_per_doc: int = Field(default=100, validation_alias="MAX_ASSETS_PER_DOC")
 
+    # 多模态视觉理解
+    image_vision_enabled: bool = Field(default=True, validation_alias="IMAGE_VISION_ENABLED")
+
     def reload_runtime_env(self) -> "Settings":
         """按需刷新运行期可调配置，支持评测和线上调参无需重启。"""
         fresh = type(self)()

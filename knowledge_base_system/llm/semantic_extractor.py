@@ -135,7 +135,7 @@ class SemanticExtractor:
     ) -> list[KnowledgeChunk]:
         """Send one window to LLM and parse resulting chunks."""
         title_path = self._get_title_path(elements)
-        elements_json = self._elements_to_json(elements)
+        elements_json = self._elements_to_json(elements, assets)
         messages = build_extraction_messages(title_path, elements_json)
 
         try:
@@ -159,8 +159,22 @@ class SemanticExtractor:
         return []
 
     @staticmethod
-    def _elements_to_json(elements: list[ParsedElement]) -> str:
-        """Serialize elements for LLM input."""
+    def _elements_to_json(
+        elements: list[ParsedElement],
+        assets: list[Asset] | None = None,
+    ) -> str:
+        """Serialize elements for LLM input, injecting asset visual descriptions."""
+        # Build a lookup of assets with extracted_text
+        asset_descriptions: dict[str, dict[str, str]] = {}
+        if assets:
+            for asset in assets:
+                if asset.extracted_text:
+                    asset_descriptions[asset.asset_id] = {
+                        "asset_id": asset.asset_id,
+                        "asset_type": asset.asset_type.value,
+                        "description": asset.extracted_text,
+                    }
+
         items = []
         for el in elements:
             item: dict[str, Any] = {
@@ -173,6 +187,14 @@ class SemanticExtractor:
                 item["structured_data"] = el.structured_data
             if el.asset_ids:
                 item["asset_ids"] = el.asset_ids
+                # 注入具有视觉描述的 Asset 信息
+                descriptions = [
+                    asset_descriptions[aid]
+                    for aid in el.asset_ids
+                    if aid in asset_descriptions
+                ]
+                if descriptions:
+                    item["asset_descriptions"] = descriptions
             if el.embedded_doc_id:
                 item["embedded_doc_id"] = el.embedded_doc_id
             items.append(item)

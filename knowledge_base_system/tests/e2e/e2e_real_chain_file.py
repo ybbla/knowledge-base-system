@@ -363,6 +363,7 @@ def _post_ingest(
                 "title": upload_body.get("title", input_file.title),
                 "source_type": input_file.source_type,
                 "source_uri": upload_body.get("source_uri"),
+                "source_hash": upload_body.get("source_hash", ""),
                 "category": upload_body.get("category", input_file.category),
             }
         ],

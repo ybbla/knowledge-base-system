@@ -117,6 +117,7 @@ def test_ingest_defaults_category_and_returns_202(monkeypatch):
                     "title": "Manual",
                     "source_type": "markdown",
                     "source_uri": "file://data/uploads/manual.md",
+                    "source_hash": "sha256:test",
                 }
             ]
         },

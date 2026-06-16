@@ -16,3 +16,15 @@ class IndexingError(KnowledgeBaseError):
 
 class RetrievalError(KnowledgeBaseError):
     """Retrieval pipeline failed."""
+
+
+class DuplicateDocumentError(KnowledgeBaseError):
+    """尝试创建已存在的文档时抛出。"""
+
+
+class VersionConflictError(KnowledgeBaseError):
+    """文档乐观锁版本冲突——并发更新导致 version 不匹配。"""
+
+
+class DocumentNotFoundError(KnowledgeBaseError):
+    """指定的文档不存在。"""

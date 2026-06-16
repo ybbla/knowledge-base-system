@@ -29,6 +29,7 @@ def _default_entity(chunk_id: str) -> dict[str, Any]:
         "sparse_vector": {},
         "category": "",
         "knowledge_type": "",
+        "status": "active",
         "title_path": "[]",
         "source_refs": "[]",
         "asset_refs": "[]",
@@ -69,9 +70,19 @@ class MilvusCollectionManager:
 
         if utility.has_collection(self.collection_name, using=self.alias):
             self.collection = Collection(self.collection_name, using=self.alias)
-            self.ensure_sparse_index()
-            self.collection.load()
-            return
+            # ── Schema 迁移检测：若已有 Collection 缺少 status 字段则重建 ──
+            existing_fields = {f.name for f in self.collection.schema.fields}
+            if "status" not in existing_fields:
+                logger.warning(
+                    "Milvus Collection '%s' 缺少 status 字段，自动重建...",
+                    self.collection_name,
+                )
+                utility.drop_collection(self.collection_name, using=self.alias)
+                self.collection = None
+            else:
+                self.ensure_sparse_index()
+                self.collection.load()
+                return
 
         fields = [
             FieldSchema(
@@ -86,6 +97,7 @@ class MilvusCollectionManager:
             FieldSchema(name="sparse_vector", dtype=DataType.SPARSE_FLOAT_VECTOR),
             FieldSchema(name="category", dtype=DataType.VARCHAR, max_length=256),
             FieldSchema(name="knowledge_type", dtype=DataType.VARCHAR, max_length=64),
+            FieldSchema(name="status", dtype=DataType.VARCHAR, max_length=32),
             FieldSchema(name="title_path", dtype=DataType.VARCHAR, max_length=65535),
             FieldSchema(name="source_refs", dtype=DataType.VARCHAR, max_length=65535),
             FieldSchema(name="asset_refs", dtype=DataType.VARCHAR, max_length=65535),
@@ -159,6 +171,39 @@ class MilvusCollectionManager:
         self.collection.delete(expr=f'chunk_id == "{_escape_expr_value(chunk_id)}"')
         self.collection.flush()
 
+    def update_status_batch(self, chunk_ids: list[str], status: str) -> None:
+        """批量更新知识块的 status 字段，保留原有向量和元数据不变。
+
+        通过 query 查询现有实体并替换 status 字段后 upsert。
+        """
+        if not chunk_ids:
+            return
+        self.ensure_collection()
+        if self.collection is None:
+            raise RuntimeError("Milvus collection is not initialized")
+
+        escaped_ids = ", ".join(
+            f'"{_escape_expr_value(cid)}"' for cid in chunk_ids
+        )
+        results = self.collection.query(
+            expr=f"chunk_id in [{escaped_ids}]",
+            output_fields=["*"],
+        )
+        entities = []
+        for row in results:
+            entity = dict(row)
+            entity["status"] = status
+            entities.append(entity)
+
+        if entities:
+            self.collection.upsert(entities)
+            self.collection.flush()
+            # 同步更新内存缓存
+            for entity in entities:
+                cid = entity["chunk_id"]
+                if cid in self._cache:
+                    self._cache[cid]["status"] = status
+
 
 class MilvusVectorIndex(VectorIndex):
     """基于 Milvus 的 dense vector 索引实现。"""
@@ -212,6 +257,7 @@ class MilvusVectorIndex(VectorIndex):
             "content": str(metadata.get("content", ""))[:65535],
             "category": str(metadata.get("category", "")),
             "knowledge_type": str(metadata.get("knowledge_type", "")),
+            "status": str(metadata.get("status", "active")),
             "created_at": int(time.time()),
         }
         for key in JSON_TEXT_FIELDS:
@@ -220,6 +266,10 @@ class MilvusVectorIndex(VectorIndex):
 
     def delete(self, chunk_id: str) -> None:
         self._manager.delete(chunk_id)
+
+    def update_status_batch(self, chunk_ids: list[str], status: str) -> None:
+        """将一批知识块的 status 更新为指定值（保留原有向量和元数据）。"""
+        self._manager.update_status_batch(chunk_ids, status)
 
     def search(
         self,
@@ -232,9 +282,9 @@ class MilvusVectorIndex(VectorIndex):
         if collection is None:
             raise RuntimeError("Milvus collection is not initialized")
 
-        expr = None
+        expr = 'status == "active"'
         if category is not None:
-            expr = f'category == "{_escape_expr_value(category)}"'
+            expr = f'(category == "{_escape_expr_value(category)}") && (status == "active")'
 
         results = collection.search(
             data=[[float(v) for v in query_vector]],

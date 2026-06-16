@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, UploadFile
 
 from app.core.config import get_settings
+from app.core.deps import document_repo
 from app.core.models import new_id
 from app.core.paths import UPLOAD_DIR, UPLOAD_URI_PREFIX
 from assets.memory_store import MemoryAssetStore
@@ -30,6 +31,22 @@ async def upload_file(
     original_name = file.filename or "upload"
     source_hash, size = _hash_upload(file)
     doc_id = new_id("doc")
+
+    # ── 上传阶段去重：按 source_hash 查 DB，命中活跃文档则不写 MinIO ──
+    if document_repo is not None:
+        existing = document_repo.find_by_hash(source_hash)
+        if existing is not None:
+            return {
+                "duplicate": True,
+                "existing_doc_id": existing.doc_id,
+                "source_uri": existing.source_uri,
+                "source_hash": source_hash,
+                "doc_id": doc_id,
+                "file_name": original_name,
+                "size": size,
+                "title": title or Path(original_name).stem,
+                "category": category or DEFAULT_CATEGORY,
+            }
 
     if cfg.minio_enabled:
         try:

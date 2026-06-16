@@ -163,6 +163,34 @@ class PgChunkStore:
                 row.index_error = error
             session.commit()
 
+    def list_by_doc_id(self, doc_id: str) -> list[KnowledgeChunk]:
+        """按文档 ID 查找所有知识块。"""
+        with self._session_factory() as session:
+            db_chunks = (
+                session.query(DbKnowledgeChunk)
+                .filter_by(doc_id=doc_id)
+                .order_by(DbKnowledgeChunk.chunk_id)
+                .all()
+            )
+            return [self._from_db(c) for c in db_chunks]
+
+    def bulk_update_status_by_doc_id(self, doc_id: str, status: str) -> None:
+        """将指定文档下所有 status='active' 的 chunk 批量更新为新状态。"""
+        from datetime import datetime, timezone
+
+        with self._session_factory() as session:
+            rows = (
+                session.query(DbKnowledgeChunk)
+                .filter(
+                    DbKnowledgeChunk.doc_id == doc_id,
+                    DbKnowledgeChunk.status == "active",
+                )
+                .all()
+            )
+            for row in rows:
+                row.status = status
+            session.commit()
+
     def count(self) -> int:
         with self._session_factory() as session:
             return session.query(DbKnowledgeChunk).count()

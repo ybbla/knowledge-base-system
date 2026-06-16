@@ -44,6 +44,20 @@ def ensure_runtime_schema() -> None:
         "index_error": "ALTER TABLE knowledge_chunks ADD COLUMN index_error TEXT",
     }
 
+    # 去重与增量更新所需索引（仅 PostgreSQL）
+    if dialect == "postgresql" and "documents" in inspector.get_table_names():
+        doc_columns = {col["name"] for col in inspector.get_columns("documents")}
+        if "source_hash" in doc_columns:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_source_hash_active "
+                    "ON documents (source_hash) WHERE status = 'active'"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_documents_source_uri "
+                    "ON documents (source_uri)"
+                ))
+
     with engine.begin() as conn:
         for column, ddl in ddl_by_column.items():
             if column not in existing:

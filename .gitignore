@@ -1,6 +1,9 @@
 # Claude
 /.claude/
 
+# CodeGraph
+/.codegraph/
+
 # Environment / secrets
 .env
 *.env.local

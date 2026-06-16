@@ -82,6 +82,7 @@ class MilvusSparseIndex(BM25Index):
                         "doc_id": str(metadata.get("doc_id", "")),
                         "category": str(metadata.get("category", "")),
                         "knowledge_type": str(metadata.get("knowledge_type", "")),
+                        "status": str(metadata.get("status", "active")),
                         "title_path": _json_dumps(metadata.get("title_path", [])),
                         "source_refs": _json_dumps(metadata.get("source_refs", [])),
                         "asset_refs": _json_dumps(metadata.get("asset_refs", [])),
@@ -104,6 +105,10 @@ class MilvusSparseIndex(BM25Index):
             self._persist_idf_stats()
         self._manager.delete(chunk_id)
 
+    def update_status_batch(self, chunk_ids: list[str], status: str) -> None:
+        """将一批知识块的 status 更新为指定值（保留原有向量和元数据）。"""
+        self._manager.update_status_batch(chunk_ids, status)
+
     def search(
         self,
         query: str,
@@ -120,9 +125,9 @@ class MilvusSparseIndex(BM25Index):
         if not sparse_vector:
             return []
 
-        expr = None
+        expr = 'status == "active"'
         if category is not None:
-            expr = f'category == "{_escape_expr_value(category)}"'
+            expr = f'(category == "{_escape_expr_value(category)}") && (status == "active")'
 
         results = collection.search(
             data=[sparse_vector],

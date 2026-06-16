@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>知识库系统 — Knowledge Base</title>
+
+  <!-- 字体: 思源宋体 (显示) + 思源黑体 (正文) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700;900&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- ===================================================================
+       应用外壳
+       =================================================================== -->
+  <div id="app" class="app-shell">
+    <!-- 侧边栏 -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-brand">
+        <h1>知识库</h1>
+        <span>Knowledge Base System</span>
+      </div>
+      <nav class="sidebar-nav" id="sidebarNav">
+        <!-- JS 动态渲染导航项 -->
+      </nav>
+    </aside>
+
+    <!-- 主内容区 -->
+    <div class="main-area">
+      <!-- 顶部栏 -->
+      <header class="topbar">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="菜单">☰</button>
+        <div class="topbar-breadcrumb" id="breadcrumb">
+          <span>仪表盘</span>
+        </div>
+        <div class="topbar-actions">
+          <div class="topbar-status" id="backendStatus">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">检测中…</span>
+          </div>
+          <button class="btn btn-sm btn-secondary" onclick="App.router.navigate('/search')" title="快速搜索">
+            ⌘K
+          </button>
+        </div>
+      </header>
+
+      <!-- 内容区域 -->
+      <main class="content" id="content">
+        <!-- 页面内容由 JS 动态渲染 -->
+        <div class="loading-overlay">
+          <div class="loading-spinner"></div>
+          <span>加载中…</span>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       模态框容器
+       =================================================================== -->
+  <div id="modalContainer"></div>
+
+  <!-- ===================================================================
+       Toast 消息容器
+       =================================================================== -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- ===================================================================
+       JavaScript 模块
+       =================================================================== -->
+  <script src="js/api.js"></script>
+  <script src="js/router.js"></script>
+  <script src="js/components/common.js"></script>
+  <script src="js/components/dashboard.js"></script>
+  <script src="js/components/documents.js"></script>
+  <script src="js/components/document-detail.js"></script>
+  <script src="js/components/search.js"></script>
+  <script src="js/components/ingestion.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

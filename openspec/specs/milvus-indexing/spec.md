@@ -2,24 +2,29 @@
 
 ## Purpose
 
-将向量索引和 BM25 索引从进程内存迁移至可选的 Milvus 后端，实现索引数据持久化。Milvus Collection 同时存储 dense vector（火山 Embedding 1024d）和 sparse vector（jieba + TF-IDF 编码），通过 Hybrid Search API 完成双路融合检索。
+将向量索引和 BM25 索引从进程内存迁移至可选的 Milvus 后端，实现索引数据持久化。Milvus Collection 同时存储 dense vector（火山 Embedding 1024d）和 sparse vector（jieba + TF-IDF 编码），通过 Hybrid Search API 完成双路融合检索。Collection 包含 `status` 字段用于知识块生命周期管理，检索自动过滤非 `active` 块。
 
-> 新建自 change `phase-3-milvus-minio`，日期 2026-06-12。
+> 新建自 change `phase-3-milvus-minio`，日期 2026-06-12；更新自 change `document-dedup-incremental-update`，日期 2026-06-15。
 
 ## Requirements
 
 ### Requirement: Milvus Collection 自动创建与管理
 
-系统 SHALL 在首次启动时自动创建 Milvus Collection，schema 包含 `chunk_id`（VarChar 主键）、`doc_id`（VarChar）、`content`（VarChar）、`dense_vector`（FloatVector 1024d）、`sparse_vector`（SparseFloatVector）、`category`（VarChar）、`knowledge_type`（VarChar）、`title_path`（JSON 字符串 VARCHAR）、`source_refs`（JSON 字符串 VARCHAR）、`asset_refs`（JSON 字符串 VARCHAR）、`metadata`（JSON 字符串 VARCHAR）、`created_at`（Int64）等字段。
+系统 SHALL 在首次启动时自动创建 Milvus Collection，schema 包含 `chunk_id`（VarChar 主键）、`doc_id`（VarChar）、`content`（VarChar）、`dense_vector`（FloatVector 1024d）、`sparse_vector`（SparseFloatVector）、`category`（VarChar）、`knowledge_type`（VarChar）、`status`（VarChar，默认 `"active"`，用于过滤已淘汰知识块）、`title_path`（JSON 字符串 VARCHAR）、`source_refs`（JSON 字符串 VARCHAR）、`asset_refs`（JSON 字符串 VARCHAR）、`metadata`（JSON 字符串 VARCHAR）、`created_at`（Int64）等字段。
 
 #### Scenario: 首次启动自动建 Collection
 
 - **WHEN** Milvus 连接可用且目标 Collection 不存在
 - **THEN** 系统按预定义 schema 创建 Collection，为 `dense_vector` 创建 IVF_FLAT 索引（nlist 可配置，默认 128），为 `sparse_vector` 创建 SPARSE_INVERTED_INDEX
 
-#### Scenario: Collection 已存在时跳过创建
+#### Scenario: Collection 已存在但缺少 status 字段时自动重建
 
-- **WHEN** Milvus 连接可用且目标 Collection 已存在
+- **WHEN** Milvus 连接可用且目标 Collection 已存在，但 schema 中缺少 `status` 字段
+- **THEN** 系统记录 WARNING 日志，删除旧 Collection 并重建（开发阶段策略，满足 Milvus 不支持 ALTER TABLE 的限制）
+
+#### Scenario: Collection 已存在且 schema 完整时跳过创建
+
+- **WHEN** Milvus 连接可用且目标 Collection 已存在且包含 `status` 字段
 - **THEN** 系统加载已有 Collection 到内存，不修改 schema
 
 #### Scenario: Milvus 不可用时回退
@@ -98,6 +103,11 @@
 - **WHEN** 知识块的 category 或 metadata 发生变更
 - **THEN** 系统 upsert Milvus entity，更新对应字段
 
+#### Scenario: 批量更新知识块状态
+
+- **WHEN** 文档更新后旧知识块需要批量淘汰
+- **THEN** 系统通过 `update_status_batch(chunk_ids, "superseded")` 查询现有 entity 并 upsert 修改 `status` 字段，保留向量和元数据不变
+
 ### Requirement: Milvus 索引实现适配抽象接口
 
 系统 SHALL 实现 `MilvusVectorIndex(VectorIndex)` 和 `MilvusSparseIndex(BM25Index)` 类，匹配已有接口契约，使 `RetrievalPipeline` 和 `IngestionPipeline` 无需了解具体索引后端。
@@ -111,3 +121,27 @@
 
 - **WHEN** 实例化 `MilvusSparseIndex`
 - **THEN** 其 `add()`、`delete()`、`search()` 方法签名与 `BM25Index` ABC 完全一致
+
+### Requirement: 检索时自动过滤非 active 知识块
+
+所有 Milvus 检索操作（dense vector search、sparse vector search、hybrid search）SHALL 在搜索表达式（expr）中叠加 `status == "active"` 过滤条件，确保不返回已淘汰的知识块。
+
+#### Scenario: 向量检索只返回 active 知识块
+- **WHEN** 执行 `VectorIndex.search()` 查询
+- **THEN** Milvus search expr 包含 `status == "active"` 条件
+
+#### Scenario: 混合检索只返回 active 知识块
+- **WHEN** 执行 `hybrid_search()` 调用
+- **THEN** 所有 AnnSearchRequest 的 expr 包含 `status == "active"` 条件
+
+#### Scenario: 按 category 过滤时叠加 status 条件
+- **WHEN** 检索请求指定 `category = "产品使用"`
+- **THEN** Milvus expr 为 `(category == "产品使用") && (status == "active")`
+
+### Requirement: Milvus Collection 重建后自动恢复索引
+
+当 Milvus Collection 因 Schema 变更需要重建时，系统 SHALL 在启动时通过 `rebuild_retrieval_indexes_from_chunks` 从 PostgreSQL 中的 `status='active'` 知识块全量重建索引。
+
+#### Scenario: 启动时恢复索引
+- **WHEN** 应用启动且 Milvus Collection 为空或不存在
+- **THEN** `startup_resources()` 从 PostgreSQL 读取所有 `status='active'` 的 knowledge chunks 并重新写入 Milvus

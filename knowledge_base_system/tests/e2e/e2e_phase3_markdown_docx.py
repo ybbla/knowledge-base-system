@@ -315,6 +315,7 @@ def step_ingest(client: TestClient, case: CaseConfig, upload_body: dict[str, Any
                 "title": upload_body["title"],
                 "source_type": case.source_type,
                 "source_uri": upload_body["source_uri"],
+                "source_hash": upload_body.get("source_hash", ""),
                 "category": case.category,
             }
         ],
