@@ -70,7 +70,7 @@ def _chunk_to_dict(chunk) -> dict:
     }
 
 
-@router.get("")
+@router.get("", deprecated=True)
 async def list_documents(
     category: str | None = Query(default=None, description="按分类过滤"),
     status: str | None = Query(default=None, description="按状态过滤"),
@@ -125,7 +125,7 @@ async def list_documents(
     return {"documents": docs, "total": len(docs)}
 
 
-@router.get("/{doc_id}")
+@router.get("/{doc_id}", deprecated=True)
 async def get_document(doc_id: str):
     """获取单个文档详情。"""
     repo = deps.document_repo
@@ -168,7 +168,7 @@ async def get_document(doc_id: str):
     }
 
 
-@router.get("/{doc_id}/elements")
+@router.get("/{doc_id}/elements", deprecated=True)
 async def get_document_elements(doc_id: str):
     """获取文档的解析元素列表。"""
     repo = deps.element_repo
@@ -180,7 +180,7 @@ async def get_document_elements(doc_id: str):
     return {"elements": [], "total": 0}
 
 
-@router.get("/{doc_id}/chunks")
+@router.get("/{doc_id}/chunks", deprecated=True)
 async def get_document_chunks(doc_id: str):
     """获取文档的知识块列表。"""
     chunk_store = deps.chunk_store

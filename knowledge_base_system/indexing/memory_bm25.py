@@ -37,6 +37,12 @@ class MemoryBM25Index(BM25Index):
         except ValueError:
             pass
 
+    def update_status_batch(self, chunk_ids: list[str], status: str) -> None:
+        """批量更新知识块的状态字段（保留文本和其余元数据）。"""
+        for chunk_id in chunk_ids:
+            if chunk_id in self._metadata:
+                self._metadata[chunk_id]["status"] = status
+
     def search(
         self,
         query: str,

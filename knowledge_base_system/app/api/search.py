@@ -12,7 +12,7 @@ class SearchRequest(BaseModel):
     filters: dict = Field(default_factory=dict)
 
 
-@router.post("")
+@router.post("", deprecated=True)
 async def search(request: SearchRequest):
     """Search knowledge base and return ranked results."""
     result = retrieval_pipeline.search(

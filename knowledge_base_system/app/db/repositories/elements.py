@@ -5,17 +5,14 @@ from app.core.models import (
     ParsedElement,
     SourceLocation,
 )
-from app.db.engine import create_session_factory
 from app.db.models import DbParsedElement
+from app.db.repositories.base import BaseRepository
 
 logger = logging.getLogger(__name__)
 
 
-class ParsedElementRepository:
+class ParsedElementRepository(BaseRepository):
     """Persist and query ParsedElement records in PostgreSQL."""
-
-    def __init__(self, session_factory=None) -> None:
-        self._session_factory = session_factory or create_session_factory()
 
     def _to_db(self, el: ParsedElement) -> DbParsedElement:
         return DbParsedElement(
@@ -50,14 +47,14 @@ class ParsedElementRepository:
         )
 
     def create_batch(self, elements: list[ParsedElement]) -> list[ParsedElement]:
-        with self._session_factory() as session:
+        with self._session() as session:
             for el in elements:
                 session.merge(self._to_db(el))
             session.commit()
             return elements
 
     def get_by_doc_id(self, doc_id: str) -> list[ParsedElement]:
-        with self._session_factory() as session:
+        with self._session() as session:
             db_els = (
                 session.query(DbParsedElement)
                 .filter_by(doc_id=doc_id)

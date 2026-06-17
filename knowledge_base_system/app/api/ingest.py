@@ -14,7 +14,7 @@ class IngestDocument(BaseModel):
     title: str
     source_type: str
     source_uri: str
-    source_hash: str  # \u5fc5\u586b\uff0c\u7531\u5ba2\u6237\u7aef\u4ece /upload \u54cd\u5e94\u4e2d\u539f\u6837\u4f20\u5165
+    source_hash: str = ""  # \u4e0a\u4f20\u6d41\u7a0b\u5fc5\u4f20\uff1b\u624b\u52a8\u5165\u5e93\u53ef\u4e3a\u7a7a\uff0c\u7a7a\u503c\u65f6\u7528 source_uri \u53bb\u91cd
     category: str = "\u901a\u7528"
     doc_id: str | None = None  # \u53ef\u9009\uff0c\u6307\u5b9a\u5219\u8d70\u589e\u91cf\u66f4\u65b0\u6d41\u7a0b
 
@@ -24,7 +24,7 @@ class IngestRequest(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
-@router.post("", status_code=status.HTTP_202_ACCEPTED)
+@router.post("", status_code=status.HTTP_202_ACCEPTED, deprecated=True)
 async def ingest(request: IngestRequest):
     """提交文档入库任务。支持新建和增量更新两种模式。"""
     job_ids: list[str] = []
@@ -71,7 +71,10 @@ async def ingest(request: IngestRequest):
         else:
             # ── 新建分支：doc_id 为空 → 去重检查后创建新文档 ──
             if document_repo is not None:
-                dup = document_repo.find_by_hash(item.source_hash)
+                # 优先按 source_hash 去重，hash 为空时降级为 source_uri 去重
+                dup = document_repo.find_by_hash(item.source_hash) if item.source_hash else None
+                if dup is None and not item.source_hash:
+                    dup = document_repo.find_by_source_uri(item.source_uri)
                 if dup is not None:
                     warnings.append({
                         "doc_id": "",
@@ -105,7 +108,7 @@ async def ingest(request: IngestRequest):
     }
 
 
-@router.get("/{job_id}")
+@router.get("/{job_id}", deprecated=True)
 async def get_ingest_status(job_id: str):
     """Query ingestion job progress."""
     job = ingestion_pipeline.get_job(job_id)
@@ -121,4 +124,5 @@ async def get_ingest_status(job_id: str):
         "error": job.error,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "completed_at": job.finished_at.isoformat() if job.finished_at else None,
     }

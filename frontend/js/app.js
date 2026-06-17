@@ -26,12 +26,6 @@ const App = (() => {
       await DocumentDetail.render(params.id);
     });
 
-    // 上传页面
-    Router.on('/upload', async () => {
-      UI.renderSidebar('/documents');
-      Documents.renderUpload();
-    });
-
     // 搜索
     Router.on('/search', async () => {
       UI.renderSidebar('/search');
@@ -43,6 +37,22 @@ const App = (() => {
       UI.renderSidebar('/ingestion');
       await Ingestion.render();
     });
+
+    // ── v1 路由 ──
+
+    // 知识块管理
+    Router.on('/chunks', async () => {
+      UI.renderSidebar('/chunks');
+      await Chunks.render();
+    });
+
+    // 检索调试
+    Router.on('/search-debug', async () => {
+      UI.renderSidebar('/search-debug');
+      await SearchPage.renderDebug();
+    });
+
+    // 系统状态已集成到仪表盘中，不再作为独立页面
   }
 
   /* -----------------------------------------------------------------------
@@ -50,15 +60,6 @@ const App = (() => {
      ----------------------------------------------------------------------- */
   async function init() {
     initRouter();
-
-    // 健康检查
-    try {
-      const health = await API.healthCheck();
-      UI.setBackendStatus(health?.status === 'ok', '服务正常');
-    } catch (e) {
-      UI.setBackendStatus(false);
-      console.warn('后端服务未连接:', e.message);
-    }
 
     // 移动端菜单切换
     document.getElementById('mobileMenuBtn')?.addEventListener('click', () => {

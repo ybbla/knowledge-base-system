@@ -21,14 +21,16 @@ def compute_hash(content: str | bytes) -> str:
 
 # ── enums ──────────────────────────────────────────────────────────
 
+# 文档生命周期：pending → processing → active | failed
 class DocStatus(str, Enum):
     active = "active"
-    deleted = "deleted"
+    deleted = "deleted"          # 预留 — 软删除功能待实现
     failed = "failed"
     pending = "pending"
     processing = "processing"
 
 
+# 资源处理状态：pending → ready | failed | skipped
 class AssetStatus(str, Enum):
     pending = "pending"
     ready = "ready"
@@ -36,10 +38,11 @@ class AssetStatus(str, Enum):
     skipped = "skipped"
 
 
+# 知识块状态：active ↔ superseded（增量更新时旧块被取代）
 class ChunkStatus(str, Enum):
     active = "active"
     superseded = "superseded"
-    deleted = "deleted"
+    deleted = "deleted"          # 预留 — 知识块删除功能待实现
 
 
 class ChunkIndexStatus(str, Enum):
@@ -63,7 +66,7 @@ class ElementType(str, Enum):
     table = "table"
     image = "image"
     video = "video"
-    embedded_document = "embedded_document"
+    embedded_document = "embedded_document"  # 预留 — 子文档当前通过 ParsedElement.embedded_doc_id 关联，不使用独立元素类型
     code = "code"
     unknown = "unknown"
 
@@ -76,11 +79,12 @@ class AssetType(str, Enum):
 
 
 class AssetRelation(str, Enum):
-    evidence = "evidence"
-    illustration = "illustration"
-    demonstration = "demonstration"
-    source = "source"
-    attachment = "attachment"
+    """资源与知识块的关联关系。"""
+    evidence = "evidence"            # 证据：资源直接支撑知识块内容
+    illustration = "illustration"    # 示意：资源辅助理解知识块
+    demonstration = "demonstration"  # 演示：视频等动态展示
+    source = "source"                # 预留 — LLM 未实际输出，表示知识块来源于此资源
+    attachment = "attachment"        # 预留 — LLM 未实际输出，表示资源作为附件关联
 
 
 # ── nested types ───────────────────────────────────────────────────
@@ -89,8 +93,8 @@ class SourceLocation(BaseModel):
     page: int | None = None
     section_path: list[str] = Field(default_factory=list)
     table_path: list[dict] = Field(default_factory=list)
-    char_start: int | None = None
-    char_end: int | None = None
+    char_start: int | None = None  # 预留 — 精确字符溯源，当前解析器未实现
+    char_end: int | None = None    # 预留 — 同上
 
 
 class Render(BaseModel):

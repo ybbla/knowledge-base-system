@@ -1,17 +1,14 @@
 import logging
 
 from app.core.models import Asset, AssetStatus, AssetType
-from app.db.engine import create_session_factory
 from app.db.models import DbAsset
+from app.db.repositories.base import BaseRepository
 
 logger = logging.getLogger(__name__)
 
 
-class PgAssetStore:
+class PgAssetStore(BaseRepository):
     """PostgreSQL-backed Asset store matching the AssetStore ABC."""
-
-    def __init__(self, session_factory=None) -> None:
-        self._session_factory = session_factory or create_session_factory()
 
     def _to_db(self, asset: Asset) -> DbAsset:
         return DbAsset(
@@ -50,25 +47,25 @@ class PgAssetStore:
         )
 
     def put(self, asset: Asset) -> None:
-        with self._session_factory() as session:
+        with self._session() as session:
             db_asset = self._to_db(asset)
             session.merge(db_asset)
             session.commit()
 
     def get(self, asset_id: str) -> Asset | None:
-        with self._session_factory() as session:
+        with self._session() as session:
             db_asset = session.get(DbAsset, asset_id)
             if db_asset is None:
                 return None
             return self._from_db(db_asset)
 
     def get_by_doc_id(self, doc_id: str) -> list[Asset]:
-        with self._session_factory() as session:
+        with self._session() as session:
             db_assets = session.query(DbAsset).filter_by(doc_id=doc_id).all()
             return [self._from_db(db_asset) for db_asset in db_assets]
 
     def delete(self, asset_id: str) -> None:
-        with self._session_factory() as session:
+        with self._session() as session:
             db_asset = session.get(DbAsset, asset_id)
             if db_asset is not None:
                 session.delete(db_asset)

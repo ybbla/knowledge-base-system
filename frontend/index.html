@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>知识库系统 — Knowledge Base</title>
+  <title>知识库系统 - Knowledge Base</title>
 
-  <!-- 字体: 思源宋体 (显示) + 思源黑体 (正文) -->
+  <!-- 字体: 思源黑体 (界面) + JetBrains Mono (编号/分数) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700;900&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -37,12 +37,8 @@
           <span>仪表盘</span>
         </div>
         <div class="topbar-actions">
-          <div class="topbar-status" id="backendStatus">
-            <span class="status-dot" id="statusDot"></span>
-            <span id="statusText">检测中…</span>
-          </div>
           <button class="btn btn-sm btn-secondary" onclick="App.router.navigate('/search')" title="快速搜索">
-            ⌘K
+            ⌕ 搜索
           </button>
         </div>
       </header>
@@ -79,6 +75,7 @@
   <script src="js/components/document-detail.js"></script>
   <script src="js/components/search.js"></script>
   <script src="js/components/ingestion.js"></script>
+  <script src="js/components/chunks.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

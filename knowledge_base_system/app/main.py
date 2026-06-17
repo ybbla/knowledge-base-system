@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.api import documents, ingest, search, upload
+from app.api.v1 import mount_v1_sub_routers, register_v1_exception_handlers, router as v1_router
 from app.core.deps import shutdown_resources, startup_resources
 
 # 前端静态文件目录
@@ -27,14 +28,18 @@ app = FastAPI(
 )
 
 # ── API 路由 ──────────────────────────────────────────────────────────
+register_v1_exception_handlers(app)
 app.include_router(ingest.router)
 app.include_router(search.router)
 app.include_router(upload.router)
 app.include_router(documents.router)
+mount_v1_sub_routers()
+app.include_router(v1_router)
 
 
-@app.get("/health")
+@app.get("/health", deprecated=True)
 async def health():
+    """@deprecated — 请使用 GET /api/v1/health/live 代替。"""
     return {"status": "ok"}
 
 

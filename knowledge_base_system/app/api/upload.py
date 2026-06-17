@@ -20,7 +20,7 @@ CHUNK_SIZE = 1024 * 1024
 MINIO_PART_SIZE = 10 * 1024 * 1024
 
 
-@router.post("")
+@router.post("", deprecated=True)
 async def upload_file(
     file: UploadFile = File(...),
     title: str | None = Form(default=None),

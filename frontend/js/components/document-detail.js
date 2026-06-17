@@ -1,5 +1,5 @@
 /* ==========================================================================
-   文档详情组件 — 文档信息、解析元素、知识块
+   文档详情组件 — 概览、知识块、解析元素、元数据（已迁移至 v1 API）
    ========================================================================== */
 
 const DocumentDetail = (() => {
@@ -7,7 +7,7 @@ const DocumentDetail = (() => {
   let currentDoc = null;
   let elements = [];
   let chunks = [];
-  let activeTab = 'elements';
+  let activeTab = 'overview';
 
   async function render(docId) {
     UI.setBreadcrumb([
@@ -19,14 +19,13 @@ const DocumentDetail = (() => {
     UI.render(`<div class="loading-overlay"><div class="loading-spinner"></div><span>加载文档详情…</span></div>`);
 
     try {
-      const [doc, elems, chks] = await Promise.all([
+      const [docRes, chunksRes] = await Promise.all([
         API.getDocument(docId),
-        API.getDocumentElements(docId),
-        API.getDocumentChunks(docId),
+        API.listChunks({ doc_id: docId, page_size: 200 }),
       ]);
-      currentDoc = doc;
-      elements = Array.isArray(elems) ? elems : (elems?.elements || []);
-      chunks = Array.isArray(chks) ? chks : (chks?.chunks || []);
+      currentDoc = docRes?.data || {};
+      chunks = chunksRes?.data || [];
+      elements = [];
     } catch (e) {
       UI.render(`
         <div class="empty-state">
@@ -44,108 +43,78 @@ const DocumentDetail = (() => {
 
   function renderDetailHtml() {
     const doc = currentDoc || {};
-    const sourceType = doc.source_type || '';
-    const title = doc.title || doc.file_name || '未命名文档';
+    const title = doc.title || '未命名文档';
+    const stats = doc.index_summary || {};
 
     UI.render(`
       <!-- 文档信息头部 -->
       <div class="doc-detail-header">
-        <div style="display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-2);">
-          ${UI.fmtBadge(sourceType)}
-          <h1 class="page-title" style="margin-bottom: 0;">${UI.escapeHtml(title)}</h1>
+        <div class="page-header-row">
+          <div class="doc-heading">
+            ${UI.fmtBadge(doc.source_type)}
+            <h1 class="page-title" style="margin-bottom: 0;">${UI.escapeHtml(title)}</h1>
+            ${UI.statusBadge(doc.status || 'active')}
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-secondary btn-sm" onclick="Documents.ingestDocument('${doc.doc_id}')">↻ 重新入库</button>
+            ${doc.status === 'deleted'
+              ? `<button class="btn btn-success btn-sm" onclick="Documents.restoreDoc('${doc.doc_id}')">恢复文档</button>`
+              : `<button class="btn btn-danger btn-sm" onclick="Documents.deleteDoc('${doc.doc_id}')">删除文档</button>`}
+          </div>
         </div>
         <div class="doc-detail-meta">
-          <div class="doc-detail-meta-item">
-            ID: <strong>${UI.escapeHtml(doc.doc_id || doc.id || '—')}</strong>
-          </div>
-          <div class="doc-detail-meta-item">
-            分类: <strong>${UI.escapeHtml(doc.category || '通用')}</strong>
-          </div>
-          <div class="doc-detail-meta-item">
-            状态: ${UI.statusBadge(doc.status || 'active')}
-          </div>
-          <div class="doc-detail-meta-item">
-            版本: <strong>${doc.version || 1}</strong>
-          </div>
-          <div class="doc-detail-meta-item">
-            创建时间: <strong>${UI.formatTime(doc.created_at)}</strong>
-          </div>
-          <div class="doc-detail-meta-item">
-            更新时间: <strong>${UI.formatTime(doc.updated_at)}</strong>
-          </div>
+          <div class="doc-detail-meta-item">ID: <strong>${UI.escapeHtml(doc.doc_id || '—')}</strong></div>
+          <div class="doc-detail-meta-item">分类: <strong>${UI.escapeHtml(doc.category || '通用')}</strong></div>
+          <div class="doc-detail-meta-item">版本: <strong>${doc.version || 1}</strong></div>
+          <div class="doc-detail-meta-item">创建: <strong>${UI.formatTime(doc.created_at)}</strong></div>
+          <div class="doc-detail-meta-item">更新: <strong>${UI.formatTime(doc.updated_at)}</strong></div>
+        </div>
+        <!-- 统计快览 -->
+        <div class="mini-stats-row">
+          <div class="stat-mini"><span class="stat-mini-num">${doc.chunk_count ?? chunks.length}</span><span class="stat-mini-label">知识块</span></div>
+          <div class="stat-mini"><span class="stat-mini-num">${doc.element_count ?? '—'}</span><span class="stat-mini-label">解析元素</span></div>
+          <div class="stat-mini"><span class="stat-mini-num">${doc.asset_count ?? '—'}</span><span class="stat-mini-label">资源</span></div>
+          <div class="stat-mini"><span class="stat-mini-num" style="color: var(--jade);">${stats.indexed || 0}</span><span class="stat-mini-label">已索引</span></div>
+          <div class="stat-mini"><span class="stat-mini-num" style="color: var(--cinnabar);">${stats.failed || 0}</span><span class="stat-mini-label">索引失败</span></div>
         </div>
       </div>
 
       <!-- 标签页 -->
       <div class="tabs">
-        <button class="tab-item${activeTab === 'elements' ? ' active' : ''}"
-                onclick="DocumentDetail.switchTab('elements')">
-          解析元素 (${elements.length})
-        </button>
-        <button class="tab-item${activeTab === 'chunks' ? ' active' : ''}"
-                onclick="DocumentDetail.switchTab('chunks')">
-          知识块 (${chunks.length})
-        </button>
-        <button class="tab-item${activeTab === 'info' ? ' active' : ''}"
-                onclick="DocumentDetail.switchTab('info')">
-          文档信息
-        </button>
+        <button class="tab-item${activeTab === 'overview' ? ' active' : ''}" onclick="DocumentDetail.switchTab('overview')">概览</button>
+        <button class="tab-item${activeTab === 'chunks' ? ' active' : ''}" onclick="DocumentDetail.switchTab('chunks')">知识块 (${chunks.length})</button>
+        <button class="tab-item${activeTab === 'elements' ? ' active' : ''}" onclick="DocumentDetail.switchTab('elements')">解析元素 (${elements.length})</button>
+        <button class="tab-item${activeTab === 'meta' ? ' active' : ''}" onclick="DocumentDetail.switchTab('meta')">元数据</button>
       </div>
 
-      <!-- 解析元素 Tab -->
-      <div class="tab-content${activeTab === 'elements' ? ' active' : ''}" id="tabElements">
-        ${renderElementsHtml()}
-      </div>
-
-      <!-- 知识块 Tab -->
-      <div class="tab-content${activeTab === 'chunks' ? ' active' : ''}" id="tabChunks">
-        ${renderChunksHtml()}
-      </div>
-
-      <!-- 文档信息 Tab -->
-      <div class="tab-content${activeTab === 'info' ? ' active' : ''}" id="tabInfo">
-        ${renderInfoHtml()}
-      </div>
+      <div class="tab-content${activeTab === 'overview' ? ' active' : ''}" id="tabOverview">${renderOverviewHtml()}</div>
+      <div class="tab-content${activeTab === 'chunks' ? ' active' : ''}" id="tabChunks">${renderChunksHtml()}</div>
+      <div class="tab-content${activeTab === 'elements' ? ' active' : ''}" id="tabElements">${renderElementsHtml()}</div>
+      <div class="tab-content${activeTab === 'meta' ? ' active' : ''}" id="tabMeta">${renderMetaHtml()}</div>
     `);
   }
 
-  function renderElementsHtml() {
-    if (elements.length === 0) {
-      return `
-        <div class="empty-state">
-          <div class="empty-state-icon">📋</div>
-          <div class="empty-state-title">暂无解析元素</div>
-          <div class="empty-state-desc">文档尚未完成解析，或解析未产生结构化元素。请检查入库任务状态。</div>
-        </div>`;
-    }
-
+  function renderOverviewHtml() {
+    const doc = currentDoc || {};
     return `
-      <div class="element-list">
-        ${elements.map((el, i) => `
-          <div class="element-item">
-            <span class="element-seq">${el.sequence_order != null ? el.sequence_order : i + 1}</span>
-            <div class="element-content">
-              <div class="element-text">${UI.escapeHtml(el.text || '(空)')}</div>
-              <div class="element-type">
-                ${UI.escapeHtml(el.element_type || 'unknown')}
-                ${el.source_location?.page != null ? ` · 第 ${el.source_location.page} 页` : ''}
-              </div>
-            </div>
-          </div>
-        `).join('')}
+      <div class="card">
+        <h3 class="card-title">文档信息</h3>
+        <table>
+          <tbody>
+            <tr><td style="font-weight:500;">来源 URI</td><td style="font-family: var(--font-mono); font-size: var(--text-xs); word-break: break-all;">${UI.escapeHtml(doc.source_uri || '—')}</td></tr>
+            <tr><td style="font-weight:500;">来源哈希</td><td style="font-family: var(--font-mono); font-size: var(--text-xs);">${UI.escapeHtml(doc.source_hash || '—')}</td></tr>
+            <tr><td style="font-weight:500;">父文档</td><td>${UI.escapeHtml(doc.parent_doc_id || '—')}</td></tr>
+            <tr><td style="font-weight:500;">根文档</td><td>${UI.escapeHtml(doc.root_doc_id || '—')}</td></tr>
+            <tr><td style="font-weight:500;">入库任务</td><td style="font-family: var(--font-mono); font-size: var(--text-xs);">${UI.escapeHtml(doc.ingest_job_id || '—')}</td></tr>
+          </tbody>
+        </table>
       </div>`;
   }
 
   function renderChunksHtml() {
     if (chunks.length === 0) {
-      return `
-        <div class="empty-state">
-          <div class="empty-state-icon">🧩</div>
-          <div class="empty-state-title">暂无知识块</div>
-          <div class="empty-state-desc">文档尚未完成语义抽取。请检查入库任务状态，确保 LLM 抽取步骤已完成。</div>
-        </div>`;
+      return `<div class="empty-state"><div class="empty-state-icon">🧩</div><div class="empty-state-title">暂无知识块</div></div>`;
     }
-
     return `
       <div class="chunks-grid">
         ${chunks.map(chunk => `
@@ -154,43 +123,46 @@ const DocumentDetail = (() => {
               <div class="chunk-card-title">${UI.escapeHtml(chunk.title || '未命名知识块')}</div>
               ${UI.ktypeBadge(chunk.knowledge_type)}
             </div>
-            <div class="chunk-card-content">${UI.escapeHtml(chunk.content || '')}</div>
+            <div class="chunk-card-content">${UI.escapeHtml((chunk.content_preview || chunk.content || '').substring(0, 300))}</div>
             <div class="chunk-card-footer">
               ${UI.statusBadge(chunk.index_status || 'pending')}
               <span class="tag">${UI.escapeHtml(chunk.category || '未分类')}</span>
-              ${chunk.asset_refs?.length ? `<span class="tag">📎 ${chunk.asset_refs.length} 个资源</span>` : ''}
+              ${(chunk.asset_count || 0) > 0 ? `<span class="tag">📎 ${chunk.asset_count} 个资源</span>` : ''}
+              ${(chunk.source_count || 0) > 0 ? `<span class="tag">📄 ${chunk.source_count} 个来源</span>` : ''}
             </div>
           </div>
         `).join('')}
       </div>`;
   }
 
-  function renderInfoHtml() {
-    const doc = currentDoc || {};
-    const entries = Object.entries(doc).filter(([k]) =>
-      !['elements', 'chunks'].includes(k)
-    );
+  function renderElementsHtml() {
+    if (elements.length === 0) {
+      return `<div class="empty-state"><div class="empty-state-icon">📋</div><div class="empty-state-title">暂无解析元素（需在后端 PG 模式下查看）</div></div>`;
+    }
+    return `
+      <div class="element-list">
+        ${elements.map((el, i) => `
+          <div class="element-item">
+            <span class="element-seq">${el.sequence_order != null ? el.sequence_order : i + 1}</span>
+            <div class="element-content">
+              <div class="element-text">${UI.escapeHtml(el.text || '(空)')}</div>
+              <div class="element-type">${UI.escapeHtml(el.element_type || 'unknown')} ${el.source_location?.page != null ? `· 第 ${el.source_location.page} 页` : ''}</div>
+            </div>
+          </div>
+        `).join('')}
+      </div>`;
+  }
 
+  function renderMetaHtml() {
+    const doc = currentDoc || {};
     return `
       <div class="card">
-        <table>
-          <thead>
-            <tr><th style="width: 30%;">字段</th><th>值</th></tr>
-          </thead>
-          <tbody>
-            ${entries.map(([k, v]) => `
-              <tr>
-                <td style="font-weight: 500;">${UI.escapeHtml(k)}</td>
-                <td style="font-family: var(--font-mono); font-size: var(--text-xs); word-break: break-all;">
-                  ${v === null ? '<span style="color: var(--ink-wash-light);">null</span>' :
-                    v === undefined ? '<span style="color: var(--ink-wash-light);">—</span>' :
-                    typeof v === 'object' ? `<pre style="margin:0; white-space: pre-wrap;">${UI.escapeHtml(JSON.stringify(v, null, 2))}</pre>` :
-                    UI.escapeHtml(String(v))}
-                </td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
+        <h3 class="card-title">元数据</h3>
+        <pre class="code-block">${UI.escapeHtml(JSON.stringify(doc.metadata || {}, null, 2))}</pre>
+      </div>
+      <div class="card" style="margin-top: var(--space-4);">
+        <h3 class="card-title">索引摘要</h3>
+        <pre class="code-block">${UI.escapeHtml(JSON.stringify(doc.index_summary || {}, null, 2))}</pre>
       </div>`;
   }
 

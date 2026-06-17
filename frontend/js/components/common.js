@@ -67,10 +67,12 @@ const UI = (() => {
     const nav = document.getElementById('sidebarNav');
 
     const items = [
-      { path: '/',            icon: '▤', label: '仪表盘' },
-      { path: '/documents',   icon: '▦', label: '文档管理' },
-      { path: '/search',      icon: '⌕', label: '知识搜索' },
-      { path: '/ingestion',   icon: '↻', label: '入库任务' },
+      { path: '/',             icon: '▤', label: '仪表盘' },
+      { path: '/documents',    icon: '▦', label: '文档管理' },
+      { path: '/chunks',       icon: '⊞', label: '知识块管理' },
+      { path: '/search',       icon: '⌕', label: '知识搜索' },
+      { path: '/search-debug', icon: '⚙', label: '检索调试' },
+      { path: '/ingestion',    icon: '↻', label: '入库任务' },
     ];
 
     nav.innerHTML = items.map(item => `
@@ -93,21 +95,6 @@ const UI = (() => {
         ? `<a href="${p.path || '#'}">${escapeHtml(p.label)}</a> › `
         : `<span>${escapeHtml(p.label)}</span>`
     ).join('');
-  }
-
-  /* -----------------------------------------------------------------------
-     状态指示器
-     ----------------------------------------------------------------------- */
-  function setBackendStatus(ok, backend = '') {
-    const dot = document.getElementById('statusDot');
-    const text = document.getElementById('statusText');
-    if (ok) {
-      dot.className = 'status-dot';
-      text.textContent = backend || '服务正常';
-    } else {
-      dot.className = 'status-dot error';
-      text.textContent = '服务离线';
-    }
   }
 
   /* -----------------------------------------------------------------------
@@ -168,12 +155,24 @@ const UI = (() => {
      ----------------------------------------------------------------------- */
   function ktypeBadge(type) {
     const map = {
-      declarative: '陈述性',
-      relational: '关系性',
-      procedural: '过程性',
+      declarative: '陈述型',
+      relational: '关系型',
+      procedural: '流程型',
     };
     const label = map[type] || type || '未知';
     return `<span class="badge-ktype ${type || ''}">${label}</span>`;
+  }
+
+  /* -----------------------------------------------------------------------
+     知识类型纯文本标签（用于下拉选项等非徽章场景）
+     ----------------------------------------------------------------------- */
+  function ktypeLabel(type) {
+    const map = {
+      declarative: '陈述型',
+      relational: '关系型',
+      procedural: '流程型',
+    };
+    return map[type] || type || '未知';
   }
 
   /* -----------------------------------------------------------------------
@@ -202,8 +201,8 @@ const UI = (() => {
   }
 
   return {
-    toast, showModal, renderSidebar, setBreadcrumb, setBackendStatus,
+    toast, showModal, renderSidebar, setBreadcrumb,
     escapeHtml, formatTime, formatSize, formatNumber,
-    fmtBadge, ktypeBadge, statusBadge, render,
+    fmtBadge, ktypeBadge, ktypeLabel, statusBadge, render,
   };
 })();
