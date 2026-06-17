@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import status as http_status
 
+from app.api import upload as upload_api
 from app.api.v1.errors import ErrorCode
+from app.api.v1.ingest import job_to_dict
 from app.api.v1.schemas import (
     APIResponse,
     PaginatedResponse,
@@ -104,12 +108,49 @@ def _doc_to_item(doc: Document) -> dict[str, Any]:
     return item
 
 
+def _element_to_item(element: Any) -> dict[str, Any]:
+    """将解析元素转为前端可展示条目。"""
+    return {
+        "element_id": element.element_id,
+        "doc_id": element.doc_id,
+        "doc_version": element.doc_version,
+        "parent_element_id": element.parent_element_id,
+        "sequence_order": element.sequence_order,
+        "element_type": element.element_type.value if hasattr(element.element_type, "value") else element.element_type,
+        "text": element.text,
+        "structured_data": element.structured_data,
+        "asset_ids": element.asset_ids,
+        "embedded_doc_id": element.embedded_doc_id,
+        "source_location": (
+            element.source_location.model_dump(mode="json")
+            if hasattr(element.source_location, "model_dump")
+            else element.source_location
+        ),
+        "metadata": element.metadata if hasattr(element, "metadata") else {},
+    }
+
+
+def _source_type_from_filename(filename: str) -> str:
+    ext = Path(filename or "").suffix.lower().lstrip(".")
+    return {
+        "md": "markdown",
+        "markdown": "markdown",
+        "txt": "txt",
+        "docx": "docx",
+        "xlsx": "xlsx",
+        "html": "html",
+        "htm": "html",
+        "pdf": "pdf",
+        "pptx": "pptx",
+    }.get(ext, "unknown")
+
+
 # ── 4.1 文档列表 ──────────────────────────────────────────────────
 
 @router.get("")
 async def list_documents(
-    pagination: PaginationParams = Query(),
-    search: SearchParams = Query(),
+    pagination: PaginationParams = Depends(),
+    search: SearchParams = Depends(),
     source_type: str | None = Query(default=None, description="按来源类型过滤"),
     status: str | None = Query(default=None, description="按状态过滤"),
     category: str | None = Query(default=None, description="按分类过滤"),
@@ -220,7 +261,7 @@ async def list_documents(
 
 # ── 4.2 创建文档 ──────────────────────────────────────────────────
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=http_status.HTTP_201_CREATED)
 async def create_document(
     title: str = Query(...),
     source_type: str = Query(...),
@@ -252,7 +293,7 @@ async def create_document(
                 return error_json(
                     ErrorCode.DOCUMENT_DUPLICATE,
                     f"相同 source_hash 的文档已存在: {existing.doc_id}",
-                    status.HTTP_409_CONFLICT,
+        http_status.HTTP_409_CONFLICT,
                     details={"existing_doc_id": existing.doc_id},
                 )
 
@@ -270,7 +311,7 @@ async def create_document(
             return error_json(
                 ErrorCode.DOCUMENT_DUPLICATE,
                 str(e),
-                status.HTTP_409_CONFLICT,
+    http_status.HTTP_409_CONFLICT,
             )
 
         response_data = _doc_to_item(created)
@@ -284,6 +325,7 @@ async def create_document(
                     is_update=False,
                 )
                 response_data["ingest_job_id"] = job.job_id
+                response_data["ingest_job"] = job_to_dict(job)
             except Exception as e:
                 logger.exception("入库触发失败")
                 response_data["ingest_error"] = str(e)
@@ -303,10 +345,90 @@ async def create_document(
         try:
             job = ingestion_pipeline.submit(doc, options={}, is_update=False)
             doc.ingest_job_id = job.job_id
+            response_data = _doc_to_item(doc)
+            response_data["ingest_job_id"] = job.job_id
+            response_data["ingest_job"] = job_to_dict(job)
+            return APIResponse(data=response_data).model_dump(mode="json")
         except Exception as e:
             logger.exception("入库触发失败")
 
     return APIResponse(data=_doc_to_item(doc)).model_dump(mode="json")
+
+
+@router.post("/upload", status_code=http_status.HTTP_201_CREATED)
+async def upload_document(
+    file: UploadFile = File(...),
+    title: str | None = Form(default=None),
+    category: str = Form(default=upload_api.DEFAULT_CATEGORY),
+    ingest_after_create: bool = Query(default=True),
+    mode: str = Query(default="incremental", description="incremental 或 force"),
+):
+    """上传文件，创建文档，并可立即提交 v1 入库任务。"""
+    original_name = file.filename or "upload"
+    source_hash, size = upload_api._hash_upload(file)
+    resolved_title = title or Path(original_name).stem
+    resolved_category = category or upload_api.DEFAULT_CATEGORY
+
+    if document_repo is not None:
+        existing = document_repo.find_by_hash(source_hash)
+        if existing is not None:
+            return APIResponse(
+                data={
+                    "duplicate": True,
+                    "existing_doc_id": existing.doc_id,
+                    "source_uri": existing.source_uri,
+                    "source_hash": source_hash,
+                    "doc_id": existing.doc_id,
+                    "file_name": original_name,
+                    "size": size,
+                    "title": existing.title,
+                    "category": existing.category,
+                },
+                meta={"duplicate": True},
+            ).model_dump(mode="json")
+
+    upload_data = upload_api.save_upload_file(
+        file,
+        title=resolved_title,
+        category=resolved_category,
+        check_duplicate=False,
+    )
+    doc = Document(
+        doc_id=upload_data["doc_id"],
+        title=resolved_title,
+        source_type=_source_type_from_filename(original_name),
+        source_uri=upload_data["source_uri"],
+        source_hash=upload_data["source_hash"],
+        category=resolved_category,
+    )
+
+    if document_repo is not None:
+        try:
+            doc = document_repo.create(doc)
+        except DuplicateDocumentError as e:
+            return error_json(
+                ErrorCode.DOCUMENT_DUPLICATE,
+                str(e),
+                http_status.HTTP_409_CONFLICT,
+            )
+
+    response_data = _doc_to_item(doc)
+    response_data.update({
+        "duplicate": False,
+        "file_name": original_name,
+        "size": upload_data["size"],
+    })
+
+    if ingest_after_create:
+        job = ingestion_pipeline.submit(
+            doc,
+            options={"force": mode == "force", "mode": mode},
+            is_update=False,
+        )
+        response_data["ingest_job_id"] = job.job_id
+        response_data["ingest_job"] = job_to_dict(job)
+
+    return APIResponse(data=response_data).model_dump(mode="json")
 
 
 # ── 4.3 文档详情 ──────────────────────────────────────────────────
@@ -321,7 +443,7 @@ async def get_document(doc_id: str):
             return error_json(
                 ErrorCode.DOCUMENT_NOT_FOUND,
                 f"文档 {doc_id} 不存在",
-                status.HTTP_404_NOT_FOUND,
+    http_status.HTTP_404_NOT_FOUND,
             )
 
         item = _doc_to_item(doc)
@@ -344,7 +466,7 @@ async def get_document(doc_id: str):
         return error_json(
             ErrorCode.DOCUMENT_NOT_FOUND,
             f"文档 {doc_id} 不存在",
-            status.HTTP_404_NOT_FOUND,
+http_status.HTTP_404_NOT_FOUND,
         )
 
     first = doc_chunks[0]
@@ -371,6 +493,48 @@ async def get_document(doc_id: str):
     return APIResponse(data=item).model_dump(mode="json")
 
 
+@router.get("/{doc_id}/elements")
+async def list_document_elements(
+    doc_id: str,
+    pagination: PaginationParams = Depends(),
+):
+    """获取文档解析元素分页列表。"""
+    if document_repo is not None and document_repo.get(doc_id) is None:
+        return error_json(
+            ErrorCode.DOCUMENT_NOT_FOUND,
+            f"文档 {doc_id} 不存在",
+            http_status.HTTP_404_NOT_FOUND,
+        )
+
+    if element_repo is None:
+        meta = PaginationMeta(
+            page=pagination.page,
+            page_size=pagination.page_size,
+            total=0,
+            total_pages=0,
+        )
+        return PaginatedResponse(data=[], meta=meta.model_dump()).model_dump(mode="json")
+
+    elements = sorted(
+        element_repo.get_by_doc_id(doc_id),
+        key=lambda element: element.sequence_order,
+    )
+    total = len(elements)
+    start = (pagination.page - 1) * pagination.page_size
+    end = start + pagination.page_size
+    total_pages = (total + pagination.page_size - 1) // pagination.page_size if total > 0 else 0
+    meta = PaginationMeta(
+        page=pagination.page,
+        page_size=pagination.page_size,
+        total=total,
+        total_pages=total_pages,
+    )
+    return PaginatedResponse(
+        data=[_element_to_item(element) for element in elements[start:end]],
+        meta=meta.model_dump(),
+    ).model_dump(mode="json")
+
+
 # ── 4.4 更新文档 ──────────────────────────────────────────────────
 
 @router.patch("/{doc_id}")
@@ -392,7 +556,7 @@ async def update_document(
         return error_json(
             ErrorCode.DOCUMENT_NOT_FOUND,
             "后端未启用文档仓储",
-            status.HTTP_400_BAD_REQUEST,
+http_status.HTTP_400_BAD_REQUEST,
         )
 
     doc = document_repo.get(doc_id)
@@ -400,7 +564,7 @@ async def update_document(
         return error_json(
             ErrorCode.DOCUMENT_NOT_FOUND,
             f"文档 {doc_id} 不存在",
-            status.HTTP_404_NOT_FOUND,
+http_status.HTTP_404_NOT_FOUND,
         )
 
     # 乐观锁检查
@@ -408,7 +572,7 @@ async def update_document(
         return error_json(
             ErrorCode.DOCUMENT_VERSION_CONFLICT,
             f"版本冲突: 期望 {expected_version}，实际 {doc.version}",
-            status.HTTP_409_CONFLICT,
+http_status.HTTP_409_CONFLICT,
             details={"expected": expected_version, "actual": doc.version},
         )
 
@@ -439,13 +603,13 @@ async def update_document(
         return error_json(
             ErrorCode.DOCUMENT_VERSION_CONFLICT,
             str(e),
-            status.HTTP_409_CONFLICT,
+http_status.HTTP_409_CONFLICT,
         )
     except DocumentNotFoundError as e:
         return error_json(
             ErrorCode.DOCUMENT_NOT_FOUND,
             str(e),
-            status.HTTP_404_NOT_FOUND,
+http_status.HTTP_404_NOT_FOUND,
         )
 
     item = _doc_to_item(updated)
@@ -473,7 +637,7 @@ async def delete_document(doc_id: str):
             return error_json(
                 ErrorCode.DOCUMENT_NOT_FOUND,
                 str(e),
-                status.HTTP_404_NOT_FOUND,
+    http_status.HTTP_404_NOT_FOUND,
             )
 
         # 同步删除关联知识块
@@ -506,7 +670,7 @@ async def restore_document(doc_id: str):
             return error_json(
                 ErrorCode.DOCUMENT_NOT_FOUND,
                 str(e),
-                status.HTTP_404_NOT_FOUND,
+    http_status.HTTP_404_NOT_FOUND,
             )
 
         # 恢复关联知识块
@@ -543,17 +707,22 @@ async def ingest_document(
             return error_json(
                 ErrorCode.DOCUMENT_NOT_FOUND,
                 f"文档 {doc_id} 不存在",
-                status.HTTP_404_NOT_FOUND,
+    http_status.HTTP_404_NOT_FOUND,
             )
 
         try:
             job = ingestion_pipeline.submit(
                 doc,
-                options={"force": mode == "force"},
+                options={"force": mode == "force", "mode": mode},
                 is_update=(mode == "incremental"),
             )
             return APIResponse(
-                data={"job_id": job.job_id, "doc_id": doc_id, "mode": mode},
+                data={
+                    "job_id": job.job_id,
+                    "doc_id": doc_id,
+                    "mode": mode,
+                    "job": job_to_dict(job),
+                },
                 meta={"status": "accepted"},
             ).model_dump(mode="json")
         except Exception as e:
@@ -561,11 +730,17 @@ async def ingest_document(
             return error_json(
                 ErrorCode.INTERNAL_ERROR,
                 f"入库触发失败: {e}",
-                status.HTTP_500_INTERNAL_SERVER_ERROR,
+    http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
     # ── 内存后端 ──
+    doc = Document(doc_id=doc_id, title=doc_id, source_type="unknown", source_uri="")
+    job = ingestion_pipeline.submit(
+        doc,
+        options={"force": mode == "force", "mode": mode},
+        is_update=(mode == "incremental"),
+    )
     return APIResponse(
-        data={"job_id": f"ingest_{doc_id}", "doc_id": doc_id, "mode": mode},
+        data={"job_id": job.job_id, "doc_id": doc_id, "mode": mode, "job": job_to_dict(job)},
         meta={"status": "accepted"},
     ).model_dump(mode="json")

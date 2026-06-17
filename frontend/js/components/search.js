@@ -37,11 +37,11 @@ const SearchPage = (() => {
         <div class="search-filters kb-filter-bar">
           <select id="searchCategory" class="select select-sm">
             <option value="">全部分类</option>
-            ${(filterOptions.categories || []).map(c => `<option value="${c.value}">${c.value} (${c.count || 0})</option>`).join('')}
+            ${(filterOptions.categories || []).map(c => `<option value="${UI.escapeHtml(c.value)}">${UI.escapeHtml(c.value)} (${c.count || 0})</option>`).join('')}
           </select>
           <select id="searchKnowledgeType" class="select select-sm">
             <option value="">全部类型</option>
-            ${(filterOptions.knowledge_types || []).map(k => `<option value="${k.value}">${UI.ktypeLabel(k.value)} (${k.count || 0})</option>`).join('')}
+            ${(filterOptions.knowledge_types || []).map(k => `<option value="${UI.escapeHtml(k.value)}">${UI.escapeHtml(UI.ktypeLabel(k.value))} (${k.count || 0})</option>`).join('')}
           </select>
           <select id="searchTopK" class="select select-sm" data-current-value="3" onchange="SearchPage.handleTopKChange('searchTopK')">
             <option value="3" selected>Top 3</option>

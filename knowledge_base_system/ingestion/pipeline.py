@@ -36,12 +36,30 @@ def _batched(items: list[Any], size: int) -> list[list[Any]]:
 
 
 class JobStatus:
-    def __init__(self, job_id: str):
+    def __init__(
+        self,
+        job_id: str,
+        *,
+        doc: Document | None = None,
+        options: dict[str, Any] | None = None,
+        is_update: bool = False,
+    ):
         self.job_id = job_id
         self.status = "pending"
+        self.stage = "pending"
+        self.progress = 0
+        self.created_at = datetime.now(timezone.utc)
         self.started_at: datetime | None = None
         self.finished_at: datetime | None = None
-        self.doc_ids: list[str] = []
+        self.doc_ids: list[str] = [doc.doc_id] if doc is not None else []
+        self.doc_id = doc.doc_id if doc is not None else ""
+        self.doc_title = doc.title if doc is not None else ""
+        self.mode = (options or {}).get("mode") or ("incremental" if is_update else "create")
+        if options and options.get("force"):
+            self.mode = "force"
+        self.options = options or {}
+        self.is_update = is_update
+        self.doc = doc
         self.chunk_count = 0
         self.asset_count = 0
         self.error: str | None = None
@@ -80,12 +98,18 @@ class IngestionPipeline:
         is_update: bool = False,
     ) -> JobStatus:
         """提交文档入库任务。is_update=True 时走增量更新流程。"""
-        job = JobStatus(doc.ingest_job_id or doc.doc_id)
+        resolved_options = options or {}
+        job = JobStatus(
+            doc.ingest_job_id or doc.doc_id,
+            doc=doc,
+            options=resolved_options,
+            is_update=is_update,
+        )
         self._jobs[job.job_id] = job
 
         thread = threading.Thread(
             target=self._run,
-            args=(doc, raw_content, job, options or {}, is_update),
+            args=(doc, raw_content, job, resolved_options, is_update),
             daemon=True,
         )
         thread.start()
@@ -93,6 +117,25 @@ class IngestionPipeline:
 
     def get_job(self, job_id: str) -> JobStatus | None:
         return self._jobs.get(job_id)
+
+    def list_jobs(self) -> list[JobStatus]:
+        return sorted(self._jobs.values(), key=lambda job: job.created_at, reverse=True)
+
+    def retry_job(self, job_id: str) -> JobStatus | None:
+        job = self.get_job(job_id)
+        if job is None or job.status != "failed" or job.doc is None:
+            return None
+        return self.submit(job.doc, options=dict(job.options), is_update=job.is_update)
+
+    def cancel_job(self, job_id: str) -> bool:
+        job = self.get_job(job_id)
+        if job is None or job.status != "pending":
+            return False
+        job.status = "canceled"
+        job.stage = "canceled"
+        job.progress = 100
+        job.finished_at = datetime.now(timezone.utc)
+        return True
 
     def _run(
         self,
@@ -102,7 +145,11 @@ class IngestionPipeline:
         options: dict[str, Any],
         is_update: bool = False,
     ) -> None:
+        if job.status == "canceled":
+            return
         job.status = "processing"
+        job.stage = "parse"
+        job.progress = 10
         job.started_at = datetime.now(timezone.utc)
 
         try:
@@ -117,6 +164,8 @@ class IngestionPipeline:
                 self._run_create(doc, raw_content, job, options)
 
             job.status = "completed"
+            job.stage = "completed"
+            job.progress = 100
 
         except Exception as exc:
             logger.exception("Ingestion job %s failed", job.job_id)
@@ -128,6 +177,8 @@ class IngestionPipeline:
                 except Exception:
                     logger.exception("Failed to persist failed document status")
             job.status = "failed"
+            job.stage = "failed"
+            job.progress = 100
             job.error = str(exc)
 
         job.finished_at = datetime.now(timezone.utc)
@@ -140,10 +191,12 @@ class IngestionPipeline:
         options: dict[str, Any],
     ) -> None:
         """新建文档入库流程。"""
-        if self._document_repo:
+        if self._document_repo and self._document_repo.get(doc.doc_id) is None:
             self._document_repo.create(doc)
 
         # 1. 解析文档
+        job.stage = "parse"
+        job.progress = 20
         if doc.source_uri.startswith("minio://"):
             raw = read_uri_bytes(doc.source_uri, self._minio_store)
             if doc.source_type.lower() in {"markdown", "md", "txt", "text"}:
@@ -157,7 +210,8 @@ class IngestionPipeline:
         assets = result.assets
         assets = self._prepare_assets(assets)
         job.asset_count = len(assets)
-        job.doc_ids.append(doc.doc_id)
+        if doc.doc_id not in job.doc_ids:
+            job.doc_ids.append(doc.doc_id)
 
         # 2. 递归加载嵌入子文档
         loader = RecursiveLoader(
@@ -167,7 +221,8 @@ class IngestionPipeline:
         )
         all_docs, embedded_elements = loader.load_embedded(doc, elements)
         for d in all_docs:
-            job.doc_ids.append(d.doc_id)
+            if d.doc_id not in job.doc_ids:
+                job.doc_ids.append(d.doc_id)
             if self._document_repo:
                 self._document_repo.create(d)
         elements.extend(embedded_elements)
@@ -176,6 +231,8 @@ class IngestionPipeline:
             self._element_repo.create_batch(elements)
 
         # 3. 语义抽取
+        job.stage = "extract"
+        job.progress = 55
         chunks = self._extractor.extract(
             elements, assets, doc.ingest_job_id, doc.category
         )
@@ -183,6 +240,8 @@ class IngestionPipeline:
         job.chunk_count = len(chunks)
 
         # 4. 索引
+        job.stage = "index"
+        job.progress = 75
         if chunks:
             self._index_chunks(chunks)
 
@@ -201,6 +260,8 @@ class IngestionPipeline:
     ) -> None:
         """增量更新已有文档，级联处理嵌入子文档。"""
         # 0. 乐观锁：先更新 status 为 processing，version += 1
+        job.stage = "parse"
+        job.progress = 20
         doc.version += 1
         if self._document_repo:
             self._document_repo.update(doc)
@@ -240,7 +301,8 @@ class IngestionPipeline:
             assets = result.assets
             assets = self._prepare_assets(assets)
             job.asset_count += len(assets)
-            job.doc_ids.append(target_doc.doc_id)
+            if target_doc.doc_id not in job.doc_ids:
+                job.doc_ids.append(target_doc.doc_id)
 
             # 3. 递归加载嵌入子文档（更新模式下子文档可能变化）
             loader = RecursiveLoader(
@@ -251,7 +313,8 @@ class IngestionPipeline:
             all_docs, embedded_elements = loader.load_embedded(target_doc, elements)
             for d in all_docs:
                 if d.doc_id not in [td.doc_id for td in docs_to_update]:
-                    job.doc_ids.append(d.doc_id)
+                    if d.doc_id not in job.doc_ids:
+                        job.doc_ids.append(d.doc_id)
                     if self._document_repo:
                         d.version = doc.version
                         d.status = DocStatus.active
@@ -265,6 +328,8 @@ class IngestionPipeline:
                 self._element_repo.create_batch(elements)
 
             # 5. 语义抽取
+            job.stage = "extract"
+            job.progress = 55
             chunks = self._extractor.extract(
                 elements, assets, target_doc.ingest_job_id, target_doc.category
             )
@@ -273,6 +338,8 @@ class IngestionPipeline:
             all_new_chunks.extend(chunks)
 
         # 6. 索引新知识块（先写后淘汰）
+        job.stage = "index"
+        job.progress = 75
         if all_new_chunks:
             self._index_chunks(all_new_chunks)
 

@@ -377,6 +377,30 @@ async def search_filters():
         except Exception:
             pass
 
+    # 补充文档仓储中的分类，覆盖尚未生成知识块的新文档。
+    if document_repo is not None and hasattr(document_repo, "list_paginated"):
+        try:
+            existing_categories = {item["value"]: item.get("count", 0) for item in filter_options["categories"]}
+            doc_categories: dict[str, int] = {}
+            page = 1
+            page_size = 200
+            while True:
+                docs, total = document_repo.list_paginated(page=page, page_size=page_size)
+                for doc in docs:
+                    category = getattr(doc, "category", None) or "通用"
+                    doc_categories[category] = doc_categories.get(category, 0) + 1
+                if page * page_size >= total or not docs:
+                    break
+                page += 1
+            for category, count in existing_categories.items():
+                doc_categories[category] = max(doc_categories.get(category, 0), count)
+            filter_options["categories"] = [
+                {"value": value, "count": count}
+                for value, count in sorted(doc_categories.items())
+            ]
+        except Exception:
+            pass
+
     # 来源类型（从文档仓储获取）
     if document_repo is not None and hasattr(document_repo, "list_paginated"):
         try:

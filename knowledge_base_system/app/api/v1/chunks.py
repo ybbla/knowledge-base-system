@@ -9,7 +9,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Depends, Query, status
 
 from app.api.v1.errors import ErrorCode
 from app.api.v1.schemas import (
@@ -110,8 +110,8 @@ def _resolve_chunk(chunk_id: str) -> KnowledgeChunk | None:
 
 @router.get("")
 async def list_chunks(
-    pagination: PaginationParams = Query(),
-    search: SearchParams = Query(),
+    pagination: PaginationParams = Depends(),
+    search: SearchParams = Depends(),
     doc_id: str | None = Query(default=None),
     doc_version: int | None = Query(default=None),
     category: str | None = Query(default=None),
@@ -401,6 +401,33 @@ async def restore_chunk(chunk_id: str):
 
 # ── 5.7 重建索引 ──────────────────────────────────────────────────
 
+@router.post("/batch/reindex")
+async def reindex_batch(chunk_ids: list[str] = Query(...)):
+    """批量重建知识块索引。"""
+    from app.api.v1.services import reindex_chunks_batch
+
+    chunks = []
+    for cid in chunk_ids:
+        chunk = _resolve_chunk(cid)
+        if chunk is not None:
+            chunks.append(chunk)
+
+    if not chunks:
+        return APIResponse(
+            data={"succeeded": [], "failed": []},
+            meta={"total_submitted": len(chunk_ids)},
+        ).model_dump(mode="json")
+
+    result = reindex_chunks_batch(
+        chunks, vector_index, bm25_index, embedding_client, chunk_store
+    )
+
+    return APIResponse(
+        data=result,
+        meta={"total_submitted": len(chunk_ids), "total_processed": len(chunks)},
+    ).model_dump(mode="json")
+
+
 @router.post("/{chunk_id}/reindex")
 async def reindex_single(chunk_id: str):
     """重建单个知识块的向量索引和 BM25 索引。"""
@@ -437,33 +464,6 @@ async def reindex_single(chunk_id: str):
             f"重建索引失败: {e}",
             status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-
-
-@router.post("/batch/reindex")
-async def reindex_batch(chunk_ids: list[str] = Query(...)):
-    """批量重建知识块索引。"""
-    from app.api.v1.services import reindex_chunks_batch
-
-    chunks = []
-    for cid in chunk_ids:
-        chunk = _resolve_chunk(cid)
-        if chunk is not None:
-            chunks.append(chunk)
-
-    if not chunks:
-        return APIResponse(
-            data={"succeeded": [], "failed": []},
-            meta={"total_submitted": len(chunk_ids)},
-        ).model_dump(mode="json")
-
-    result = reindex_chunks_batch(
-        chunks, vector_index, bm25_index, embedding_client, chunk_store
-    )
-
-    return APIResponse(
-        data=result,
-        meta={"total_submitted": len(chunk_ids), "total_processed": len(chunks)},
-    ).model_dump(mode="json")
 
 
 # ── 5.8 批量状态操作 ───────────────────────────────────────────────

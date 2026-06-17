@@ -2,11 +2,21 @@
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from app.core import deps
 
-router = APIRouter(prefix="/documents", tags=["documents"])
+
+def _mark_deprecated(response: Response) -> None:
+    """为旧文档接口添加运行时废弃提示。"""
+    response.headers["X-Deprecated"] = "Use /api/v1/documents"
+
+
+router = APIRouter(
+    prefix="/documents",
+    tags=["documents"],
+    dependencies=[Depends(_mark_deprecated)],
+)
 logger = logging.getLogger(__name__)
 
 

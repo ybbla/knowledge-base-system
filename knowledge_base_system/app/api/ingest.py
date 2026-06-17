@@ -1,6 +1,7 @@
+import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
 from app.core.deps import document_repo, ingestion_pipeline
@@ -8,6 +9,7 @@ from app.core.errors import DocumentNotFoundError
 from app.core.models import Document
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
+logger = logging.getLogger(__name__)
 
 
 class IngestDocument(BaseModel):
@@ -25,8 +27,10 @@ class IngestRequest(BaseModel):
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED, deprecated=True)
-async def ingest(request: IngestRequest):
+async def ingest(request: IngestRequest, response: Response):
     """提交文档入库任务。支持新建和增量更新两种模式。"""
+    response.headers["X-Deprecated"] = "Use /api/v1/documents/upload or /api/v1/documents/{doc_id}/ingest"
+    logger.warning("Deprecated endpoint POST /ingest called")
     job_ids: list[str] = []
     doc_ids: list[str] = []
     warnings: list[dict] = []
@@ -109,8 +113,10 @@ async def ingest(request: IngestRequest):
 
 
 @router.get("/{job_id}", deprecated=True)
-async def get_ingest_status(job_id: str):
+async def get_ingest_status(job_id: str, response: Response):
     """Query ingestion job progress."""
+    response.headers["X-Deprecated"] = "Use GET /api/v1/ingest/jobs/{job_id}"
+    logger.warning("Deprecated endpoint GET /ingest/%s called", job_id)
     job = ingestion_pipeline.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")

@@ -1,8 +1,7 @@
 /* ==========================================================================
    API 客户端 — 封装所有后端 API 调用（主版本 v1）
 
-   旧版接口（/health, /upload, /ingest, /search, /documents）已标记废弃，
-   保留以供兼容。所有新功能请使用 v1 接口。
+   前端所有功能统一使用 v1 接口；旧版接口仅由后端保留兼容期。
    ========================================================================== */
 
 const API = (() => {
@@ -11,14 +10,30 @@ const API = (() => {
   /* -----------------------------------------------------------------------
      通用请求封装
      ----------------------------------------------------------------------- */
+  function toQueryString(params = {}) {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value === undefined || value === null) return;
+      if (Array.isArray(value)) {
+        value.forEach(item => {
+          if (item !== undefined && item !== null) qs.append(key, item);
+        });
+        return;
+      }
+      qs.append(key, value);
+    });
+    return qs.toString();
+  }
+
+  function withParams(path, params) {
+    const qs = toQueryString(params);
+    if (!qs) return path;
+    return `${path}${path.includes('?') ? '&' : '?'}${qs}`;
+  }
+
   async function request(method, path, opts = {}) {
     const { body, params, timeout = 30000 } = opts;
-    let url = `${BASE}${path}`;
-
-    if (params) {
-      const qs = new URLSearchParams(params).toString();
-      url += `?${qs}`;
-    }
+    const url = `${BASE}${withParams(path, params)}`;
 
     const headers = {};
     let reqBody = null;
@@ -71,14 +86,6 @@ const API = (() => {
   function get(path, opts) { return request('GET', path, opts); }
   function post(path, body, opts) { return request('POST', path, { ...opts, body }); }
 
-  // 废弃标记辅助
-  function _deprecated(oldFn, name, replacement) {
-    return async function (...args) {
-      console.warn(`[API] ${name} 已废弃，请迁移到 ${replacement}`);
-      return oldFn(...args);
-    };
-  }
-
   /* =======================================================================
      API v1 — 健康检查（主版本）
      ======================================================================= */
@@ -98,10 +105,11 @@ const API = (() => {
   async function getDocument(docId) {
     return get(`/api/v1/documents/${docId}`);
   }
+  async function listDocumentElements(docId, params = {}) {
+    return get(`/api/v1/documents/${docId}/elements`, { params });
+  }
   async function updateDocument(docId, params) {
-    let url = `/api/v1/documents/${docId}`;
-    if (params) { url += `?${new URLSearchParams(params)}`; }
-    return request('PATCH', url, { timeout: 30000 });
+    return request('PATCH', `/api/v1/documents/${docId}`, { params, timeout: 30000 });
   }
   async function deleteDocument(docId) {
     return request('DELETE', `/api/v1/documents/${docId}`, { timeout: 30000 });
@@ -112,6 +120,29 @@ const API = (() => {
   async function ingestDocument(docId, mode = 'incremental') {
     return post(`/api/v1/documents/${docId}/ingest`, null, { params: { mode } });
   }
+  async function uploadDocument(file, title = '', category = '通用', options = {}) {
+    const fd = new FormData();
+    fd.append('file', file);
+    if (title) fd.append('title', title);
+    if (category) fd.append('category', category);
+    const params = {
+      ingest_after_create: options.ingestAfterCreate !== false,
+      mode: options.mode || 'incremental',
+    };
+    return post('/api/v1/documents/upload', fd, { params, timeout: 120000 });
+  }
+  async function listIngestJobs(params = {}) {
+    return get('/api/v1/ingest/jobs', { params });
+  }
+  async function getIngestJobV1(jobId) {
+    return get(`/api/v1/ingest/jobs/${jobId}`);
+  }
+  async function retryIngestJob(jobId) {
+    return post(`/api/v1/ingest/jobs/${jobId}/retry`);
+  }
+  async function cancelIngestJob(jobId) {
+    return post(`/api/v1/ingest/jobs/${jobId}/cancel`);
+  }
 
   /* =======================================================================
      API v1 — 知识块管理（主版本）
@@ -120,9 +151,7 @@ const API = (() => {
   async function createChunk(params)     { return post('/api/v1/chunks', null, { params }); }
   async function getChunk(chunkId)       { return get(`/api/v1/chunks/${chunkId}`); }
   async function updateChunk(chunkId, params) {
-    let url = `/api/v1/chunks/${chunkId}`;
-    if (params) { url += `?${new URLSearchParams(params)}`; }
-    return request('PATCH', url, { timeout: 30000 });
+    return request('PATCH', `/api/v1/chunks/${chunkId}`, { params, timeout: 30000 });
   }
   async function deleteChunk(chunkId) {
     return request('DELETE', `/api/v1/chunks/${chunkId}`, { timeout: 30000 });
@@ -166,47 +195,15 @@ const API = (() => {
   }
 
   /* =======================================================================
-     旧版 API — 保留兼容，已废弃（将在后续版本移除）
-     ======================================================================= */
-
-  /** @deprecated 使用 API.healthLive() / API.healthReady() 代替 */
-  async function _oldHealthCheck() { return get('/health'); }
-
-  /** @deprecated 使用 API.createDocument() + API.ingestDocument() 代替 */
-  async function _oldUploadFile(file, title, category) {
-    const fd = new FormData();
-    fd.append('file', file);
-    if (title) fd.append('title', title);
-    if (category) fd.append('category', category);
-    return post('/upload', fd, { timeout: 120000 });
-  }
-
-  /** @deprecated 使用 API.ingestDocument() 代替 */
-  async function _oldSubmitIngest(documents, options = {}) {
-    return post('/ingest', { documents, options }, { timeout: 60000 });
-  }
-
-  /** @deprecated 使用 /api/v1 的入库任务查询代替 */
-  async function _oldGetIngestJob(jobId) { return get(`/ingest/${jobId}`); }
-
-  /** @deprecated 使用 API.getDocument() 代替 */
-  async function _oldGetDocument(docId) { return get(`/documents/${docId}`); }
-
-  /** @deprecated 使用 /api/v1/documents 代替 */
-  async function _oldGetDocumentElements(docId) { return get(`/documents/${docId}/elements`); }
-
-  /** @deprecated 使用 API.listChunks() 代替 */
-  async function _oldGetDocumentChunks(docId) { return get(`/documents/${docId}/chunks`); }
-
-  /* =======================================================================
      公开 API — v1 方法为默认导出
      ======================================================================= */
   return {
     // ── v1 健康检查 ──
     healthLive, healthReady, healthDependencies,
     // ── v1 文档 ──
-    listDocuments, createDocument, getDocument, updateDocument,
-    deleteDocument, restoreDocument, ingestDocument,
+    listDocuments, createDocument, getDocument, listDocumentElements, updateDocument,
+    deleteDocument, restoreDocument, ingestDocument, uploadDocument,
+    listIngestJobs, getIngestJobV1, retryIngestJob, cancelIngestJob,
     // ── v1 知识块 ──
     listChunks, createChunk, getChunk, updateChunk,
     deleteChunk, restoreChunk, reindexChunk,
@@ -214,22 +211,20 @@ const API = (() => {
     // ── v1 检索 ──
     search, searchPreview, searchDebug, searchFilters, searchFeedback,
 
-    // ── 旧版兼容（废弃，控制台会输出警告） ──
-    healthCheck:       _deprecated(_oldHealthCheck, 'healthCheck()', 'healthLive() / healthReady()'),
-    uploadFile:        _deprecated(_oldUploadFile, 'uploadFile()', 'createDocument() + ingestDocument()'),
-    submitIngest:      _deprecated(_oldSubmitIngest, 'submitIngest()', 'ingestDocument()'),
-    getIngestJob:      _deprecated(_oldGetIngestJob, 'getIngestJob()', 'v1 入库任务接口'),
-    getDocumentElements: _deprecated(_oldGetDocumentElements, 'getDocumentElements()', 'v1 文档详情接口'),
-    getDocumentChunks: _deprecated(_oldGetDocumentChunks, 'getDocumentChunks()', 'listChunks()'),
-
     // 别名（旧代码引用旧方法名时的平滑过渡）
     v1ListDocuments: listDocuments,
     v1CreateDocument: createDocument,
     v1GetDocument: getDocument,
+    v1ListDocumentElements: listDocumentElements,
     v1UpdateDocument: updateDocument,
     v1DeleteDocument: deleteDocument,
     v1RestoreDocument: restoreDocument,
     v1IngestDocument: ingestDocument,
+    v1UploadDocument: uploadDocument,
+    v1ListIngestJobs: listIngestJobs,
+    v1GetIngestJob: getIngestJobV1,
+    v1RetryIngestJob: retryIngestJob,
+    v1CancelIngestJob: cancelIngestJob,
     v1ListChunks: listChunks,
     v1CreateChunk: createChunk,
     v1GetChunk: getChunk,

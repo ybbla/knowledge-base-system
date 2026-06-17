@@ -1,5 +1,6 @@
 """文档去重功能测试：上传去重 + 入库去重。"""
 
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -8,12 +9,12 @@ from fastapi.testclient import TestClient
 from app.api import ingest as ingest_api
 from app.api import upload as upload_api
 from app.core.deps import ingestion_pipeline
-from app.core.models import Document
+from app.core.models import DocStatus, Document
 from app.main import app
 
 client = TestClient(app)
 
-DUMMY_HASH = "sha256:abc123def456"
+DUMMY_HASH = f"sha256:{hashlib.sha256(b'# content').hexdigest()}"
 
 
 class _FakeDocumentRepo:
@@ -59,6 +60,7 @@ def test_upload_dedup_hit_returns_duplicate(monkeypatch, tmp_path):
         title="已有文档", source_type="markdown",
         source_uri="minio://kb-input/old/doc.md",
         source_hash=DUMMY_HASH, category="通用",
+        status=DocStatus.active,
     )
     repo = _FakeDocumentRepo(existing)
     monkeypatch.setattr(upload_api, "document_repo", repo)
@@ -98,8 +100,6 @@ def test_upload_new_file_returns_no_duplicate(monkeypatch, tmp_path):
 
 def test_upload_failed_doc_not_intercepted(monkeypatch, tmp_path):
     """status=failed 的文档不拦截上传"""
-    from app.core.models import DocStatus
-
     existing = Document(
         title="失败文档", source_type="markdown",
         source_uri="minio://kb-input/fail/doc.md",
@@ -133,6 +133,7 @@ def test_ingest_new_activates_dedup(monkeypatch):
         title="现存", source_type="markdown",
         source_uri="minio://old/doc.md",
         source_hash=DUMMY_HASH, category="通用",
+        status=DocStatus.active,
     )
     repo = _FakeDocumentRepo(existing)
     fake_pipeline = _FakeIngestionPipeline()
@@ -159,6 +160,7 @@ def test_ingest_update_bypasses_dedup(monkeypatch):
         title="现存", source_type="markdown",
         source_uri="minio://old/doc.md",
         source_hash="sha256:oldhash", category="通用",
+        status=DocStatus.active,
     )
     repo = _FakeDocumentRepo(existing)
     fake_pipeline = _FakeIngestionPipeline()
@@ -187,6 +189,7 @@ def test_ingest_update_no_change_skips(monkeypatch):
         title="现存", source_type="markdown",
         source_uri="minio://old/doc.md",
         source_hash=DUMMY_HASH, category="通用",
+        status=DocStatus.active,
     )
     repo = _FakeDocumentRepo(existing)
     fake_pipeline = _FakeIngestionPipeline()

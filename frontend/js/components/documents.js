@@ -230,7 +230,7 @@ const Documents = (() => {
   }
 
   /* -----------------------------------------------------------------------
-     上传页面（使用旧 upload 接口——上传链路暂不迁移）
+     上传页面（v1 上传并可自动提交入库）
      ----------------------------------------------------------------------- */
   let selectedFile = null;
 
@@ -371,22 +371,25 @@ const Documents = (() => {
     progressFill.style.width = '30%'; progressText.textContent = '正在上传文件…';
 
     try {
-      const result = await API.uploadFile(selectedFile, title, category);
-      progressFill.style.width = '60%'; progressText.textContent = '上传完成，正在提交入库…';
+      const result = await API.uploadDocument(selectedFile, title, category, {
+        ingestAfterCreate: true,
+        mode: 'incremental',
+      });
+      const data = result?.data || {};
+      progressFill.style.width = '60%'; progressText.textContent = '上传完成，正在提交入库...';
 
-      await API.submitIngest([{
-        title: title || selectedFile.name,
-        source_type: detectSourceType(selectedFile.name),
-        source_uri: result.source_uri,
-        source_hash: result.source_hash,
-        category: category,
-      }]);
-
-      progressFill.style.width = '100%'; progressText.textContent = '入库任务已提交！';
-      UI.toast(`文档 "${title || selectedFile.name}" 已上传并提交入库`, 'success');
+      progressFill.style.width = '100%';
+      if (data.duplicate) {
+        progressText.textContent = '发现重复文档，已跳过上传。';
+        UI.toast(`文档已存在：${data.existing_doc_id}`, 'warning');
+      } else {
+        progressText.textContent = data.ingest_job_id ? '入库任务已提交！' : '上传完成！';
+        UI.toast(`文档 "${title || selectedFile.name}" 已上传并提交入库`, 'success');
+      }
       setTimeout(() => {
         closeUploadModal();
         loadPage(currentPage);
+        if (data.ingest_job_id) App.router.navigate('/ingestion');
       }, 1000);
     } catch (e) {
       progressText.textContent = `失败: ${e.message}`;

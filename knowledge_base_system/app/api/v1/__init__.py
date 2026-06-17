@@ -27,8 +27,9 @@ def mount_v1_sub_routers() -> None:
     中因 import 链触发预先存在的依赖问题。
     在 main.py 的 app 创建完成后调用。
     """
-    from app.api.v1 import chunks, documents, health, search  # noqa: F811
+    from app.api.v1 import chunks, documents, health, ingest, search  # noqa: F811
     router.include_router(health.router)
     router.include_router(documents.router)
     router.include_router(chunks.router)
+    router.include_router(ingest.router)
     router.include_router(search.router)

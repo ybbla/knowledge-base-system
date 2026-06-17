@@ -1,15 +1,6 @@
-# Document Deduplication
-
-## Purpose
-
-基于 `source_hash`（SHA256 内容指纹）在文档上传和入库两层实现内容去重，防止相同文件的重复入库和索引。
-
-> 新建自 change `document-dedup-incremental-update`，日期 2026-06-15。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: 上传阶段基于 source_hash 去重
-
 系统 SHALL 在 `POST /api/v1/documents/upload` 接收文件后、写入 MinIO 或本地输入存储前，计算文件 `source_hash` 并查询 PostgreSQL 检查内容是否已存在。命中的活跃文档 SHALL 阻止重复文件写入对象存储。
 
 #### Scenario: 上传已存在的文件
@@ -34,7 +25,6 @@
 - **AND** 响应 `data.duplicate` SHALL 为 `false`
 
 ### Requirement: 入库阶段基于 source_hash 去重
-
 系统 SHALL 在 v1 文档创建和上传创建阶段基于 `source_hash` 查询 PostgreSQL，阻止 `status='active'` 的重复文档进入入库管道；对已有文档执行 `POST /api/v1/documents/{doc_id}/ingest` 时 SHALL 使用该文档当前记录，不再按 hash 创建新文档。
 
 #### Scenario: 创建并入库已存在的活跃文档
@@ -54,11 +44,3 @@
 - **WHEN** 客户端请求 `POST /api/v1/documents/doc_xxx/ingest?mode=incremental`
 - **THEN** 系统 SHALL 使用 `doc_xxx` 当前的 `source_hash` 和 `source_uri` 进入更新流程
 - **AND** 系统 SHALL NOT 创建新的 Document 记录
-
-### Requirement: 数据库 source_hash 部分唯一索引
-
-数据库 SHALL 在 `documents` 表上为 `source_hash` 建立部分唯一索引，仅对 `status = 'active'` 的行生效，作为去重的最后防线。
-
-#### Scenario: 并发插入相同 hash 的活跃文档被数据库拒绝
-- **WHEN** 两个并发入库请求尝试插入相同 `source_hash` 且均设置 `status='active'`
-- **THEN** 数据库层唯一索引阻止第二个插入，返回约束冲突错误

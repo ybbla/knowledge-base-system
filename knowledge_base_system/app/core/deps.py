@@ -29,32 +29,63 @@ parser_registry.register(MarkdownParser(), DocxParser(), XlsxParser(), HtmlParse
 
 # ── Backend selection ─────────────────────────────────────────────────
 
+def _init_postgres_backend() -> bool:
+    """尝试初始化 PostgreSQL 后端。不可用时自动回退到内存后端。"""
+    from sqlalchemy import text
+
+    try:
+        from app.db.engine import get_engine
+        from app.db.engine import create_session_factory as pg_create_session_factory
+        from app.db.engine import ensure_runtime_schema
+        from app.db.models import Base
+        from app.db.repositories.assets import PgAssetStore
+        from app.db.repositories.chunks import PgChunkStore
+        from app.db.repositories.documents import DocumentRepository
+        from app.db.repositories.elements import ParsedElementRepository
+
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+
+        Base.metadata.create_all(engine)
+        ensure_runtime_schema()
+
+        sf = pg_create_session_factory()
+        globals()["session_factory"] = sf
+        globals()["asset_store"] = PgAssetStore(sf)
+        globals()["chunk_store"] = PgChunkStore(sf)
+        globals()["document_repo"] = DocumentRepository(sf)
+        globals()["element_repo"] = ParsedElementRepository(sf)
+        return True
+    except Exception:
+        logger.exception("PostgreSQL 不可用，回退到内存后端")
+        return False
+
+
+def _init_memory_backend() -> None:
+    """初始化内存后端作为兜底。"""
+    globals()["asset_store"] = MemoryAssetStore()
+    globals()["chunk_store"] = ChunkStore()
+    globals()["document_repo"] = None
+    globals()["element_repo"] = None
+    globals()["session_factory"] = None
+
+
+# 默认值（内存后端），确保变量始终有定义
+session_factory = None
+asset_store: MemoryAssetStore = MemoryAssetStore()
+chunk_store: ChunkStore = ChunkStore()
+document_repo = None
+element_repo = None
+
 if settings.backend == "postgres":
-    from app.db.engine import get_engine
-    from app.db.engine import create_session_factory as pg_create_session_factory
-    from app.db.engine import ensure_runtime_schema
-    from app.db.models import Base
-    from app.db.repositories.assets import PgAssetStore
-    from app.db.repositories.chunks import PgChunkStore
-    from app.db.repositories.documents import DocumentRepository
-    from app.db.repositories.elements import ParsedElementRepository
-
-    # Create tables on startup
-    engine = get_engine()
-    Base.metadata.create_all(engine)
-    ensure_runtime_schema()
-
-    session_factory = pg_create_session_factory()
-    asset_store = PgAssetStore(session_factory)
-    chunk_store = PgChunkStore(session_factory)
-    document_repo = DocumentRepository(session_factory)
-    element_repo = ParsedElementRepository(session_factory)
+    if not _init_postgres_backend():
+        _init_memory_backend()
+elif settings.backend == "memory":
+    _init_memory_backend()
 else:
-    asset_store = MemoryAssetStore()
-    chunk_store = ChunkStore()
-    document_repo = None
-    element_repo = None
-    session_factory = None
+    logger.warning("未知的 backend 配置 '%s'，回退到内存后端", settings.backend)
+    _init_memory_backend()
 
 # ── Optional MinIO backend ─────────────────────────────────────────────
 

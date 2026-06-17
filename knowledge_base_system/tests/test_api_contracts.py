@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from app.api import ingest as ingest_api
-from app.api import search as search_api
 from app.api import upload as upload_api
+from app.api.v1 import documents as documents_api
+from app.api.v1 import search as search_api
 from app.core.models import KnowledgeChunk
 from app.main import app
 from indexing.memory_bm25 import MemoryBM25Index
@@ -26,6 +26,24 @@ class _FakeIngestionPipeline:
         return SimpleNamespace(job_id=doc.doc_id)
 
 
+class _FakeDocumentRepo:
+    def __init__(self) -> None:
+        self.created = []
+
+    def find_by_hash(self, source_hash: str):
+        return None
+
+    def create(self, doc):
+        self.created.append(doc)
+        return doc
+
+    def get(self, doc_id: str):
+        for doc in self.created:
+            if doc.doc_id == doc_id:
+                return doc
+        return None
+
+
 def test_upload_defaults_and_writes_file(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(upload_api, "UPLOAD_DIR", Path("data/uploads"))
@@ -36,12 +54,12 @@ def test_upload_defaults_and_writes_file(monkeypatch, tmp_path):
     )
 
     response = client.post(
-        "/upload",
+        "/api/v1/documents/upload?ingest_after_create=false",
         files={"file": ("manual.md", b"# Manual\nBody", "text/markdown")},
     )
 
-    assert response.status_code == 200
-    data = response.json()
+    assert response.status_code == 201
+    data = response.json()["data"]
     assert data["title"] == "manual"
     assert data["category"] == "\u901a\u7528"
     assert data["file_name"] == "manual.md"
@@ -75,12 +93,12 @@ def test_upload_falls_back_to_local_when_minio_unavailable(monkeypatch, tmp_path
     monkeypatch.setattr(upload_api, "MinioAssetStore", _FailingMinioAssetStore)
 
     response = client.post(
-        "/upload",
+        "/api/v1/documents/upload?ingest_after_create=false",
         files={"file": ("manual.md", b"# Manual\nBody", "text/markdown")},
     )
 
-    assert response.status_code == 200
-    data = response.json()
+    assert response.status_code == 201
+    data = response.json()["data"]
     assert data["source_uri"].startswith("file://data/uploads/")
     assert data["size"] == len(b"# Manual\nBody")
 
@@ -89,42 +107,34 @@ def test_upload_falls_back_to_local_when_minio_unavailable(monkeypatch, tmp_path
     assert stored.read_bytes() == b"# Manual\nBody"
 
 
-def test_ingest_requires_source_uri():
+def test_create_document_requires_source_uri():
     response = client.post(
-        "/ingest",
-        json={
-            "documents": [
-                {
-                    "title": "Manual",
-                    "source_type": "markdown",
-                }
-            ]
-        },
+        "/api/v1/documents",
+        params={"title": "Manual", "source_type": "markdown"},
     )
 
     assert response.status_code == 422
 
 
-def test_ingest_defaults_category_and_returns_202(monkeypatch):
+def test_create_document_defaults_category_and_ingests(monkeypatch):
     fake = _FakeIngestionPipeline()
-    monkeypatch.setattr(ingest_api, "ingestion_pipeline", fake)
+    repo = _FakeDocumentRepo()
+    monkeypatch.setattr(documents_api, "document_repo", repo)
+    monkeypatch.setattr(documents_api, "ingestion_pipeline", fake)
 
     response = client.post(
-        "/ingest",
-        json={
-            "documents": [
-                {
-                    "title": "Manual",
-                    "source_type": "markdown",
-                    "source_uri": "file://data/uploads/manual.md",
-                    "source_hash": "sha256:test",
-                }
-            ]
+        "/api/v1/documents",
+        params={
+            "title": "Manual",
+            "source_type": "markdown",
+            "source_uri": "file://data/uploads/manual.md",
+            "source_hash": "sha256:test",
+            "ingest_after_create": True,
         },
     )
 
-    assert response.status_code == 202
-    assert response.json()["status"] == "accepted"
+    assert response.status_code == 201
+    assert response.json()["error"] is None
     [(doc, options)] = fake.submitted
     assert doc.source_uri == "file://data/uploads/manual.md"
     assert doc.category == "\u901a\u7528"
@@ -188,18 +198,20 @@ def test_search_filters_by_category(monkeypatch):
     pipeline._rewriter = _FakeRewriter()
     pipeline._reranker = _FakeReranker()
     monkeypatch.setattr(search_api, "retrieval_pipeline", pipeline)
+    monkeypatch.setattr(search_api, "chunk_store", chunk_store)
+    monkeypatch.setattr(search_api, "document_repo", None)
 
     response = client.post(
-        "/search",
+        "/api/v1/search",
         json={
             "query": "upload",
             "top_k": 5,
-            "filters": {"category": "manuals"},
+            "filters": {"categories": ["manuals"]},
         },
     )
 
     assert response.status_code == 200
-    data = response.json()
+    data = response.json()["data"]
     assert data["total_count"] == 1
     assert [item["chunk_id"] for item in data["results"]] == ["chunk_manual"]
     assert data["results"][0]["category"] == "manuals"

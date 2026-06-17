@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
 
 from app.core.deps import retrieval_pipeline
@@ -13,8 +13,9 @@ class SearchRequest(BaseModel):
 
 
 @router.post("", deprecated=True)
-async def search(request: SearchRequest):
+async def search(request: SearchRequest, response: Response):
     """Search knowledge base and return ranked results."""
+    response.headers["X-Deprecated"] = "Use POST /api/v1/search"
     result = retrieval_pipeline.search(
         request.query,
         top_k=request.top_k,

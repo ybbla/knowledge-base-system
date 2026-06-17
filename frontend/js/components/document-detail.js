@@ -19,13 +19,14 @@ const DocumentDetail = (() => {
     UI.render(`<div class="loading-overlay"><div class="loading-spinner"></div><span>加载文档详情…</span></div>`);
 
     try {
-      const [docRes, chunksRes] = await Promise.all([
+      const [docRes, chunksRes, elementsRes] = await Promise.all([
         API.getDocument(docId),
         API.listChunks({ doc_id: docId, page_size: 200 }),
+        API.listDocumentElements(docId, { page_size: 500 }),
       ]);
       currentDoc = docRes?.data || {};
       chunks = chunksRes?.data || [];
-      elements = [];
+      elements = elementsRes?.data || [];
     } catch (e) {
       UI.render(`
         <div class="empty-state">
@@ -137,7 +138,7 @@ const DocumentDetail = (() => {
 
   function renderElementsHtml() {
     if (elements.length === 0) {
-      return `<div class="empty-state"><div class="empty-state-icon">📋</div><div class="empty-state-title">暂无解析元素（需在后端 PG 模式下查看）</div></div>`;
+      return `<div class="empty-state"><div class="empty-state-icon">📋</div><div class="empty-state-title">暂无解析元素</div></div>`;
     }
     return `
       <div class="element-list">

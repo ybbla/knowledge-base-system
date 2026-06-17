@@ -36,15 +36,15 @@ class Settings(BaseSettings):
     # LLM retry
     max_json_retries: int = 3
 
-    # Backend mode (no prefix — read from raw env vars)
-    backend: str = Field(default="memory", validation_alias="BACKEND")
+    # Backend mode（默认尝试外部服务，不可用时自动回退到内存/本地）
+    backend: str = Field(default="postgres", validation_alias="BACKEND")
     database_url: str = Field(
         default="postgresql://kbuser:kbpass@localhost:5432/knowledge_base",
         validation_alias="DATABASE_URL",
     )
 
-    # Milvus
-    milvus_enabled: bool = Field(default=False, validation_alias="MILVUS_ENABLED")
+    # Milvus（默认尝试连接，不可用时自动回退到内存索引）
+    milvus_enabled: bool = Field(default=True, validation_alias="MILVUS_ENABLED")
     milvus_host: str = Field(default="localhost", validation_alias="MILVUS_HOST")
     milvus_port: int = Field(default=19530, validation_alias="MILVUS_PORT")
     milvus_collection: str = Field(
@@ -55,8 +55,8 @@ class Settings(BaseSettings):
         default=100000, validation_alias="MILVUS_SPARSE_MAX_VOCAB"
     )
 
-    # MinIO
-    minio_enabled: bool = Field(default=False, validation_alias="MINIO_ENABLED")
+    # MinIO（默认尝试连接，不可用时自动回退到本地存储）
+    minio_enabled: bool = Field(default=True, validation_alias="MINIO_ENABLED")
     minio_endpoint: str = Field(default="localhost:9000", validation_alias="MINIO_ENDPOINT")
     minio_access_key: str = Field(
         default="minioadmin", validation_alias="MINIO_ACCESS_KEY"

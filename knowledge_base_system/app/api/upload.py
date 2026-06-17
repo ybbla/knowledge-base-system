@@ -3,7 +3,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Response, UploadFile
 
 from app.core.config import get_settings
 from app.core.deps import document_repo
@@ -15,25 +15,39 @@ from assets.minio_store import MinioAssetStore, make_minio_key
 router = APIRouter(prefix="/upload", tags=["upload"])
 logger = logging.getLogger(__name__)
 
-DEFAULT_CATEGORY = "\u901a\u7528"
+DEFAULT_CATEGORY = "通用"
 CHUNK_SIZE = 1024 * 1024
 MINIO_PART_SIZE = 10 * 1024 * 1024
 
 
 @router.post("", deprecated=True)
 async def upload_file(
+    response: Response,
     file: UploadFile = File(...),
     title: str | None = Form(default=None),
     category: str = Form(default=DEFAULT_CATEGORY),
 ):
     """保存上传文件并返回可入库的 source URI。"""
+    response.headers["X-Deprecated"] = "Use POST /api/v1/documents/upload"
+    logger.warning("Deprecated endpoint POST /upload called")
+    return save_upload_file(file, title=title, category=category)
+
+
+def save_upload_file(
+    file: UploadFile,
+    *,
+    title: str | None = None,
+    category: str = DEFAULT_CATEGORY,
+    doc_id: str | None = None,
+    check_duplicate: bool = True,
+) -> dict:
+    """保存上传文件，供旧接口和 v1 上传接口复用。"""
     cfg = get_settings(reload_env=True)
     original_name = file.filename or "upload"
     source_hash, size = _hash_upload(file)
-    doc_id = new_id("doc")
+    resolved_doc_id = doc_id or new_id("doc")
 
-    # ── 上传阶段去重：按 source_hash 查 DB，命中活跃文档则不写 MinIO ──
-    if document_repo is not None:
+    if check_duplicate and document_repo is not None:
         existing = document_repo.find_by_hash(source_hash)
         if existing is not None:
             return {
@@ -41,7 +55,7 @@ async def upload_file(
                 "existing_doc_id": existing.doc_id,
                 "source_uri": existing.source_uri,
                 "source_hash": source_hash,
-                "doc_id": doc_id,
+                "doc_id": resolved_doc_id,
                 "file_name": original_name,
                 "size": size,
                 "title": title or Path(original_name).stem,
@@ -51,7 +65,7 @@ async def upload_file(
     if cfg.minio_enabled:
         try:
             store = MinioAssetStore(MemoryAssetStore())
-            key = make_minio_key(doc_id, original_name)
+            key = make_minio_key(resolved_doc_id, original_name)
             store.ensure_buckets()
             file.file.seek(0)
             store.client.put_object(
@@ -70,9 +84,10 @@ async def upload_file(
         source_uri = _write_local_upload(file, original_name)
 
     return {
+        "duplicate": False,
         "source_uri": source_uri,
         "source_hash": source_hash,
-        "doc_id": doc_id,
+        "doc_id": resolved_doc_id,
         "file_name": original_name,
         "size": size,
         "title": title or Path(original_name).stem,

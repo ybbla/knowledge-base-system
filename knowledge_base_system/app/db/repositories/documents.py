@@ -51,13 +51,17 @@ class DocumentRepository(BaseRepository):
         )
 
     def find_by_hash(self, source_hash: str) -> Document | None:
-        """按 source_hash 查找活跃文档（status='active'），用于去重检查。"""
+        """按 source_hash 查找非删除文档，用于去重检查。
+
+        排除 status='deleted' 的文档，active/pending/processing/failed 均视为冲突。
+        """
         if not source_hash:
             return None
         with self._session() as session:
             db_doc = (
                 session.query(DbDocument)
-                .filter_by(source_hash=source_hash, status="active")
+                .filter(DbDocument.source_hash == source_hash)
+                .filter(DbDocument.status != "deleted")
                 .first()
             )
             if db_doc is None:

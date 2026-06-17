@@ -9,6 +9,7 @@ const Ingestion = (() => {
   let submitDocuments = [];
   let submitCategories = [];
   let previousIngestCategory = '通用';
+  let jobStatusFilter = '';
 
   async function render() {
     UI.setBreadcrumb([{ label: '仪表盘', path: '#/' }, { label: '入库任务' }]);
@@ -21,6 +22,14 @@ const Ingestion = (() => {
             <p class="page-subtitle">管理文档入库任务，监控解析与索引进度</p>
           </div>
           <div class="page-actions">
+            <select class="select select-sm" onchange="Ingestion.setStatusFilter(this.value)">
+              <option value="">全部状态</option>
+              <option value="pending" ${jobStatusFilter === 'pending' ? 'selected' : ''}>待处理</option>
+              <option value="processing" ${jobStatusFilter === 'processing' ? 'selected' : ''}>处理中</option>
+              <option value="completed" ${jobStatusFilter === 'completed' ? 'selected' : ''}>已完成</option>
+              <option value="failed" ${jobStatusFilter === 'failed' ? 'selected' : ''}>失败</option>
+              <option value="canceled" ${jobStatusFilter === 'canceled' ? 'selected' : ''}>已取消</option>
+            </select>
             <button class="btn btn-secondary btn-sm" onclick="Ingestion.refresh()">⟳ 刷新</button>
             <button class="btn btn-primary btn-sm" onclick="Ingestion.showSubmitModal()">+ 新建入库</button>
           </div>
@@ -30,7 +39,7 @@ const Ingestion = (() => {
       <div class="card pipeline-card ingestion-overview">
         <div>
           <h3 class="card-title">入库管道</h3>
-          <p class="inline-note">这里展示的是提交到本浏览器追踪过的入库任务；清除浏览器缓存后，本地任务记录会被清空。</p>
+          <p class="inline-note">这里展示服务端当前可见的入库任务，可按状态筛选并处理失败或待执行任务。</p>
         </div>
         <div class="pipeline-stages">
           <span class="pipeline-stage">上传/登记</span><span class="pipeline-arrow">→</span>
@@ -53,16 +62,12 @@ const Ingestion = (() => {
     const jobListEl = document.getElementById('jobList');
     if (!jobListEl) return;
 
-    // 从 localStorage 读取提交过的 job ID，通过旧接口查询状态
     try {
-      const storedIds = JSON.parse(localStorage.getItem('kb_job_ids') || '[]');
-      const results = await Promise.allSettled(
-        storedIds.map(id => API.getIngestJob(id))
-      );
-      jobs = results.filter(r => r.status === 'fulfilled').map(r => r.value).filter(Boolean);
-
-      const validIds = jobs.map(j => j.job_id);
-      localStorage.setItem('kb_job_ids', JSON.stringify(validIds));
+      const res = await API.listIngestJobs({
+        page_size: 50,
+        status: jobStatusFilter || undefined,
+      });
+      jobs = res?.data || [];
     } catch (e) {
       jobs = [];
     }
@@ -127,7 +132,11 @@ const Ingestion = (() => {
           ${completedAt ? `<div class="job-stat"><span class="job-stat-value" style="font-size: var(--text-sm);">${UI.formatTime(completedAt)}</span><span class="job-stat-label">完成时间</span></div>` : ''}
         </div>
         ${error ? `<div class="job-error">⚠ ${UI.escapeHtml(error)}</div>` : ''}
-        ${primaryDocId ? `<div class="job-actions"><button class="btn btn-sm btn-ghost" onclick="App.router.navigate('/documents/${primaryDocPath}')">查看文档</button></div>` : ''}
+        <div class="job-actions">
+          ${primaryDocId ? `<button class="btn btn-sm btn-ghost" onclick="App.router.navigate('/documents/${primaryDocPath}')">查看文档</button>` : ''}
+          ${job.status === 'failed' ? `<button class="btn btn-sm btn-secondary" onclick="Ingestion.retryJob('${UI.escapeHtml(job.job_id)}')">重试</button>` : ''}
+          ${job.status === 'pending' ? `<button class="btn btn-sm btn-danger" onclick="Ingestion.cancelJob('${UI.escapeHtml(job.job_id)}')">取消</button>` : ''}
+        </div>
       </div>
     `;
   }
@@ -306,7 +315,6 @@ const Ingestion = (() => {
         UI.toast('已创建文档并提交入库', 'success');
       }
 
-      rememberJobId(jobId);
       document.querySelector('.modal-backdrop')?.remove();
       await refresh();
     } catch (e) {
@@ -435,12 +443,28 @@ const Ingestion = (() => {
     cancelIngestCategory();
   }
 
-  function rememberJobId(jobId) {
-    if (!jobId) return;
-    const storedIds = JSON.parse(localStorage.getItem('kb_job_ids') || '[]');
-    if (!storedIds.includes(jobId)) {
-      storedIds.unshift(jobId);
-      localStorage.setItem('kb_job_ids', JSON.stringify(storedIds.slice(0, 50)));
+  function setStatusFilter(value) {
+    jobStatusFilter = value || '';
+    refresh();
+  }
+
+  async function retryJob(jobId) {
+    try {
+      await API.retryIngestJob(jobId);
+      UI.toast('已重新提交入库任务', 'success');
+      await refresh();
+    } catch (e) {
+      UI.toast(`重试失败: ${e.message}`, 'error');
+    }
+  }
+
+  async function cancelJob(jobId) {
+    try {
+      await API.cancelIngestJob(jobId);
+      UI.toast('任务已取消', 'success');
+      await refresh();
+    } catch (e) {
+      UI.toast(`取消失败: ${e.message}`, 'error');
     }
   }
 
@@ -448,5 +472,6 @@ const Ingestion = (() => {
     render, refresh, showSubmitModal, submitNewJob,
     onSubmitModeChange, onIngestUriInput, onIngestCategorySelect,
     cancelIngestCategory, confirmIngestCategory,
+    setStatusFilter, retryJob, cancelJob,
   };
 })();
