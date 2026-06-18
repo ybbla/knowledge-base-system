@@ -290,44 +290,96 @@ async def search_preview(request: SearchRequest):
 
 # ── 6.6 调试检索 ──────────────────────────────────────────────────
 
+
+def _enrich_candidate_with_title(candidates: list[tuple[str, float]]) -> list[dict]:
+    """给候选列表补充知识块标题，方便前端展示。"""
+    result: list[dict] = []
+    for chunk_id, score in candidates:
+        chunk = _get_chunk(chunk_id)
+        result.append({
+            "chunk_id": chunk_id,
+            "score": score,
+            "title": chunk.title if chunk else None,
+        })
+    return result
+
+
+def _enrich_rerank_results(rerank_results: list[dict]) -> list[dict]:
+    """给 Rerank 结果补充标题信息。"""
+    result: list[dict] = []
+    for entry in rerank_results:
+        chunk = _get_chunk(entry.get("chunk_id", ""))
+        result.append({
+            **entry,
+            "title": chunk.title if chunk else None,
+        })
+    return result
+
+
 @router.post("/debug")
 async def search_debug(request: SearchRequest):
     """调试检索 — 返回查询改写、各阶段候选和 Rerank 结果。
 
+    返回完整的检索链路：
+    1. 查询改写阶段（原始查询、改写后查询、关键词）
+    2. 向量检索 Top N 候选（含分数、标题）
+    3. BM25 检索 Top N 候选（含分数、标题）
+    4. RRF 融合后的排序（含分数、标题）
+    5. LLM Rerank 后的最终排序（含分数、标题）
+    6. 过滤后的最终结果
+
     安全：不返回密钥、完整提示词或底层堆栈。
     """
     try:
-        result = await _execute_search(request)
+        filters = request.filters
+        retrieval_top_k = max(request.top_k * 10, 50)
+        category = filters.categories[0] if filters.categories and len(filters.categories) == 1 else None
 
-        debug_info = {
+        # 调用 debug 模式的 pipeline，拿到 (result, debug_info)
+        result_tuple = retrieval_pipeline.search(
+            request.query,
+            top_k=retrieval_top_k,
+            category=category,
+            debug=True,
+        )
+        result, debug_info = result_tuple  # type: ignore
+
+        # 对结果应用过滤和 enrich
+        result_dict = result.model_dump(mode="json")
+        result_dict = _filter_and_enrich_result(result_dict, request)
+        result_dict = _enrich_result(result_dict, request.options)
+
+        # 构造完整调试信息
+        debug_payload = {
             "query": request.query,
-            "rewritten_query": result.get("rewritten_query", ""),
+            "rewritten_query": debug_info.rewritten_query,
+            "keywords": debug_info.keywords,
             "filters": request.filters.model_dump(exclude_none=True),
-            "total_count": result.get("total_count", 0),
-            "results": result.get("results", []),
+            "total_count": result_dict.get("total_count", 0),
+            "results": result_dict.get("results", []),
+            # 各阶段完整候选（含标题）
             "rewrite": {
-                "query": request.query,
-                "rewritten_query": result.get("rewritten_query", ""),
+                "original_query": debug_info.original_query,
+                "rewritten_query": debug_info.rewritten_query,
+                "keywords": debug_info.keywords,
             },
-            "vector_candidates": [
-                {"chunk_id": item.get("chunk_id"), "score": item.get("score_components", {}).get("vector", 0.0)}
-                for item in result.get("results", [])
-            ],
-            "bm25_candidates": [
-                {"chunk_id": item.get("chunk_id"), "score": item.get("score_components", {}).get("bm25", 0.0)}
-                for item in result.get("results", [])
-            ],
-            "fused_candidates": [
-                {"chunk_id": item.get("chunk_id"), "score": item.get("score", 0.0)}
-                for item in result.get("results", [])
-            ],
-            "rerank_results": [
-                {"chunk_id": item.get("chunk_id"), "score": item.get("score_components", {}).get("rerank", item.get("score", 0.0))}
-                for item in result.get("results", [])
-            ],
+            "vector_candidates": _enrich_candidate_with_title(debug_info.vector_candidates),
+            "bm25_candidates": _enrich_candidate_with_title(debug_info.bm25_candidates),
+            "fused_candidates": _enrich_candidate_with_title(debug_info.fused_candidates),
+            "rerank_results": _enrich_rerank_results(debug_info.rerank_results),
+            # 统计信息
+            "stats": {
+                "vector_count": debug_info.vector_count,
+                "bm25_count": debug_info.bm25_count,
+                "fused_count": debug_info.fused_count,
+                "rerank_count": debug_info.rerank_count,
+                "used_milvus_hybrid": debug_info.used_milvus_hybrid,
+            },
+            "errors": debug_info.errors,
         }
+
         return APIResponse(
-            data=debug_info,
+            data=debug_payload,
             meta={"mode": "debug"},
         ).model_dump(mode="json")
     except Exception as e:

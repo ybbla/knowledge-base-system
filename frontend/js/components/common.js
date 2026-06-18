@@ -150,6 +150,24 @@ const UI = (() => {
     return `<span class="badge-fmt ${cls}">${label}</span>`;
   }
 
+  function sourceTypeLabel(sourceType) {
+    const map = {
+      markdown: 'Markdown',
+      md: 'Markdown',
+      txt: 'TXT',
+      text: 'TXT',
+      docx: 'DOCX',
+      xlsx: 'XLSX',
+      html: 'HTML',
+      htm: 'HTML',
+      pdf: 'PDF',
+      pptx: 'PPTX',
+      manual: '手工录入',
+      unknown: '未知格式',
+    };
+    return map[(sourceType || '').toLowerCase()] || sourceType || '未知格式';
+  }
+
   /* -----------------------------------------------------------------------
      知识类型徽章
      ----------------------------------------------------------------------- */
@@ -184,7 +202,10 @@ const UI = (() => {
       deleted:   ['error', '已删除'],
       failed:    ['error', '失败'],
       pending:   ['warning', '等待中'],
+      accepted:  ['warning', '已接收'],
       processing:['info', '处理中'],
+      completed: ['success', '已完成'],
+      canceled:  ['neutral', '已取消'],
       indexed:   ['success', '已索引'],
       ready:     ['success', '就绪'],
       superseded:['neutral', '已替代'],
@@ -200,9 +221,50 @@ const UI = (() => {
     document.getElementById('content').innerHTML = html;
   }
 
+  /* -----------------------------------------------------------------------
+     服务状态指示器
+     ----------------------------------------------------------------------- */
+  const ServiceStatus = {
+    timer: null,
+
+    update(status, label) {
+      const el = document.getElementById('serviceStatus');
+      if (!el) return;
+      el.className = `service-status-indicator status-${status}`;
+      el.querySelector('.service-status-label').textContent = label;
+    },
+
+    async check() {
+      try {
+        const res = await API.healthLive();
+        if (res?.data?.status === 'ok') {
+          this.update('ok', '服务在线');
+        } else {
+          this.update('warning', '状态异常');
+        }
+      } catch (e) {
+        this.update('error', '服务离线');
+      }
+    },
+
+    startPolling(intervalMs = 10000) {
+      this.stopPolling();
+      this.check();
+      this.timer = setInterval(() => this.check(), intervalMs);
+    },
+
+    stopPolling() {
+      if (this.timer) {
+        clearInterval(this.timer);
+        this.timer = null;
+      }
+    },
+  };
+
   return {
     toast, showModal, renderSidebar, setBreadcrumb,
     escapeHtml, formatTime, formatSize, formatNumber,
-    fmtBadge, ktypeBadge, ktypeLabel, statusBadge, render,
+    fmtBadge, sourceTypeLabel, ktypeBadge, ktypeLabel, statusBadge, render,
+    ServiceStatus,
   };
 })();

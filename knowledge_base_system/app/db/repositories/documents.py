@@ -136,6 +136,16 @@ class DocumentRepository(BaseRepository):
             result.version = db_doc.version
             return result
 
+    def touch_updated_at(self, doc_id: str) -> Document:
+        """仅刷新文档更新时间，用于知识块写入等关联内容变化。"""
+        with self._session() as session:
+            db_doc = session.get(DbDocument, doc_id)
+            if db_doc is None:
+                raise DocumentNotFoundError(f"Document {doc_id} not found")
+            db_doc.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            return self._from_db(db_doc)
+
     def list(
         self,
         *,

@@ -77,6 +77,9 @@ const API = (() => {
       if (err.name === 'AbortError') {
         throw new Error('请求超时，请稍后重试');
       }
+      if (err instanceof TypeError && (err.message === 'Failed to fetch' || err.message.includes('NetworkError'))) {
+        throw new Error('无法连接后端服务，请确认服务已启动后重试。');
+      }
       throw err;
     } finally {
       clearTimeout(timer);
@@ -163,16 +166,10 @@ const API = (() => {
     return post(`/api/v1/chunks/${chunkId}/reindex`);
   }
   async function batchReindexChunks(chunkIds) {
-    const qs = new URLSearchParams();
-    chunkIds.forEach(id => qs.append('chunk_ids', id));
-    return post(`/api/v1/chunks/batch/reindex?${qs.toString()}`);
+    return post('/api/v1/chunks/batch/reindex', { chunk_ids: chunkIds });
   }
   async function batchChunkOperation(action, chunkIds, status = null) {
-    const qs = new URLSearchParams();
-    qs.append('action', action);
-    chunkIds.forEach(id => qs.append('chunk_ids', id));
-    if (status) qs.append('status', status);
-    return post(`/api/v1/chunks/batch?${qs.toString()}`);
+    return post('/api/v1/chunks/batch', { action, chunk_ids: chunkIds, status });
   }
 
   /* =======================================================================
@@ -181,18 +178,10 @@ const API = (() => {
   async function search(query, topK = 10, filters = {}, options = {}) {
     return post('/api/v1/search', { query, top_k: topK, filters, options }, { timeout: 60000 });
   }
-  async function searchPreview(query, topK = 10, filters = {}) {
-    return post('/api/v1/search/preview', {
-      query, top_k: topK, filters, options: { rerank: false },
-    }, { timeout: 30000 });
-  }
   async function searchDebug(query, topK = 10, filters = {}) {
     return post('/api/v1/search/debug', { query, top_k: topK, filters }, { timeout: 60000 });
   }
   async function searchFilters() { return get('/api/v1/search/filters'); }
-  async function searchFeedback(chunkId, feedback, searchId = '') {
-    return post('/api/v1/search/feedback', { chunk_id: chunkId, feedback, search_id: searchId });
-  }
 
   /* =======================================================================
      公开 API — v1 方法为默认导出
@@ -209,38 +198,6 @@ const API = (() => {
     deleteChunk, restoreChunk, reindexChunk,
     batchReindexChunks, batchChunkOperation,
     // ── v1 检索 ──
-    search, searchPreview, searchDebug, searchFilters, searchFeedback,
-
-    // 别名（旧代码引用旧方法名时的平滑过渡）
-    v1ListDocuments: listDocuments,
-    v1CreateDocument: createDocument,
-    v1GetDocument: getDocument,
-    v1ListDocumentElements: listDocumentElements,
-    v1UpdateDocument: updateDocument,
-    v1DeleteDocument: deleteDocument,
-    v1RestoreDocument: restoreDocument,
-    v1IngestDocument: ingestDocument,
-    v1UploadDocument: uploadDocument,
-    v1ListIngestJobs: listIngestJobs,
-    v1GetIngestJob: getIngestJobV1,
-    v1RetryIngestJob: retryIngestJob,
-    v1CancelIngestJob: cancelIngestJob,
-    v1ListChunks: listChunks,
-    v1CreateChunk: createChunk,
-    v1GetChunk: getChunk,
-    v1UpdateChunk: updateChunk,
-    v1DeleteChunk: deleteChunk,
-    v1RestoreChunk: restoreChunk,
-    v1ReindexChunk: reindexChunk,
-    v1BatchReindexChunks: batchReindexChunks,
-    v1BatchChunkOperation: batchChunkOperation,
-    v1Search: search,
-    v1SearchPreview: searchPreview,
-    v1SearchDebug: searchDebug,
-    v1SearchFilters: searchFilters,
-    v1SearchFeedback: searchFeedback,
-    v1HealthLive: healthLive,
-    v1HealthReady: healthReady,
-    v1HealthDependencies: healthDependencies,
+    search, searchDebug, searchFilters,
   };
 })();

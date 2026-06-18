@@ -1,15 +1,16 @@
 /* ==========================================================================
-   入库任务组件 — 任务提交、状态监控（已迁移至 v1 API）
+   入库任务组件 — 状态监控、失败处理（已迁移至 v1 API）
    ========================================================================== */
 
 const Ingestion = (() => {
 
   let jobs = [];
   let pollingTimer = null;
-  let submitDocuments = [];
-  let submitCategories = [];
-  let previousIngestCategory = '通用';
   let jobStatusFilter = '';
+  let jobModeFilter = '';
+  let jobKeywordFilter = '';
+  let jobTotal = 0;
+  let loadError = '';
 
   async function render() {
     UI.setBreadcrumb([{ label: '仪表盘', path: '#/' }, { label: '入库任务' }]);
@@ -22,18 +23,31 @@ const Ingestion = (() => {
             <p class="page-subtitle">管理文档入库任务，监控解析与索引进度</p>
           </div>
           <div class="page-actions">
-            <select class="select select-sm" onchange="Ingestion.setStatusFilter(this.value)">
-              <option value="">全部状态</option>
-              <option value="pending" ${jobStatusFilter === 'pending' ? 'selected' : ''}>待处理</option>
-              <option value="processing" ${jobStatusFilter === 'processing' ? 'selected' : ''}>处理中</option>
-              <option value="completed" ${jobStatusFilter === 'completed' ? 'selected' : ''}>已完成</option>
-              <option value="failed" ${jobStatusFilter === 'failed' ? 'selected' : ''}>失败</option>
-              <option value="canceled" ${jobStatusFilter === 'canceled' ? 'selected' : ''}>已取消</option>
-            </select>
             <button class="btn btn-secondary btn-sm" onclick="Ingestion.refresh()">⟳ 刷新</button>
-            <button class="btn btn-primary btn-sm" onclick="Ingestion.showSubmitModal()">+ 新建入库</button>
           </div>
         </div>
+      </div>
+
+      <div class="doc-toolbar kb-filter-bar ingestion-filter-bar">
+        <input class="input kb-toolbar-search" type="text" id="jobKeywordFilter" placeholder="搜索任务 ID / 文档标题…" value="${UI.escapeHtml(jobKeywordFilter)}"
+               onkeydown="if(event.key==='Enter')Ingestion.applyFilters()">
+        <select class="select select-sm" id="jobStatusFilter" onchange="Ingestion.applyFilters()">
+          <option value="">全部状态</option>
+          <option value="accepted" ${jobStatusFilter === 'accepted' ? 'selected' : ''}>已接收</option>
+          <option value="pending" ${jobStatusFilter === 'pending' ? 'selected' : ''}>待处理</option>
+          <option value="processing" ${jobStatusFilter === 'processing' ? 'selected' : ''}>处理中</option>
+          <option value="completed" ${jobStatusFilter === 'completed' ? 'selected' : ''}>已完成</option>
+          <option value="failed" ${jobStatusFilter === 'failed' ? 'selected' : ''}>失败</option>
+          <option value="canceled" ${jobStatusFilter === 'canceled' ? 'selected' : ''}>已取消</option>
+        </select>
+        <select class="select select-sm" id="jobModeFilter" onchange="Ingestion.applyFilters()">
+          <option value="">全部方式</option>
+          <option value="incremental" ${jobModeFilter === 'incremental' ? 'selected' : ''}>增量处理</option>
+          <option value="force" ${jobModeFilter === 'force' ? 'selected' : ''}>完整处理</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" onclick="Ingestion.clearFilters()">清空筛选</button>
+        ${jobs.some(j => j.status === 'failed') ? '<button class="btn btn-secondary btn-sm" onclick="Ingestion.retryAllFailed()">重试全部失败</button>' : ''}
+        <span class="doc-count" id="jobCountText">显示最近任务</span>
       </div>
 
       <div class="card pipeline-card ingestion-overview">
@@ -66,10 +80,16 @@ const Ingestion = (() => {
       const res = await API.listIngestJobs({
         page_size: 50,
         status: jobStatusFilter || undefined,
+        mode: jobModeFilter || undefined,
+        keyword: jobKeywordFilter || undefined,
       });
       jobs = res?.data || [];
+      jobTotal = res?.meta?.total ?? jobs.length;
+      loadError = '';
     } catch (e) {
       jobs = [];
+      jobTotal = 0;
+      loadError = e.message || '入库任务加载失败';
     }
 
     renderJobList();
@@ -83,22 +103,50 @@ const Ingestion = (() => {
   function renderJobList() {
     const jobListEl = document.getElementById('jobList');
     if (!jobListEl) return;
+    const countEl = document.getElementById('jobCountText');
+    if (countEl) countEl.textContent = loadError ? '任务暂不可用' : `共 ${jobTotal} 个任务`;
+
+    if (loadError) {
+      jobListEl.innerHTML = `
+        <div class="empty-state empty-state-error">
+          <div class="empty-state-icon">!</div>
+          <div class="empty-state-title">入库任务加载失败</div>
+          <div class="empty-state-desc">${UI.escapeHtml(loadError)}</div>
+          <div class="empty-actions">
+            <button class="btn btn-primary" onclick="Ingestion.refresh()">重新加载</button>
+          </div>
+        </div>`;
+      return;
+    }
 
     if (jobs.length === 0) {
+      const filtered = Boolean(jobStatusFilter || jobModeFilter || jobKeywordFilter);
       jobListEl.innerHTML = `
         <div class="empty-state">
           <div class="empty-state-icon">↻</div>
-          <div class="empty-state-title">暂无入库任务</div>
-          <div class="empty-state-desc">可以上传新文档，也可以对已有文档重新触发解析与索引。</div>
+          <div class="empty-state-title">${filtered ? '未找到匹配任务' : '暂无入库任务'}</div>
+          <div class="empty-state-desc">${filtered ? '当前状态下没有入库任务。可以清空筛选后查看全部任务。' : '上传文档后会自动创建入库任务，可在这里查看解析与索引进度。'}</div>
           <div class="empty-actions">
-            <button class="btn btn-primary" onclick="Ingestion.showSubmitModal()">+ 新建入库</button>
-            <button class="btn btn-secondary" onclick="Documents.showUploadModal()">上传文档</button>
+            ${filtered ? '<button class="btn btn-secondary" onclick="Ingestion.clearStatusFilter()">清空筛选</button>' : ''}
+            <button class="btn btn-primary" onclick="Documents.showUploadModal()">上传文档</button>
           </div>
         </div>`;
       return;
     }
 
     jobListEl.innerHTML = `<div class="job-list">${jobs.map(job => renderJobCard(job)).join('')}</div>`;
+  }
+
+  function formatDuration(startedAt, completedAt) {
+    if (!startedAt || !completedAt) return '';
+    const start = new Date(startedAt);
+    const end = new Date(completedAt);
+    const secs = Math.floor((end - start) / 1000);
+    if (secs < 60) return `${secs}s`;
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    return `${h}h ${m}m`;
   }
 
   function renderJobCard(job) {
@@ -108,6 +156,8 @@ const Ingestion = (() => {
     const error = job.error || '';
     const startedAt = job.started_at;
     const completedAt = job.finished_at || job.completed_at;
+    const progress = job.progress ?? (['completed', 'failed', 'canceled'].includes(job.status) ? 100 : 0);
+    const duration = formatDuration(startedAt, completedAt);
     const primaryDocId = job.doc_id || job.doc_ids?.[0] || '';
     const primaryDocPath = encodeURIComponent(primaryDocId);
 
@@ -123,13 +173,15 @@ const Ingestion = (() => {
             ${job.status === 'pending' || job.status === 'processing' ? '<div class="loading-spinner" style="width: 16px; height: 16px;"></div>' : ''}
           </div>
         </div>
+        ${job.status === 'processing' ? `<div class="job-progress"><div class="job-progress-bar" style="width: ${progress}%;"></div></div>` : ''}
         <div class="job-stats">
           <div class="job-stat"><span class="job-stat-value">${docCount}</span><span class="job-stat-label">文档数</span></div>
           <div class="job-stat"><span class="job-stat-value">${chunkCount}</span><span class="job-stat-label">知识块</span></div>
           <div class="job-stat"><span class="job-stat-value">${assetCount}</span><span class="job-stat-label">资源</span></div>
-          ${job.mode ? `<div class="job-stat"><span class="job-stat-value" style="font-size: var(--text-sm);">${job.mode === 'force' ? '强制重建' : '增量入库'}</span><span class="job-stat-label">模式</span></div>` : ''}
+          ${job.mode ? `<div class="job-stat"><span class="job-stat-value" style="font-size: var(--text-sm);">${ingestModeLabel(job.mode)}</span><span class="job-stat-label">处理方式</span></div>` : ''}
           ${startedAt ? `<div class="job-stat"><span class="job-stat-value" style="font-size: var(--text-sm);">${UI.formatTime(startedAt)}</span><span class="job-stat-label">开始时间</span></div>` : ''}
           ${completedAt ? `<div class="job-stat"><span class="job-stat-value" style="font-size: var(--text-sm);">${UI.formatTime(completedAt)}</span><span class="job-stat-label">完成时间</span></div>` : ''}
+          ${duration ? `<div class="job-stat"><span class="job-stat-value" style="font-size: var(--text-sm);">${duration}</span><span class="job-stat-label">耗时</span></div>` : ''}
         </div>
         ${error ? `<div class="job-error">⚠ ${UI.escapeHtml(error)}</div>` : ''}
         <div class="job-actions">
@@ -141,310 +193,38 @@ const Ingestion = (() => {
     `;
   }
 
-  async function showSubmitModal() {
-    submitDocuments = [];
-    submitCategories = [];
-    let docLoadError = '';
-    try {
-      const docsRes = await API.listDocuments({ page_size: 200, status: 'active' });
-      submitDocuments = docsRes?.data || [];
-    } catch (e) {
-      docLoadError = e.message || '文档列表加载失败';
-    }
-
-    try {
-      const filterRes = await API.searchFilters();
-      submitCategories = ['通用', ...((filterRes?.data?.categories || []).map(normalizeFilterValue).filter(Boolean))]
-        .filter((value, index, arr) => arr.indexOf(value) === index);
-    } catch (e) {
-      submitCategories = ['通用'];
-    }
-    previousIngestCategory = submitCategories[0] || '通用';
-
-    const docOptions = submitDocuments.map((doc) => `
-      <option value="${UI.escapeHtml(doc.doc_id)}">${UI.escapeHtml(doc.title || doc.doc_id)} · ${UI.escapeHtml(doc.doc_id)}</option>
-    `).join('');
-    const categoryOptions = submitCategories.map((category) => `
-      <option value="${UI.escapeHtml(category)}">${UI.escapeHtml(category)}</option>
-    `).join('');
-
-    UI.showModal(
-      '新建入库任务',
-      `
-        <div class="form-stack ingestion-submit-form">
-          <div id="ingestFormError" class="form-error is-hidden"></div>
-
-          <div>
-            <label class="field-label">入库来源 <span>*</span></label>
-            <div class="mode-switch ingestion-mode-switch">
-              <label>
-                <input type="radio" name="ingestSubmitMode" value="existing" checked onchange="Ingestion.onSubmitModeChange()">
-                <span>已有文档入库</span>
-              </label>
-              <label>
-                <input type="radio" name="ingestSubmitMode" value="uri" onchange="Ingestion.onSubmitModeChange()">
-                <span>从 URI 创建并入库</span>
-              </label>
-            </div>
-          </div>
-
-          <div id="existingIngestPanel" class="form-stack">
-            <div>
-              <label class="field-label">选择文档 <span>*</span></label>
-              <select class="select" id="ingestDocId" style="width: 100%;" ${docLoadError ? 'disabled' : ''}>
-                <option value="">${docLoadError ? '文档列表加载失败' : '选择一个已入库文档'}</option>
-                ${docOptions}
-              </select>
-              <div class="${docLoadError ? 'field-warning' : 'field-help'}">
-                ${docLoadError ? `${UI.escapeHtml(docLoadError)}。仍可切换到 URI 模式创建新文档。` : '对已有文档重新执行解析、知识块生成和索引。'}
-              </div>
-            </div>
-            <div>
-              <label class="field-label">入库模式</label>
-              <select class="select" id="ingestMode" style="width: 100%;">
-                <option value="incremental">增量入库：只处理变化内容</option>
-                <option value="force">强制重建：重新解析并覆盖索引</option>
-              </select>
-            </div>
-          </div>
-
-          <div id="uriIngestPanel" class="form-stack is-hidden">
-            <div>
-              <label class="field-label">source_uri <span>*</span></label>
-              <input class="input" type="text" id="ingestUri" placeholder="file:///path/to/document.md" style="width: 100%;" oninput="Ingestion.onIngestUriInput()">
-              <div class="field-help">支持后端可访问的 file://、http(s):// 或存储 URI。</div>
-            </div>
-            <div class="form-grid">
-              <div>
-                <label class="field-label">标题</label>
-                <input class="input" type="text" id="ingestTitle" placeholder="留空则使用 URI 文件名" style="width: 100%;">
-              </div>
-              <div>
-                <label class="field-label">分类 <span>(选择已有或新增)</span></label>
-                <select class="select" id="ingestCategorySelect" onchange="Ingestion.onIngestCategorySelect()" style="width: 100%;">
-                  ${categoryOptions}
-                  <option value="__custom__">+ 新增分类...</option>
-                </select>
-              </div>
-            </div>
-            <div>
-              <label class="field-label">文档类型</label>
-              <select class="select" id="ingestType" style="width: 100%;">
-                <option value="markdown">Markdown</option>
-                <option value="txt">TXT</option>
-                <option value="docx">DOCX</option>
-                <option value="xlsx">XLSX</option>
-                <option value="html">HTML</option>
-                <option value="pdf">PDF</option>
-                <option value="pptx">PPTX</option>
-              </select>
-              <div class="field-help">输入 URI 后会根据扩展名自动识别，可手动修正。</div>
-            </div>
-          </div>
-
-          <div id="ingestCategoryDialog" class="mini-dialog-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="ingestCategoryDialogTitle">
-            <div class="mini-dialog">
-              <div class="mini-dialog-header">
-                <h3 id="ingestCategoryDialogTitle">新增文档分类</h3>
-                <button type="button" class="btn-close" onclick="Ingestion.cancelIngestCategory()">&times;</button>
-              </div>
-              <div class="mini-dialog-body">
-                <label class="field-label">分类名称</label>
-                <input id="ingestCategoryDialogInput" class="input" style="width: 100%;" placeholder="例如：售后政策"
-                       onkeydown="if(event.key==='Enter')Ingestion.confirmIngestCategory();if(event.key==='Escape')Ingestion.cancelIngestCategory();">
-                <div id="ingestCategoryDialogError" class="field-warning is-hidden">请输入分类名称。</div>
-              </div>
-              <div class="mini-dialog-footer">
-                <button type="button" class="btn btn-secondary btn-sm" onclick="Ingestion.cancelIngestCategory()">取消</button>
-                <button type="button" class="btn btn-primary btn-sm" onclick="Ingestion.confirmIngestCategory()">确认</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      `,
-      `
-        <button class="btn btn-secondary" onclick="this.closest('.modal-backdrop').remove()">取消</button>
-        <button class="btn btn-primary" id="submitIngestBtn" onclick="Ingestion.submitNewJob()">提交入库</button>
-      `
-    );
-    setTimeout(() => {
-      onSubmitModeChange();
-      ['ingestDocId', 'ingestUri', 'ingestTitle', 'ingestCategorySelect'].forEach((id) => {
-        document.getElementById(id)?.addEventListener('input', updateSubmitState);
-        document.getElementById(id)?.addEventListener('change', updateSubmitState);
-      });
-      updateSubmitState();
-    }, 50);
-  }
-
-  async function submitNewJob() {
-    const submitMode = getSubmitMode();
-    const docId = document.getElementById('ingestDocId')?.value?.trim();
-    const uri = document.getElementById('ingestUri')?.value?.trim();
-    const mode = document.getElementById('ingestMode')?.value || 'incremental';
-    const error = validateSubmitForm(submitMode, docId, uri);
-    if (error) {
-      showSubmitError(error);
-      return;
-    }
-
-    const btn = document.getElementById('submitIngestBtn');
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = '提交中...';
-    }
-    try {
-      let jobId = '';
-      if (submitMode === 'existing') {
-        const res = await API.ingestDocument(docId, mode);
-        jobId = res?.data?.job_id || '';
-        UI.toast(`已对文档 ${docId} 触发入库`, 'success');
-      } else {
-        const title = document.getElementById('ingestTitle')?.value?.trim();
-        const category = getIngestCategory();
-        const sourceType = document.getElementById('ingestType')?.value || 'markdown';
-
-        const docRes = await API.createDocument({
-          title: title || uri.split('/').pop() || '未命名文档',
-          source_type: sourceType,
-          source_uri: uri,
-          category: category,
-          ingest_after_create: true,
-        });
-        jobId = docRes?.data?.ingest_job_id || '';
-        UI.toast('已创建文档并提交入库', 'success');
-      }
-
-      document.querySelector('.modal-backdrop')?.remove();
-      await refresh();
-    } catch (e) {
-      showSubmitError(e.message || '提交失败');
-      UI.toast(`提交失败: ${e.message}`, 'error');
-    } finally {
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = '提交入库';
-      }
-    }
-  }
-
-  function getSubmitMode() {
-    return document.querySelector('input[name="ingestSubmitMode"]:checked')?.value || 'existing';
-  }
-
-  function onSubmitModeChange() {
-    const mode = getSubmitMode();
-    document.getElementById('existingIngestPanel')?.classList.toggle('is-hidden', mode !== 'existing');
-    document.getElementById('uriIngestPanel')?.classList.toggle('is-hidden', mode !== 'uri');
-    updateSubmitState();
-  }
-
-  function validateSubmitForm(mode, docId, uri) {
-    if (mode === 'existing' && !docId) return '请选择要入库的文档。';
-    if (mode === 'uri' && !uri) return '请输入 source_uri。';
-    if (mode === 'uri' && !getIngestCategory()) return '请选择或新增文档分类。';
-    return '';
-  }
-
-  function showSubmitError(message) {
-    const el = document.getElementById('ingestFormError');
-    if (!el) return;
-    el.textContent = message;
-    el.classList.remove('is-hidden');
-  }
-
-  function updateSubmitState() {
-    const mode = getSubmitMode();
-    const docId = document.getElementById('ingestDocId')?.value?.trim();
-    const uri = document.getElementById('ingestUri')?.value?.trim();
-    const btn = document.getElementById('submitIngestBtn');
-    const error = document.getElementById('ingestFormError');
-    if (btn && !btn.textContent.includes('提交中')) {
-      btn.disabled = Boolean(validateSubmitForm(mode, docId, uri));
-    }
-    if (error) error.classList.add('is-hidden');
-  }
-
-  function onIngestUriInput() {
-    const uri = document.getElementById('ingestUri')?.value?.trim() || '';
-    const type = inferSourceType(uri);
-    const typeSelect = document.getElementById('ingestType');
-    if (typeSelect && type) typeSelect.value = type;
-    updateSubmitState();
-  }
-
-  function inferSourceType(uri) {
-    const clean = uri.split('?')[0].split('#')[0].toLowerCase();
-    const ext = clean.includes('.') ? clean.split('.').pop() : '';
-    const map = { md: 'markdown', markdown: 'markdown', txt: 'txt', docx: 'docx', xlsx: 'xlsx', html: 'html', htm: 'html', pdf: 'pdf', pptx: 'pptx' };
-    return map[ext] || '';
-  }
-
-  function normalizeFilterValue(item) {
-    if (typeof item === 'string') return item;
-    return item?.value || item?.label || '';
-  }
-
-  function getIngestCategory() {
-    const select = document.getElementById('ingestCategorySelect');
-    return select?.value?.trim() || '通用';
-  }
-
-  function onIngestCategorySelect() {
-    const select = document.getElementById('ingestCategorySelect');
-    if (!select) return;
-    if (select.value === '__custom__') {
-      select.value = previousIngestCategory;
-      showIngestCategoryDialog();
-      return;
-    }
-    previousIngestCategory = select.value || '通用';
-    updateSubmitState();
-  }
-
-  function showIngestCategoryDialog() {
-    const dialog = document.getElementById('ingestCategoryDialog');
-    const input = document.getElementById('ingestCategoryDialogInput');
-    const error = document.getElementById('ingestCategoryDialogError');
-    if (!dialog || !input) return;
-    input.value = '';
-    if (error) error.classList.add('is-hidden');
-    dialog.classList.remove('is-hidden');
-    setTimeout(() => input.focus(), 0);
-  }
-
-  function cancelIngestCategory() {
-    const dialog = document.getElementById('ingestCategoryDialog');
-    const select = document.getElementById('ingestCategorySelect');
-    if (dialog) dialog.classList.add('is-hidden');
-    if (select) select.value = previousIngestCategory;
-    updateSubmitState();
-  }
-
-  function confirmIngestCategory() {
-    const select = document.getElementById('ingestCategorySelect');
-    const input = document.getElementById('ingestCategoryDialogInput');
-    const error = document.getElementById('ingestCategoryDialogError');
-    if (!select || !input) return;
-    const value = input.value.trim();
-    if (!value) {
-      if (error) error.classList.remove('is-hidden');
-      input.focus();
-      return;
-    }
-    if (![...select.options].some(option => option.value === value)) {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = value;
-      select.insertBefore(option, select.querySelector('option[value="__custom__"]'));
-    }
-    select.value = value;
-    previousIngestCategory = value;
-    cancelIngestCategory();
+  function ingestModeLabel(mode) {
+    if (mode === 'force') return '完整入库流程';
+    if (mode === 'incremental') return '更新并替换旧索引';
+    return mode || '—';
   }
 
   function setStatusFilter(value) {
     jobStatusFilter = value || '';
+    refresh();
+  }
+
+  function applyFilters() {
+    jobKeywordFilter = document.getElementById('jobKeywordFilter')?.value?.trim() || '';
+    jobStatusFilter = document.getElementById('jobStatusFilter')?.value || '';
+    jobModeFilter = document.getElementById('jobModeFilter')?.value || '';
+    refresh();
+  }
+
+  function clearStatusFilter() {
+    clearFilters();
+  }
+
+  function clearFilters() {
+    jobStatusFilter = '';
+    jobModeFilter = '';
+    jobKeywordFilter = '';
+    const input = document.getElementById('jobKeywordFilter');
+    const select = document.getElementById('jobStatusFilter');
+    const modeSelect = document.getElementById('jobModeFilter');
+    if (input) input.value = '';
+    if (select) select.value = '';
+    if (modeSelect) modeSelect.value = '';
     refresh();
   }
 
@@ -468,10 +248,35 @@ const Ingestion = (() => {
     }
   }
 
+  async function retryAllFailed() {
+    const failedJobs = jobs.filter(j => j.status === 'failed');
+    if (failedJobs.length === 0) {
+      UI.toast('没有失败的任务', 'info');
+      return;
+    }
+
+    let success = 0;
+    let failed = 0;
+
+    for (const job of failedJobs) {
+      try {
+        await API.retryIngestJob(job.job_id);
+        success++;
+      } catch (e) {
+        failed++;
+      }
+    }
+
+    if (success > 0) {
+      UI.toast(`已重试 ${success} 个任务${failed > 0 ? `，${failed} 个失败` : ''}`, success === failedJobs.length ? 'success' : 'warning');
+    } else {
+      UI.toast('全部重试失败', 'error');
+    }
+
+    await refresh();
+  }
+
   return {
-    render, refresh, showSubmitModal, submitNewJob,
-    onSubmitModeChange, onIngestUriInput, onIngestCategorySelect,
-    cancelIngestCategory, confirmIngestCategory,
-    setStatusFilter, retryJob, cancelJob,
+    render, refresh, setStatusFilter, applyFilters, clearStatusFilter, clearFilters, retryJob, cancelJob, retryAllFailed,
   };
 })();

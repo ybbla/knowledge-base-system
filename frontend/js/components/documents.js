@@ -8,6 +8,7 @@ const Documents = (() => {
   let currentKeyword = '';
   let currentStatus = '';
   let currentCategory = '';
+  let currentSort = 'updated_at:desc';
   let selectedIds = new Set();
   let categoryOptions = [];  // 从后端动态加载的分类列表
 
@@ -27,38 +28,60 @@ const Documents = (() => {
   async function loadPage(page) {
     currentPage = page;
     try {
+      const [sortBy, sortOrder] = currentSort.split(':');
       const params = {
         page,
         page_size: 15,
         keyword: currentKeyword || undefined,
         status: currentStatus || undefined,
         category: currentCategory || undefined,
-        sort_by: 'updated_at',
-        sort_order: 'desc',
+        sort_by: sortBy || 'updated_at',
+        sort_order: sortOrder || 'desc',
       };
       const res = await API.listDocuments(params);
       renderDocListHtml(res);
     } catch (e) {
-      UI.toast(`加载文档失败: ${e.message}`, 'error');
-      renderDocListHtml(null);
+      const message = friendlyErrorMessage(e);
+      UI.toast(`加载文档失败：${message}`, 'error');
+      renderDocListHtml(null, { errorMessage: message });
     }
   }
 
-  function renderDocListHtml(res) {
+  function renderDocListHtml(res, state = {}) {
+    selectedIds.clear();
     const items = res?.data || [];
     const meta = res?.meta || {};
     const total = meta.total || 0;
     const totalPages = meta.total_pages || 1;
+    const hasFilters = Boolean(currentKeyword || currentCategory || currentStatus);
+    const errorMessage = state.errorMessage || '';
 
     let rowsHtml = '';
-    if (items.length === 0) {
+    if (errorMessage) {
       rowsHtml = `
-        <tr><td colspan="7">
+        <tr class="empty-row"><td colspan="7">
+          <div class="empty-state empty-state-error">
+            <div class="empty-state-icon">!</div>
+            <div class="empty-state-title">文档列表加载失败</div>
+            <div class="empty-state-desc">${UI.escapeHtml(errorMessage)}</div>
+            <div class="empty-actions">
+              <button class="btn btn-primary" onclick="Documents.loadPage(${currentPage})">重新加载</button>
+            </div>
+          </div>
+        </td></tr>`;
+    } else if (items.length === 0) {
+      rowsHtml = `
+        <tr class="empty-row"><td colspan="7">
           <div class="empty-state">
             <div class="empty-state-icon">📭</div>
-            <div class="empty-state-title">暂无文档</div>
-            <div class="empty-state-desc">点击右上角「上传文档」按钮导入文档。支持 Markdown、DOCX、XLSX、HTML、PDF、PPTX 等格式。</div>
-            <button class="btn btn-primary" onclick="Documents.showUploadModal()" style="margin-top: var(--space-4);">↑ 上传第一篇文档</button>
+            <div class="empty-state-title">${hasFilters ? '未找到匹配文档' : '暂无文档'}</div>
+            <div class="empty-state-desc">${hasFilters
+              ? '当前筛选条件下没有文档。可以调整关键词、分类或状态后再试。'
+              : '上传文档后，可在这里查看解析结果、知识块数量和处理状态。支持 Markdown、TXT、DOCX、XLSX、HTML、PDF、PPTX 等格式。'}</div>
+            <div class="empty-actions">
+              ${hasFilters ? '<button class="btn btn-secondary" onclick="Documents.resetFilters()">清空筛选</button>' : ''}
+              <button class="btn btn-primary" onclick="Documents.showUploadModal()">↑ 上传文档</button>
+            </div>
           </div>
         </td></tr>`;
     } else {
@@ -75,13 +98,22 @@ const Documents = (() => {
           </td>
           <td>${UI.escapeHtml(doc.category || '通用')}</td>
           <td>${UI.statusBadge(doc.status || 'active')}</td>
-          <td>${doc.chunk_count ?? '—'} / ${doc.element_count ?? '—'}</td>
+          <td>
+            <div class="doc-metrics">
+              <span><strong>${doc.chunk_count ?? 0}</strong> 块</span>
+              <span><strong>${doc.element_count ?? 0}</strong> 元素</span>
+              <span><strong>${doc.asset_count ?? 0}</strong> 资源</span>
+            </div>
+          </td>
           <td>${UI.formatTime(doc.updated_at) || UI.formatTime(doc.created_at)}</td>
           <td class="actions-cell">
             <button class="btn btn-sm btn-ghost" onclick="App.router.navigate('/documents/${UI.escapeHtml(doc.doc_id)}')">详情</button>
             ${doc.status === 'deleted'
               ? `<button class="btn btn-sm btn-success" onclick="Documents.restoreDoc('${doc.doc_id}')">恢复</button>`
-              : `<button class="btn btn-sm btn-danger" onclick="Documents.deleteDoc('${doc.doc_id}')">删除</button>`}
+              : `
+                <button class="btn btn-sm btn-ghost" onclick="Documents.ingestDocument('${doc.doc_id}')">重处理</button>
+                <button class="btn btn-sm btn-danger" onclick="Documents.deleteDoc('${doc.doc_id}')">删除</button>
+              `}
           </td>
         </tr>
       `).join('');
@@ -102,7 +134,7 @@ const Documents = (() => {
       </div>
 
       <!-- 搜索过滤 -->
-      <div class="doc-toolbar kb-filter-bar">
+      <div class="doc-toolbar kb-filter-bar document-filter-bar">
         <input class="input kb-toolbar-search" type="text" id="docSearchInput" placeholder="搜索文档标题…" value="${UI.escapeHtml(currentKeyword)}"
                onkeydown="if(event.key==='Enter')Documents.doSearch()">
         <select class="select select-sm" id="docCategoryFilter" onchange="Documents.doSearch()">
@@ -117,22 +149,26 @@ const Documents = (() => {
           <option value="failed" ${currentStatus === 'failed' ? 'selected' : ''}>失败</option>
           <option value="deleted" ${currentStatus === 'deleted' ? 'selected' : ''}>已删除</option>
         </select>
-        <button class="btn btn-secondary btn-sm" onclick="Documents.doSearch()">查询</button>
-        <span class="doc-count">共 ${total} 篇文档</span>
+        <select class="select select-sm" id="docSortFilter" onchange="Documents.doSearch()">
+          <option value="updated_at:desc" ${currentSort === 'updated_at:desc' ? 'selected' : ''}>更新时间</option>
+          <option value="title:asc" ${currentSort === 'title:asc' ? 'selected' : ''}>标题 A-Z</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" onclick="Documents.resetFilters()" ${hasFilters ? '' : 'disabled'}>清空筛选</button>
+        <span class="doc-count">${errorMessage ? '' : `共 ${total} 篇文档`}</span>
       </div>
 
       <!-- 文档表格 -->
       <div class="table-wrap">
-        <table>
+        <table class="doc-table">
           <thead>
             <tr>
-              <th style="width: 3%;"><input type="checkbox" id="docSelectAll" onclick="Documents.toggleSelectAll()" /></th>
-              <th style="width: 35%;">文档名称</th>
+              <th style="width: 3%;"><input type="checkbox" id="docSelectAll" onclick="Documents.toggleSelectAll()" ${items.length === 0 ? 'disabled' : ''} /></th>
+              <th style="width: 30%;">文档名称</th>
               <th style="width: 10%;">分类</th>
-              <th style="width: 10%;">状态</th>
-              <th style="width: 10%;">知识块/元素</th>
-              <th style="width: 18%;">更新时间</th>
-              <th style="width: 14%;">操作</th>
+              <th style="width: 9%;">状态</th>
+              <th style="width: 13%;">解析结果</th>
+              <th style="width: 16%;">更新时间</th>
+              <th style="width: 19%;">操作</th>
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
@@ -156,7 +192,24 @@ const Documents = (() => {
     currentKeyword = document.getElementById('docSearchInput')?.value?.trim() || '';
     currentCategory = document.getElementById('docCategoryFilter')?.value || '';
     currentStatus = document.getElementById('docStatusFilter')?.value || '';
+    currentSort = document.getElementById('docSortFilter')?.value || 'updated_at:desc';
     loadPage(1);
+  }
+
+  function resetFilters() {
+    currentKeyword = '';
+    currentCategory = '';
+    currentStatus = '';
+    currentSort = 'updated_at:desc';
+    loadPage(1);
+  }
+
+  function friendlyErrorMessage(error) {
+    const raw = error?.message || '';
+    if (!raw || raw === 'Failed to fetch' || raw.includes('NetworkError')) {
+      return '无法连接后端服务，请确认服务已启动后重试。';
+    }
+    return raw;
   }
 
   /* -----------------------------------------------------------------------
@@ -185,10 +238,10 @@ const Documents = (() => {
 
   async function ingestDocument(docId) {
     try {
-      await API.ingestDocument(docId, 'force');
-      UI.toast('已触发重新入库', 'success');
+      await API.ingestDocument(docId, 'incremental');
+      UI.toast('已触发重新处理', 'success');
     } catch (e) {
-      UI.toast(`重新入库失败: ${e.message}`, 'error');
+      UI.toast(`重新处理失败: ${e.message}`, 'error');
     }
   }
 
@@ -232,7 +285,7 @@ const Documents = (() => {
   /* -----------------------------------------------------------------------
      上传页面（v1 上传并可自动提交入库）
      ----------------------------------------------------------------------- */
-  let selectedFile = null;
+  let selectedFiles = [];
 
   async function showUploadModal() {
     // 加载已有分类
@@ -248,11 +301,11 @@ const Documents = (() => {
         <div class="upload-zone" id="uploadZone" style="border: 2px dashed var(--mist); border-radius: var(--radius-lg); padding: var(--space-6); text-align: center; cursor: pointer; transition: border-color var(--duration-fast) var(--ease-out);">
           <span style="font-size: 2.5rem;">📁</span>
           <div style="font-weight: 550; margin-top: var(--space-2);">拖拽文件到此处，或点击选择</div>
-          <div style="font-size: var(--text-xs); color: var(--ink-wash); margin-top: var(--space-1);">单个文件最大 100 MB，支持 Markdown、DOCX、XLSX、HTML、PDF、PPTX 格式</div>
-          <input type="file" id="fileInput" style="display: none;" accept=".md,.txt,.docx,.xlsx,.html,.htm,.pdf,.pptx">
+          <div style="font-size: var(--text-xs); color: var(--ink-wash); margin-top: var(--space-1);">可一次选择多个文件，单个文件最大 100 MB，支持 Markdown、TXT、DOCX、XLSX、HTML、PDF、PPTX 格式</div>
+          <input type="file" id="fileInput" style="display: none;" accept=".md,.txt,.docx,.xlsx,.html,.htm,.pdf,.pptx" multiple>
           <button class="btn btn-primary" onclick="document.getElementById('fileInput').click();event.stopPropagation()" style="margin-top: var(--space-3);">选择文件</button>
           <div style="display: flex; gap: var(--space-1); justify-content: center; margin-top: var(--space-3);">
-            <span class="badge-fmt md">MD</span><span class="badge-fmt docx">DOCX</span><span class="badge-fmt xlsx">XLSX</span>
+            <span class="badge-fmt md">MD</span><span class="badge-fmt txt">TXT</span><span class="badge-fmt docx">DOCX</span><span class="badge-fmt xlsx">XLSX</span>
             <span class="badge-fmt html">HTML</span><span class="badge-fmt pdf">PDF</span><span class="badge-fmt pptx">PPTX</span>
           </div>
         </div>
@@ -267,11 +320,12 @@ const Documents = (() => {
               </div>
               <button class="btn btn-sm btn-ghost" onclick="Documents.clearFile()">✕</button>
             </div>
+            <div id="fileListDisplay" class="upload-file-list"></div>
           </div>
 
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); margin-top: var(--space-3);">
             <div>
-              <label class="field-label">文档标题 <span>(可选)</span></label>
+              <label class="field-label">文档标题 <span>(仅单文件可选)</span></label>
               <input class="input" type="text" id="docTitle" placeholder="留空则使用文件名" style="width: 100%;">
             </div>
             <div>
@@ -297,7 +351,7 @@ const Documents = (() => {
       `
     );
 
-    selectedFile = null;
+    selectedFiles = [];
     document.getElementById('fileInfo').style.display = 'none';
 
     setTimeout(() => bindUploadEvents(), 50);
@@ -329,28 +383,76 @@ const Documents = (() => {
     zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
     zone.addEventListener('drop', (e) => {
       e.preventDefault(); zone.classList.remove('drag-over');
-      if (e.dataTransfer.files.length > 0) selectFile(e.dataTransfer.files[0]);
+      if (e.dataTransfer.files.length > 0) selectFile(e.dataTransfer.files);
     });
-    input.addEventListener('change', () => { if (input.files.length > 0) selectFile(input.files[0]); });
+    input.addEventListener('change', () => { if (input.files.length > 0) selectFile(input.files); });
   }
 
-  function selectFile(file) {
-    if (file.size > 100 * 1024 * 1024) { UI.toast('文件大小超过 100 MB 限制', 'error'); return; }
-    selectedFile = file;
+  function selectFile(files) {
+    const incoming = Array.from(files instanceof FileList ? files : [files]).filter(Boolean);
+    const validFiles = [];
+    let skipped = 0;
+    incoming.forEach((file) => {
+      if (file.size > 100 * 1024 * 1024) {
+        skipped++;
+        return;
+      }
+      validFiles.push(file);
+    });
+    if (skipped) UI.toast(`${skipped} 个文件超过 100 MB，已跳过`, 'error');
+    if (!validFiles.length) return;
+
+    selectedFiles = validFiles;
+    renderSelectedFiles();
+  }
+
+  function renderSelectedFiles() {
     document.getElementById('fileInfo').style.display = 'block';
-    document.getElementById('fileNameDisplay').textContent = file.name;
-    document.getElementById('fileSizeDisplay').textContent = UI.formatSize(file.size);
+    const totalSize = selectedFiles.reduce((sum, file) => sum + file.size, 0);
+    const titleInput = document.getElementById('docTitle');
+    document.getElementById('fileNameDisplay').textContent = selectedFiles.length === 1
+      ? selectedFiles[0].name
+      : `已选择 ${selectedFiles.length} 个文件`;
+    document.getElementById('fileSizeDisplay').textContent = selectedFiles.length === 1
+      ? UI.formatSize(selectedFiles[0].size)
+      : `合计 ${UI.formatSize(totalSize)}`;
+
+    if (titleInput) {
+      titleInput.disabled = selectedFiles.length > 1;
+      titleInput.placeholder = selectedFiles.length > 1 ? '多文件上传时自动使用文件名' : '留空则使用文件名';
+      if (selectedFiles.length > 1) titleInput.value = '';
+    }
+
+    const listEl = document.getElementById('fileListDisplay');
+    if (listEl) {
+      listEl.innerHTML = selectedFiles.map((file, index) => `
+        <div class="upload-file-item">
+          <span class="upload-file-name">${UI.escapeHtml(file.name)}</span>
+          <span class="upload-file-size">${UI.formatSize(file.size)}</span>
+          <button class="btn btn-sm btn-ghost" onclick="Documents.removeSelectedFile(${index})">移除</button>
+        </div>
+      `).join('');
+    }
   }
 
   function clearFile() {
-    selectedFile = null;
+    selectedFiles = [];
     document.getElementById('fileInfo').style.display = 'none';
     document.getElementById('fileInput').value = '';
   }
 
+  function removeSelectedFile(index) {
+    selectedFiles.splice(index, 1);
+    if (!selectedFiles.length) {
+      clearFile();
+      return;
+    }
+    renderSelectedFiles();
+  }
+
   async function doUpload() {
-    if (!selectedFile) { UI.toast('请先选择文件', 'error'); return; }
-    const title = document.getElementById('docTitle')?.value?.trim() || '';
+    if (!selectedFiles.length) { UI.toast('请先选择文件', 'error'); return; }
+    const title = selectedFiles.length === 1 ? (document.getElementById('docTitle')?.value?.trim() || '') : '';
     const categorySelect = document.getElementById('docCategorySelect');
     const categoryInput = document.getElementById('docCategoryInput');
     let category = '通用';
@@ -368,28 +470,54 @@ const Documents = (() => {
 
     btn.disabled = true; btn.textContent = '上传中…';
     progressDiv.style.display = 'block';
-    progressFill.style.width = '30%'; progressText.textContent = '正在上传文件…';
+    progressFill.style.width = '0%'; progressText.textContent = `准备上传 ${selectedFiles.length} 个文件…`;
 
     try {
-      const result = await API.uploadDocument(selectedFile, title, category, {
-        ingestAfterCreate: true,
-        mode: 'incremental',
-      });
-      const data = result?.data || {};
-      progressFill.style.width = '60%'; progressText.textContent = '上传完成，正在提交入库...';
+      let success = 0;
+      let duplicate = 0;
+      let failed = 0;
+      const failedFiles = [];
+      let hasIngestJob = false;
 
-      progressFill.style.width = '100%';
-      if (data.duplicate) {
-        progressText.textContent = '发现重复文档，已跳过上传。';
-        UI.toast(`文档已存在：${data.existing_doc_id}`, 'warning');
-      } else {
-        progressText.textContent = data.ingest_job_id ? '入库任务已提交！' : '上传完成！';
-        UI.toast(`文档 "${title || selectedFile.name}" 已上传并提交入库`, 'success');
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        progressText.textContent = `正在上传 ${i + 1}/${selectedFiles.length}：${file.name}`;
+        const startedPercent = Math.round((i / selectedFiles.length) * 100);
+        progressFill.style.width = `${startedPercent}%`;
+
+        try {
+          const result = await API.uploadDocument(file, title, category, {
+            ingestAfterCreate: true,
+            mode: 'incremental',
+          });
+          const data = result?.data || {};
+          if (data.duplicate) duplicate++;
+          else success++;
+          if (data.ingest_job_id) hasIngestJob = true;
+        } catch (e) {
+          failed++;
+          failedFiles.push(file);
+          console.warn(`上传失败: ${file.name}`, e);
+        }
+
+        const finishedPercent = Math.round(((i + 1) / selectedFiles.length) * 100);
+        progressFill.style.width = `${finishedPercent}%`;
+      }
+
+      progressText.textContent = `上传完成：成功 ${success}，重复 ${duplicate}，失败 ${failed}`;
+      UI.toast(`上传完成：成功 ${success}，重复 ${duplicate}，失败 ${failed}`, failed ? 'error' : 'success');
+      if (failedFiles.length) {
+        selectedFiles = failedFiles;
+        renderSelectedFiles();
+        btn.disabled = false;
+        btn.textContent = '↑ 重试失败文件';
+        loadPage(currentPage);
+        return;
       }
       setTimeout(() => {
         closeUploadModal();
         loadPage(currentPage);
-        if (data.ingest_job_id) App.router.navigate('/ingestion');
+        if (hasIngestJob) App.router.navigate('/ingestion');
       }, 1000);
     } catch (e) {
       progressText.textContent = `失败: ${e.message}`;
@@ -404,5 +532,5 @@ const Documents = (() => {
     return map[ext] || 'unknown';
   }
 
-  return { renderList, showUploadModal, closeUploadModal, onCategorySelect, doSearch, loadPage, deleteDoc, restoreDoc, ingestDocument, toggleSelectAll, toggleSelect, batchDelete, selectFile, clearFile, doUpload };
+  return { renderList, showUploadModal, closeUploadModal, onCategorySelect, doSearch, resetFilters, loadPage, deleteDoc, restoreDoc, ingestDocument, toggleSelectAll, toggleSelect, batchDelete, selectFile, clearFile, removeSelectedFile, doUpload };
 })();

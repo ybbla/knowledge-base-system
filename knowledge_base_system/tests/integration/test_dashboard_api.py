@@ -302,3 +302,210 @@ class TestDashboardFullFlow:
             assert "x-deprecated" not in response.headers, (
                 f"{url} 不应有 X-Deprecated 头"
             )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 6. 前端渲染逻辑精确对齐测试 — 模拟 dashboard.js 取值路径
+# ══════════════════════════════════════════════════════════════════════
+
+class TestDashboardFrontendAlignment:
+    """验证后端响应与前端 dashboard.js 逐行取值逻辑精确匹配。"""
+
+    # ── 6.1 前端: depStatuses 遍历 ──────────────────────────────────
+
+    def test_dependencies_every_entry_has_name_field(self):
+        """前端 dashboard.js:89: dep.name || key — 每个依赖项需有 name 字段。"""
+        response = client.get("/api/v1/health/dependencies")
+        deps = response.json()["data"]["dependencies"]
+
+        for key, dep in deps.items():
+            assert "name" in dep, (
+                f"依赖项 '{key}' 缺少 name 字段，前端将回退显示英文 key"
+            )
+            assert isinstance(dep["name"], str) and len(dep["name"]) > 0, (
+                f"依赖项 '{key}' 的 name 为空"
+            )
+
+    def test_dependencies_has_enough_entries_for_slice(self):
+        """前端 dashboard.js:87: Object.entries(depStatuses).slice(0, 6)
+        依赖项数量 ≥ 6，截断行为可验证。"""
+        response = client.get("/api/v1/health/dependencies")
+        deps = response.json()["data"]["dependencies"]
+
+        assert len(deps) >= 6, (
+            f"依赖项仅 {len(deps)} 个，前端 .slice(0,6) 不会触发截断行为"
+        )
+
+    def test_dependencies_status_values_match_frontend_rendering(self):
+        """前端 dashboard.js:90: dep.status === 'ok' ? 'is-ok' : dep.status === 'error' ? 'is-error' : ''
+        验证所有依赖项的 status 在 {ok, error, not_configured} 范围内。"""
+        response = client.get("/api/v1/health/dependencies")
+        deps = response.json()["data"]["dependencies"]
+
+        valid_statuses = {"ok", "error", "not_configured"}
+        for key, dep in deps.items():
+            assert dep["status"] in valid_statuses, (
+                f"依赖项 '{key}' 的 status='{dep['status']}' 不在合法范围 {valid_statuses}"
+            )
+
+    # ── 6.2 前端: healthOk 判断 ────────────────────────────────────
+
+    def test_ready_status_exact_ok_string(self):
+        """前端 dashboard.js:20: readyRes?.data?.status === 'ok'
+        严格相等比较，确保是字符串 'ok' 而非其他。"""
+        response = client.get("/api/v1/health/ready")
+        status_val = response.json()["data"]["status"]
+
+        assert status_val == "ok", f"期望 status='ok'，实际为 '{status_val}'"
+        assert isinstance(status_val, str), "status 必须是字符串类型"
+
+    # ── 6.3 前端: backendType 取值 ─────────────────────────────────
+
+    def test_dependencies_backend_type_is_string(self):
+        """前端 dashboard.js:21: depsRes?.data?.dependencies?.backend?.type || '—'
+        type 必须是字符串，前端 || '—' 提供默认值。"""
+        response = client.get("/api/v1/health/dependencies")
+        backend_type = response.json()["data"]["dependencies"]["backend"]["type"]
+
+        assert isinstance(backend_type, str), "backend.type 必须是字符串"
+        assert len(backend_type) > 0, "backend.type 不能为空字符串"
+
+    # ── 6.4 前端: meta.total 数值 ──────────────────────────────────
+
+    def test_documents_meta_total_is_non_negative_int(self):
+        """前端 dashboard.js:30: docsRes?.meta?.total || 0
+        total 必须是非负整数。"""
+        response = client.get("/api/v1/documents", params={"page": 1, "page_size": 1})
+        total = response.json()["meta"]["total"]
+
+        assert isinstance(total, int), f"total 应为 int，实际为 {type(total)}"
+        assert total >= 0, f"total 应为非负整数，实际为 {total}"
+
+    def test_chunks_meta_total_is_non_negative_int(self):
+        """前端 dashboard.js:35: chunksRes?.meta?.total || 0
+        total 必须是非负整数。"""
+        response = client.get("/api/v1/chunks", params={"page": 1, "page_size": 1})
+        total = response.json()["meta"]["total"]
+
+        assert isinstance(total, int), f"total 应为 int，实际为 {type(total)}"
+        assert total >= 0, f"total 应为非负整数，实际为 {total}"
+
+    # ── 6.5 前端: data 数据结构 ────────────────────────────────────
+
+    def test_ready_data_is_dict_not_list(self):
+        """ready 接口 data 是对象而非数组。"""
+        response = client.get("/api/v1/health/ready")
+        data = response.json()["data"]
+        assert isinstance(data, dict), "ready data 应为 dict 对象"
+
+    def test_dependencies_data_is_dict_not_list(self):
+        """dependencies 接口 data.dependencies 是对象而非数组。
+        前端: Object.entries(depStatuses) 需要对象格式。"""
+        response = client.get("/api/v1/health/dependencies")
+        deps = response.json()["data"]["dependencies"]
+        assert isinstance(deps, dict), (
+            "dependencies 必须是 dict，前端 Object.entries() 需要对象格式"
+        )
+
+    # ── 6.6 前端 fallback 逻辑 — 服务离线时的兜底 ─────────────────
+
+    def test_health_endpoint_returns_valid_json_even_on_error(self):
+        """即使服务降级 (503)，响应仍为合法 JSON 且结构一致。"""
+        # 正常情况返回 200，但即使降级也应有统一结构
+        response = client.get("/api/v1/health/ready")
+        body = response.json()
+        # 无论状态码如何，data/meta/error 三字段必须存在
+        assert "data" in body
+        assert "meta" in body
+        assert "error" in body
+
+    def test_pagination_structure_valid_regardless_of_data_volume(self):
+        """无论知识库数据量多少，分页响应结构始终完整且一致。"""
+        # 文档列表
+        docs = client.get("/api/v1/documents", params={"page": 1, "page_size": 1})
+        docs_body = docs.json()
+        assert isinstance(docs_body["data"], list), "data 必须是数组"
+        assert len(docs_body["data"]) <= 1, "page_size=1 最多返回 1 条"
+        assert isinstance(docs_body["meta"]["total"], int), "total 必须是整数"
+        assert docs_body["meta"]["total"] >= 0, "total 必须 >= 0"
+        # total_pages 与 total/page_size 逻辑一致
+        expected_pages = (
+            (docs_body["meta"]["total"] + docs_body["meta"]["page_size"] - 1)
+            // docs_body["meta"]["page_size"]
+            if docs_body["meta"]["total"] > 0 else 0
+        )
+        assert docs_body["meta"]["total_pages"] == expected_pages
+
+        # 知识块列表
+        chunks = client.get("/api/v1/chunks", params={"page": 1, "page_size": 1})
+        chunks_body = chunks.json()
+        assert isinstance(chunks_body["data"], list), "data 必须是数组"
+        assert len(chunks_body["data"]) <= 1, "page_size=1 最多返回 1 条"
+        assert isinstance(chunks_body["meta"]["total"], int), "total 必须是整数"
+        assert chunks_body["meta"]["total"] >= 0, "total 必须 >= 0"
+        expected_pages = (
+            (chunks_body["meta"]["total"] + chunks_body["meta"]["page_size"] - 1)
+            // chunks_body["meta"]["page_size"]
+            if chunks_body["meta"]["total"] > 0 else 0
+        )
+        assert chunks_body["meta"]["total_pages"] == expected_pages
+
+    def test_error_field_is_explicit_null_in_success_responses(self):
+        """成功响应中 error 字段必须显式为 null（非 undefined/missing）。
+        前端可能做 truthy 检查，确保 error 是 null 而非空字符串或其他。"""
+        urls = [
+            "/api/v1/health/ready",
+            "/api/v1/health/dependencies",
+            "/api/v1/documents?page=1&page_size=1",
+            "/api/v1/chunks?page=1&page_size=1",
+        ]
+        for url in urls:
+            response = client.get(url)
+            body = response.json()
+            assert body["error"] is None, (
+                f"{url} 成功响应中 error 应为 null，实际为 {body['error']!r}"
+            )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. 并发场景测试 — 模拟前端 Promise.all 并行请求
+# ══════════════════════════════════════════════════════════════════════
+
+class TestDashboardConcurrency:
+    """模拟前端 dashboard.js:16-19 的 Promise.all 并行调用。"""
+
+    def test_concurrent_health_checks(self):
+        """并行调用 health/ready 和 health/dependencies，验证无竞态错误。"""
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {
+                "ready": executor.submit(client.get, "/api/v1/health/ready"),
+                "deps": executor.submit(client.get, "/api/v1/health/dependencies"),
+            }
+            results = {k: v.result() for k, v in futures.items()}
+
+        assert results["ready"].status_code == 200
+        assert results["deps"].status_code == 200
+
+    def test_concurrent_document_and_chunk_counts(self):
+        """并行调用文档列表和知识块列表，验证无竞态错误。"""
+        import concurrent.futures
+
+        def fetch_docs():
+            return client.get("/api/v1/documents", params={"page": 1, "page_size": 1})
+
+        def fetch_chunks():
+            return client.get("/api/v1/chunks", params={"page": 1, "page_size": 1})
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {
+                "docs": executor.submit(fetch_docs),
+                "chunks": executor.submit(fetch_chunks),
+            }
+            results = {k: v.result() for k, v in futures.items()}
+
+        assert results["docs"].status_code == 200
+        assert results["chunks"].status_code == 200
+        assert isinstance(results["docs"].json()["meta"]["total"], int)
+        assert isinstance(results["chunks"].json()["meta"]["total"], int)

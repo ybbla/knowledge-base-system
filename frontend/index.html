@@ -37,9 +37,10 @@
           <span>仪表盘</span>
         </div>
         <div class="topbar-actions">
-          <button class="btn btn-sm btn-secondary" onclick="App.router.navigate('/search')" title="快速搜索">
-            ⌕ 搜索
-          </button>
+          <span id="serviceStatus" class="service-status-indicator" title="点击查看服务详情">
+            <span class="service-status-icon">◉</span>
+            <span class="service-status-label">检查中…</span>
+          </span>
         </div>
       </header>
 

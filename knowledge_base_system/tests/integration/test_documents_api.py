@@ -6,17 +6,19 @@
   3. GET  /api/v1/documents/{doc_id}                    → 文档详情 (点击详情链接)
   4. DELETE /api/v1/documents/{doc_id}                   → 软删除 (deleteDoc L168)
   5. POST /api/v1/documents/{doc_id}/restore            → 恢复 (restoreDoc L178)
-  6. POST /api/v1/documents/{doc_id}/ingest?mode=force  → 重新入库 (ingestDocument L188)
+  6. POST /api/v1/documents/{doc_id}/ingest?mode=incremental → 重新处理已有文档 (ingestDocument L188)
   7. POST /api/v1/documents                             → 创建文档 (后端支持)
   8. PATCH /api/v1/documents/{doc_id}                   → 更新文档 (后端支持)
   9. POST /api/v1/documents/upload                      → 文件上传 (uploadDocument L374)
-  10. POST /api/v1/documents/{doc_id}/ingest             → 触发入库 (ingestion.js submitNewJob L299)
-
 旧版 /upload、/ingest、/ingest/{job_id} 已标记废弃，保留兼容期内可用。
 
 本测试使用 TestClient 对真实 FastAPI app 发起请求，
 验证响应结构完全匹配前端期望，确保前后端联调可用。
 """
+
+import io
+import uuid
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -24,6 +26,25 @@ from app.main import app
 
 
 client = TestClient(app)
+
+# 模拟文件目录
+_SIMULATED_DIR = Path(__file__).resolve().parents[3] / "data" / "simulated_inputs"
+_SIMULATED_FILES = {
+    "markdown": _SIMULATED_DIR / "simulated_dev_guide.md",
+    "txt": _SIMULATED_DIR / "simulated_project_plan.txt",
+    "docx": _SIMULATED_DIR / "simulated_system_manual.docx",
+    "xlsx": _SIMULATED_DIR / "simulated_user_stats.xlsx",
+    "html": _SIMULATED_DIR / "simulated_dashboard.html",
+    "pdf": _SIMULATED_DIR / "simulated_api_whitepaper.pdf",
+    "pptx": _SIMULATED_DIR / "simulated_q4_review.pptx",
+}
+_CONTENT_TYPES = {
+    "markdown": "text/markdown", "txt": "text/plain",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "html": "text/html", "pdf": "application/pdf",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -48,6 +69,39 @@ def _cleanup_doc(doc_id: str):
     # 先确保软删除
     client.delete(f"/api/v1/documents/{doc_id}")
     # 如果 PG 后端支持硬删除就更好，这里只是尽力清理
+
+
+def _get_simulated_file(source_type: str) -> tuple[bytes, str, str]:
+    """读取模拟文件，返回 (content_bytes, filename, content_type)。
+    文件不存在时跳过测试。
+    """
+    path = _SIMULATED_FILES.get(source_type)
+    if path is None or not path.exists():
+        import pytest
+        pytest.skip(f"模拟文件不存在: {path}")
+    return path.read_bytes(), path.name, _CONTENT_TYPES.get(source_type, "application/octet-stream")
+
+
+def _upload_simulated(source_type: str, **kwargs):
+    """上传模拟文件，返回 httpx Response。
+    透传 title/category/ingest_after_create/mode 参数。
+    """
+    content, filename, content_type = _get_simulated_file(source_type)
+    params = {
+        "ingest_after_create": str(kwargs.pop("ingest_after_create", True)).lower(),
+        "mode": kwargs.pop("mode", "incremental"),
+    }
+    data = {}
+    if "title" in kwargs:
+        data["title"] = kwargs["title"]
+    if "category" in kwargs:
+        data["category"] = kwargs["category"]
+    return client.post(
+        "/api/v1/documents/upload",
+        files={"file": (filename, io.BytesIO(content), content_type)},
+        data=data,
+        params=params,
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -605,7 +659,7 @@ class TestDocumentsRestore:
 # ══════════════════════════════════════════════════════════════════════
 
 class TestDocumentsIngest:
-    """前端: API.ingestDocument(docId, 'force') (documents.js:188)"""
+    """前端: API.ingestDocument(docId, 'incremental') (documents.js:188)"""
 
     def test_ingest_returns_job_id(self):
         """触发入库返回 job_id (documents.js:188)。"""
@@ -614,12 +668,13 @@ class TestDocumentsIngest:
 
         response = client.post(
             f"/api/v1/documents/{doc_id}/ingest",
-            params={"mode": "force"},
+            params={"mode": "incremental"},
         )
         assert response.status_code == 200
         body = response.json()
         assert "job_id" in body["data"]
         assert body["data"]["doc_id"] == doc_id
+        assert body["data"]["mode"] == "incremental"
         assert body["meta"]["status"] == "accepted"
 
         _cleanup_doc(doc_id)
@@ -651,7 +706,7 @@ class TestDocumentsIngest:
 
 class TestDocumentsFullCRUDFlow:
     """模拟前端 documents.js 的完整操作流程:
-    renderList → loadPage → 删除 → 恢复 → 重新入库
+    renderList → loadPage → 删除 → 恢复 → 重新处理
     """
 
     def test_full_lifecycle_create_get_update_delete_restore(self):
@@ -873,3 +928,445 @@ class TestDocumentsResponseConsistency:
         assert body["error"]["message"] is not None
         assert isinstance(body["error"]["code"], str)
         assert isinstance(body["error"]["message"], str)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 12. POST /api/v1/documents/upload — 文件上传（使用模拟文件）
+# ══════════════════════════════════════════════════════════════════════
+
+class TestDocumentsUpload:
+    """前端: API.uploadDocument(file, title, category, options) (documents.js:374)
+    使用 data/simulated_inputs 下的模拟文件。
+    """
+
+    # ── 12.1 各格式上传 ─────────────────────────────────────────────
+
+    def test_upload_markdown(self):
+        """上传 Markdown 模拟文件 (simulated_dev_guide.md)。"""
+        resp = _upload_simulated("markdown", title="开发指南", ingest_after_create=False)
+        assert resp.status_code == 201, f"上传失败: {resp.text}"
+        data = resp.json()["data"]
+        assert data["duplicate"] is False
+        assert data["file_name"] == "simulated_dev_guide.md"
+        assert data["source_type"] == "markdown"
+        assert data["title"] == "开发指南"
+        assert data["size"] > 0
+        _cleanup_doc(data["doc_id"])
+
+    def test_upload_txt(self):
+        """上传 TXT 模拟文件 (simulated_project_plan.txt)。"""
+        resp = _upload_simulated("txt", title="项目计划", ingest_after_create=False)
+        assert resp.status_code == 201
+        data = resp.json()["data"]
+        assert data["duplicate"] is False
+        assert data["source_type"] == "txt"
+        _cleanup_doc(data["doc_id"])
+
+    def test_upload_docx(self):
+        """上传 DOCX 模拟文件 (simulated_system_manual.docx)。
+        若文件曾被上传过且未清理，会返回 duplicate=true，这也是合法响应。
+        """
+        resp = _upload_simulated("docx", title="系统手册", ingest_after_create=False)
+        assert resp.status_code in {200, 201}, (
+            f"DOCX 上传异常: HTTP {resp.status_code}"
+        )
+        data = resp.json()["data"]
+        if data["duplicate"]:
+            # 已有文档残留，清理后重试
+            _cleanup_doc(data["existing_doc_id"])
+        else:
+            assert data["source_type"] == "docx"
+            _cleanup_doc(data["doc_id"])
+
+    def test_upload_xlsx(self):
+        """上传 XLSX 模拟文件 (simulated_user_stats.xlsx)。"""
+        resp = _upload_simulated("xlsx", title="用户统计", ingest_after_create=False)
+        assert resp.status_code == 201
+        data = resp.json()["data"]
+        assert data["duplicate"] is False
+        assert data["source_type"] == "xlsx"
+        _cleanup_doc(data["doc_id"])
+
+    def test_upload_html(self):
+        """上传 HTML 模拟文件 (simulated_dashboard.html)。"""
+        resp = _upload_simulated("html", title="仪表盘页面", ingest_after_create=False)
+        assert resp.status_code == 201
+        data = resp.json()["data"]
+        assert data["duplicate"] is False
+        assert data["source_type"] == "html"
+        _cleanup_doc(data["doc_id"])
+
+    def test_upload_pdf(self):
+        """上传 PDF 模拟文件 (simulated_api_whitepaper.pdf)。"""
+        resp = _upload_simulated("pdf", title="API 白皮书", ingest_after_create=False)
+        assert resp.status_code == 201
+        data = resp.json()["data"]
+        assert data["duplicate"] is False
+        assert data["source_type"] == "pdf"
+        _cleanup_doc(data["doc_id"])
+
+    def test_upload_pptx(self):
+        """上传 PPTX 模拟文件 (simulated_q4_review.pptx)。"""
+        resp = _upload_simulated("pptx", title="Q4 评审", ingest_after_create=False)
+        assert resp.status_code == 201
+        data = resp.json()["data"]
+        assert data["duplicate"] is False
+        assert data["source_type"] == "pptx"
+        _cleanup_doc(data["doc_id"])
+
+    # ── 12.2 前端取值路径对齐 ───────────────────────────────────────
+
+    def test_upload_response_matches_frontend_paths(self):
+        """前端 documents.js:374-392 逐行取值:
+        result?.data?.doc_id / duplicate / file_name / size / title
+        / source_type / ingest_job_id / ingest_job。"""
+        content = f"# 前端对齐测试 {uuid.uuid4().hex}\n\n这是测试内容。".encode("utf-8")
+        resp = client.post("/api/v1/documents/upload", files={
+            "file": (f"frontend_test_{uuid.uuid4().hex[:8]}.md",
+                     io.BytesIO(content), "text/markdown"),
+        }, data={"title": "前端对齐测试"}, params={"ingest_after_create": "false", "mode": "incremental"})
+        assert resp.status_code == 201
+        data = resp.json()["data"]
+
+        # documents.js:378: data = result?.data || {}
+        assert isinstance(data, dict)
+        # documents.js:382: data.duplicate
+        assert isinstance(data["duplicate"], bool)
+        # documents.js:386: data.ingest_job_id（ingest_after_create=false 时允许为空）
+        if data.get("ingest_job_id"):
+            job = data.get("ingest_job", {})
+            assert "job_id" in job and "status" in job and "stage" in job
+        # documents.js:391: title || selectedFile.name
+        assert data["title"] == "前端对齐测试"
+        assert "file_name" in data
+        # documents.js:70: UI.fmtBadge(source_type)
+        assert isinstance(data["source_type"], str) and len(data["source_type"]) > 0
+        # 统一响应结构
+        body = resp.json()
+        assert body["error"] is None
+        assert "meta" in body
+
+        _cleanup_doc(data["doc_id"])
+
+    # ── 12.3 标题与分类 ─────────────────────────────────────────────
+
+    def test_upload_custom_title(self):
+        """自定义标题覆盖文件名。"""
+        resp = _upload_simulated("txt", title="自定义标题")
+        assert resp.json()["data"]["title"] == "自定义标题"
+        _cleanup_doc(resp.json()["data"]["doc_id"])
+
+    def test_upload_without_title_uses_filename_stem(self):
+        """不传 title 时使用文件名（去后缀）作为标题。"""
+        content, filename, content_type = _get_simulated_file("markdown")
+        resp = client.post("/api/v1/documents/upload", files={
+            "file": (filename, io.BytesIO(content), content_type),
+        }, params={"ingest_after_create": "false", "mode": "incremental"})
+        assert resp.status_code == 201
+        assert resp.json()["data"]["title"] == "simulated_dev_guide"
+        _cleanup_doc(resp.json()["data"]["doc_id"])
+
+    def test_upload_custom_category(self):
+        """自定义分类。"""
+        resp = _upload_simulated("txt", title="分类测试", category="技术文档")
+        assert resp.json()["data"]["category"] == "技术文档"
+        _cleanup_doc(resp.json()["data"]["doc_id"])
+
+    # ── 12.4 入库控制 ───────────────────────────────────────────────
+
+    def test_upload_auto_ingest_returns_job(self):
+        """前端默认 ingest_after_create=true，返回入库任务。"""
+        resp = _upload_simulated("txt", title="入库测试", ingest_after_create=True)
+        data = resp.json()["data"]
+        assert data["ingest_job_id"], "应返回 ingest_job_id"
+        _cleanup_doc(data["doc_id"])
+
+    def test_upload_without_ingest_no_job(self):
+        """ingest_after_create=false 时不创建入库任务。"""
+        resp = _upload_simulated("markdown", title="不入库", ingest_after_create=False)
+        data = resp.json()["data"]
+        assert data.get("ingest_job_id") in (None, ""), (
+            f"ingest_after_create=false 时不应有 ingest_job_id, 实际={data.get('ingest_job_id')}"
+        )
+        _cleanup_doc(data["doc_id"])
+
+    def test_upload_force_mode(self):
+        """后端仍支持 force 模式，但前端重新处理已有文档不再使用该模式。"""
+        resp = _upload_simulated("markdown", title="force测试", mode="force")
+        data = resp.json()["data"]
+        if "ingest_job" in data:
+            assert data["ingest_job"]["mode"] == "force"
+        _cleanup_doc(data["doc_id"])
+
+    # ── 12.5 重复检测 ───────────────────────────────────────────────
+
+    def test_duplicate_upload_same_content(self):
+        """相同内容重复上传返回 duplicate=true (documents.js:382-384)。
+        使用唯一内容避免与格式测试的模拟文件冲突。
+        """
+        unique_content = f"# dup test {uuid.uuid4().hex}\n".encode("utf-8")
+        filename = f"dup_{uuid.uuid4().hex[:8]}.md"
+
+        # 第一次上传
+        resp1 = client.post("/api/v1/documents/upload", files={
+            "file": (filename, io.BytesIO(unique_content), "text/markdown"),
+        }, data={"title": "原始"}, params={"ingest_after_create": "false", "mode": "incremental"})
+        assert resp1.status_code == 201, f"第一次上传失败: {resp1.text}"
+        body1 = resp1.json()
+        if body1["data"]["duplicate"]:
+            # 之前测试残留，清理后用新内容重试
+            _cleanup_doc(body1["data"]["existing_doc_id"])
+            unique_content = f"# dup retry {uuid.uuid4().hex}\n".encode("utf-8")
+            resp1 = client.post("/api/v1/documents/upload", files={
+                "file": (f"dup2_{uuid.uuid4().hex[:8]}.md", io.BytesIO(unique_content), "text/markdown"),
+            }, data={"title": "原始"}, params={"ingest_after_create": "false", "mode": "incremental"})
+            assert resp1.status_code == 201
+            body1 = resp1.json()
+        assert not body1["data"]["duplicate"]
+        doc_id = body1["data"]["doc_id"]
+
+        # 第二次上传相同内容 → 应检测到重复
+        resp2 = client.post("/api/v1/documents/upload", files={
+            "file": (filename, io.BytesIO(unique_content), "text/markdown"),
+        }, data={"title": "重复"}, params={"ingest_after_create": "false", "mode": "incremental"})
+        assert resp2.status_code in {200, 201}, f"重复上传异常: {resp2.status_code}"
+        body2 = resp2.json()
+        # PG 后端：duplicate=true；内存后端：无去重检查，duplicate=false
+        if body2["data"]["duplicate"]:
+            assert body2["data"]["existing_doc_id"] == doc_id
+            assert body2["meta"].get("duplicate") is True
+        else:
+            _cleanup_doc(body2["data"]["doc_id"])
+
+        _cleanup_doc(doc_id)
+
+    def test_different_files_no_duplicate(self):
+        """不同内容的文件不会误判为重复。
+        PG 后端第二次上传返回 duplicate=true + existing_doc_id。
+        """
+        content = f"# unique {uuid.uuid4().hex}\n".encode("utf-8")
+        resp1 = client.post("/api/v1/documents/upload", files={
+            "file": ("a.md", io.BytesIO(content), "text/markdown"),
+        }, params={"ingest_after_create": "false", "mode": "incremental"})
+        assert resp1.status_code in {200, 201}, f"第一次上传异常: {resp1.status_code}"
+        body1 = resp1.json()
+        if body1["data"]["duplicate"]:
+            # 之前运行残留，清理后用新内容
+            _cleanup_doc(body1["data"]["existing_doc_id"])
+            content = f"# unique retry {uuid.uuid4().hex}\n".encode("utf-8")
+            resp1 = client.post("/api/v1/documents/upload", files={
+                "file": ("a2.md", io.BytesIO(content), "text/markdown"),
+            }, params={"ingest_after_create": "false", "mode": "incremental"})
+            assert resp1.status_code == 201
+            body1 = resp1.json()
+        assert body1["data"]["duplicate"] is False
+        doc1 = body1["data"]["doc_id"]
+
+        # 第二次上传相同内容
+        resp2 = client.post("/api/v1/documents/upload", files={
+            "file": ("b.md", io.BytesIO(content), "text/markdown"),
+        }, params={"ingest_after_create": "false", "mode": "incremental"})
+        assert resp2.status_code in {200, 201}, f"第二次上传异常: {resp2.status_code}"
+        body2 = resp2.json()
+        if body2["data"]["duplicate"]:
+            # PG 后端：检测到重复
+            assert body2["data"]["existing_doc_id"] == doc1
+        else:
+            # 内存后端：无去重检查
+            _cleanup_doc(body2["data"]["doc_id"])
+
+        _cleanup_doc(doc1)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 13. 上传后完整流程 — 模拟前端从上传到管理的全链路
+# ══════════════════════════════════════════════════════════════════════
+
+class TestDocumentsUploadFullWorkflow:
+    """模拟前端: showUploadModal → doUpload → closeUploadModal
+    → loadPage → 详情 → 删除 → 恢复。"""
+
+    @staticmethod
+    def _upload_unique_text(title: str, **kwargs):
+        """上传唯一文本内容，避免跨测试重复检测干扰。"""
+        content = f"# {title} {uuid.uuid4().hex}\n\n测试内容。".encode("utf-8")
+        return client.post("/api/v1/documents/upload", files={
+            "file": (f"{uuid.uuid4().hex[:8]}.md", io.BytesIO(content), "text/markdown"),
+        }, data={"title": title, "category": kwargs.get("category", "测试")},
+           params={"ingest_after_create": str(kwargs.get("ingest_after_create", False)).lower(),
+                   "mode": kwargs.get("mode", "incremental")})
+
+    def test_upload_then_list_visible(self):
+        """上传后能在文档列表中查到（前端 loadPage 刷新列表）。"""
+        title = f"列表可见_{uuid.uuid4().hex[:8]}"
+        resp = self._upload_unique_text(title)
+        assert resp.status_code == 201
+        doc_id = resp.json()["data"]["doc_id"]
+
+        list_resp = client.get("/api/v1/documents", params={
+            "page": 1, "page_size": 50, "keyword": title,
+        })
+        items = list_resp.json()["data"]
+        assert any(d["doc_id"] == doc_id for d in items), (
+            f"上传的文档 {doc_id} 未出现在列表中"
+        )
+        _cleanup_doc(doc_id)
+
+    def test_upload_then_get_detail(self):
+        """上传后可查看详情（前端点击标题跳转 /documents/:id）。"""
+        title = f"详情测试_{uuid.uuid4().hex[:8]}"
+        resp = self._upload_unique_text(title)
+        assert resp.status_code == 201
+        doc_id = resp.json()["data"]["doc_id"]
+
+        detail = client.get(f"/api/v1/documents/{doc_id}")
+        assert detail.status_code == 200
+        d = detail.json()["data"]
+        assert d["doc_id"] == doc_id
+        assert d["title"] == title
+        assert "chunk_count" in d and "element_count" in d and "index_summary" in d
+        _cleanup_doc(doc_id)
+
+    def test_upload_then_delete_then_restore(self):
+        """上传 → 删除 → 恢复（前端 deleteDoc + restoreDoc）。"""
+        title = f"删恢测试_{uuid.uuid4().hex[:8]}"
+        resp = self._upload_unique_text(title)
+        assert resp.status_code == 201
+        doc_id = resp.json()["data"]["doc_id"]
+
+        # 删除 (documents.js:168)
+        assert client.delete(f"/api/v1/documents/{doc_id}").status_code == 200
+        # 恢复 (documents.js:178)
+        assert client.post(f"/api/v1/documents/{doc_id}/restore").status_code == 200
+        assert client.get(f"/api/v1/documents/{doc_id}").json()["data"]["status"] == "active"
+
+        _cleanup_doc(doc_id)
+
+    def test_upload_then_update(self):
+        """上传后可更新标题和分类。"""
+        title = f"旧标题_{uuid.uuid4().hex[:8]}"
+        resp = self._upload_unique_text(title, category="旧分类")
+        assert resp.status_code == 201
+        doc_id = resp.json()["data"]["doc_id"]
+
+        patch = client.patch(f"/api/v1/documents/{doc_id}", params={
+            "title": "新标题", "category": "新分类",
+        })
+        assert patch.status_code == 200
+        assert patch.json()["data"]["title"] == "新标题"
+        assert patch.json()["data"]["category"] == "新分类"
+
+        _cleanup_doc(doc_id)
+
+    def test_upload_full_lifecycle(self):
+        """上传 → 查看 → 更新 → 删除 → 恢复 → 最终确认。"""
+        title = f"生命周期_{uuid.uuid4().hex[:8]}"
+        resp = self._upload_unique_text(title, category="测试")
+        assert resp.status_code == 201
+        doc_id = resp.json()["data"]["doc_id"]
+
+        # 查看
+        assert client.get(f"/api/v1/documents/{doc_id}").status_code == 200
+        # 更新
+        assert client.patch(f"/api/v1/documents/{doc_id}",
+                            params={"title": "生命周期-已更新"}).status_code == 200
+        # 删除
+        assert client.delete(f"/api/v1/documents/{doc_id}").status_code == 200
+        # 恢复
+        assert client.post(f"/api/v1/documents/{doc_id}/restore").status_code == 200
+        # 最终确认
+        final = client.get(f"/api/v1/documents/{doc_id}")
+        assert final.json()["data"]["status"] == "active"
+        assert final.json()["data"]["title"] == "生命周期-已更新"
+
+        _cleanup_doc(doc_id)
+
+    def test_upload_then_ingest_job_queryable(self):
+        """上传（含入库）后入库任务可查询。"""
+        title = f"入库查询_{uuid.uuid4().hex[:8]}"
+        resp = self._upload_unique_text(title, ingest_after_create=True)
+        data = resp.json()["data"]
+        job_id = data["ingest_job_id"]
+
+        # 前端: API.getIngestJobV1(jobId)
+        job_resp = client.get(f"/api/v1/ingest/jobs/{job_id}")
+        assert job_resp.status_code == 200
+        job = job_resp.json()["data"]
+        assert job["job_id"] == job_id
+        assert job["doc_id"] == data["doc_id"]
+        assert job["status"] in {"pending", "processing", "completed", "failed", "canceled"}
+
+        # 前端: API.listIngestJobs()
+        list_resp = client.get("/api/v1/ingest/jobs")
+        assert any(j["job_id"] == job_id for j in list_resp.json()["data"])
+
+        _cleanup_doc(data["doc_id"])
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 14. 上传边界情况 & v1 规范一致性
+# ══════════════════════════════════════════════════════════════════════
+
+class TestDocumentsUploadEdgeCases:
+    """上传边界情况和规范验证。"""
+
+    def test_upload_without_file_returns_422(self):
+        assert client.post("/api/v1/documents/upload").status_code == 422
+
+    def test_upload_empty_file(self):
+        """空文件上传。"""
+        resp = client.post("/api/v1/documents/upload", files={
+            "file": ("empty.md", io.BytesIO(b""), "text/markdown"),
+        }, data={"title": "空文件"}, params={"ingest_after_create": "false", "mode": "incremental"})
+        assert resp.status_code in {200, 201, 400, 422}, f"空文件上传异常: {resp.status_code}"
+        if resp.status_code in {200, 201}:
+            _cleanup_doc(resp.json()["data"]["doc_id"])
+
+    def test_upload_large_text_file(self):
+        """大文本文件上传（模拟真实文档）。"""
+        content = ("# 大型文档\n\n" + "内容行。\n" * 5000).encode("utf-8")
+        resp = client.post("/api/v1/documents/upload", files={
+            "file": ("large.md", io.BytesIO(content), "text/markdown"),
+        }, data={"title": "大型文档"}, params={"ingest_after_create": "false", "mode": "incremental"})
+        assert resp.status_code == 201
+        assert resp.json()["data"]["size"] > 10000
+        _cleanup_doc(resp.json()["data"]["doc_id"])
+
+    def test_upload_special_chars_filename(self):
+        """文件名含中文和特殊字符。"""
+        resp = client.post("/api/v1/documents/upload", files={
+            "file": ("测试文档 (v2.0).md", io.BytesIO(b"# test"), "text/markdown"),
+        }, data={"title": "特殊文件名"}, params={"ingest_after_create": "false", "mode": "incremental"})
+        assert resp.status_code == 201
+        _cleanup_doc(resp.json()["data"]["doc_id"])
+
+    def test_upload_v1_no_x_deprecated_header(self):
+        """v1 上传接口不应有 X-Deprecated 头。"""
+        resp = _upload_simulated("markdown", title="无废弃头", ingest_after_create=False)
+        assert "x-deprecated" not in resp.headers
+        _cleanup_doc(resp.json()["data"]["doc_id"])
+
+    def test_upload_success_error_is_null(self):
+        """成功上传 error 字段必须显式为 null。"""
+        resp = _upload_simulated("txt", title="error null", ingest_after_create=False)
+        assert resp.json()["error"] is None
+        _cleanup_doc(resp.json()["data"]["doc_id"])
+
+    def test_concurrent_uploads_different_formats(self):
+        """并发上传不同格式文件。"""
+        import concurrent.futures
+        formats = ["markdown", "txt", "html"]
+        doc_ids = []
+
+        def upload_one(fmt):
+            return _upload_simulated(fmt, title=f"并发_{fmt}", ingest_after_create=False)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {fmt: executor.submit(upload_one, fmt) for fmt in formats}
+            results = {fmt: f.result() for fmt, f in futures.items()}
+
+        for fmt, resp in results.items():
+            assert resp.status_code == 201, f"并发上传 {fmt} 失败: {resp.status_code}"
+            doc_ids.append(resp.json()["data"]["doc_id"])
+        for did in doc_ids:
+            _cleanup_doc(did)

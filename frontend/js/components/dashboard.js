@@ -11,6 +11,11 @@ const Dashboard = (() => {
     let healthOk = false;
     let backendType = '—';
     let depStatuses = {};
+    let activeJobCount = 0;
+    let failedJobCount = 0;
+    let failedDocCount = 0;
+    let failedIndexChunkCount = 0;
+    let pendingIndexChunkCount = 0;
 
     try {
       const [readyRes, depsRes] = await Promise.all([
@@ -35,6 +40,28 @@ const Dashboard = (() => {
       chunkCount = chunksRes?.meta?.total || 0;
     } catch (e) { /* ignore */ }
 
+    try {
+      const [acceptedRes, pendingRes, processingRes, failedRes] = await Promise.all([
+        API.listIngestJobs({ page: 1, page_size: 1, status: 'accepted' }),
+        API.listIngestJobs({ page: 1, page_size: 1, status: 'pending' }),
+        API.listIngestJobs({ page: 1, page_size: 1, status: 'processing' }),
+        API.listIngestJobs({ page: 1, page_size: 1, status: 'failed' }),
+      ]);
+      activeJobCount = (acceptedRes?.meta?.total || 0) + (pendingRes?.meta?.total || 0) + (processingRes?.meta?.total || 0);
+      failedJobCount = failedRes?.meta?.total || 0;
+    } catch (e) { /* ignore */ }
+
+    try {
+      const [failedDocsRes, failedIndexRes, pendingIndexRes] = await Promise.all([
+        API.listDocuments({ page: 1, page_size: 1, status: 'failed' }),
+        API.listChunks({ page: 1, page_size: 1, index_status: 'failed' }),
+        API.listChunks({ page: 1, page_size: 1, index_status: 'pending' }),
+      ]);
+      failedDocCount = failedDocsRes?.meta?.total || 0;
+      failedIndexChunkCount = failedIndexRes?.meta?.total || 0;
+      pendingIndexChunkCount = pendingIndexRes?.meta?.total || 0;
+    } catch (e) { /* ignore */ }
+
     UI.render(`
       <div class="page-header">
         <h1 class="page-title">知识库概览</h1>
@@ -46,7 +73,7 @@ const Dashboard = (() => {
           <div class="stat-icon">▦</div>
           <div class="stat-label">文档总数</div>
           <div class="stat-value">${UI.formatNumber(docCount)}</div>
-          <div class="stat-detail"><span>支持 6 种格式</span></div>
+          <div class="stat-detail"><span>支持 7 种格式</span></div>
         </div>
         <div class="stat-card">
           <div class="stat-icon">⊞</div>
@@ -56,15 +83,15 @@ const Dashboard = (() => {
         </div>
         <div class="stat-card">
           <div class="stat-icon">⌕</div>
-          <div class="stat-label">检索模式</div>
-          <div class="stat-value stat-value-sm">混合</div>
-          <div class="stat-detail"><span>向量 + BM25 + RRF 融合</span></div>
+          <div class="stat-label">进行中任务</div>
+          <div class="stat-value stat-value-sm">${activeJobCount}</div>
+          <div class="stat-detail"><span>${failedJobCount ? `${failedJobCount} 个失败任务待处理` : '暂无失败任务'}</span></div>
         </div>
         <div class="stat-card">
           <div class="stat-icon">⚙</div>
           <div class="stat-label">后端引擎</div>
           <div class="stat-value stat-value-sm">${UI.escapeHtml(backendType)}</div>
-          <div class="stat-detail"><span>LLM: 豆包 Seed 2.0 Pro</span></div>
+          <div class="stat-detail"><span>${healthOk ? 'API 服务在线' : '请检查服务状态'}</span></div>
         </div>
       </div>
 
@@ -99,25 +126,37 @@ const Dashboard = (() => {
           <div class="card-header"><h3 class="card-title">快速操作</h3></div>
           <div class="quick-actions">
             <button class="btn btn-primary btn-lg" onclick="Documents.showUploadModal()">↑ 上传文档</button>
-            <button class="btn btn-secondary btn-lg" onclick="App.router.navigate('/search')">⌕ 搜索知识库</button>
+            <button class="btn btn-secondary btn-lg" onclick="App.router.navigate('/search')">⌕ 搜索知识</button>
             <button class="btn btn-secondary btn-lg" onclick="App.router.navigate('/documents')">▦ 浏览文档</button>
             <button class="btn btn-secondary btn-lg" onclick="App.router.navigate('/chunks')">⊞ 知识块管理</button>
           </div>
         </div>
       </div>
 
-      <div class="format-strip">
-        <div>
-          <h3 class="card-title">支持的文档格式</h3>
-          <p class="card-subtitle">自动解析、语义抽取与索引</p>
+      <div class="card action-card">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">待处理事项</h3>
+            <p class="card-subtitle">优先处理会影响检索可用性的异常</p>
+          </div>
         </div>
-        <div class="format-list">
-          <span class="badge-fmt md">MD</span>
-          <span class="badge-fmt docx">DOCX</span>
-          <span class="badge-fmt xlsx">XLSX</span>
-          <span class="badge-fmt html">HTML</span>
-          <span class="badge-fmt pdf">PDF</span>
-          <span class="badge-fmt pptx">PPTX</span>
+        <div class="action-list">
+          <button class="action-row" onclick="App.router.navigate('/ingestion')">
+            <span>失败入库任务</span>
+            <strong>${failedJobCount}</strong>
+          </button>
+          <button class="action-row" onclick="App.router.navigate('/documents')">
+            <span>失败文档</span>
+            <strong>${failedDocCount}</strong>
+          </button>
+          <button class="action-row" onclick="App.router.navigate('/chunks')">
+            <span>索引失败知识块</span>
+            <strong>${failedIndexChunkCount}</strong>
+          </button>
+          <button class="action-row" onclick="App.router.navigate('/chunks')">
+            <span>待索引知识块</span>
+            <strong>${pendingIndexChunkCount}</strong>
+          </button>
         </div>
       </div>
     `);

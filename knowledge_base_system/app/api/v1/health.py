@@ -36,7 +36,7 @@ async def health_live():
     """返回进程是否可响应。"""
     return APIResponse(
         data={"status": "ok"},
-        meta={"service": "knowledge-base-system"},
+        meta={"service": "knowledge-base-system", "version": "0.3.0"},
     ).model_dump(mode="json")
 
 
@@ -137,6 +137,7 @@ async def health_dependencies():
     deps: dict[str, dict[str, Any]] = {
         "backend": {
             "status": "ok",
+            "name": "后端引擎",
             "type": settings.backend,
         },
         "document_repo": _check_repo(document_repo, "文档仓储"),
@@ -151,7 +152,7 @@ async def health_dependencies():
 
     return APIResponse(
         data={"dependencies": deps},
-        meta={"service": "knowledge-base-system", "version": "0.1.0"},
+        meta={"service": "knowledge-base-system", "version": "0.3.0"},
     ).model_dump(mode="json")
 
 

@@ -9,7 +9,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Body, Depends, Query, status
 
 from app.api.v1.errors import ErrorCode
 from app.api.v1.schemas import (
@@ -232,6 +232,12 @@ async def create_chunk(
     if hasattr(chunk_store, "put"):
         chunk_store.put(chunk)
 
+    if document_repo is not None and hasattr(document_repo, "touch_updated_at"):
+        try:
+            document_repo.touch_updated_at(doc_id)
+        except Exception:
+            logger.exception("刷新知识块归属文档更新时间失败")
+
     # 创建后索引
     if index_after_create:
         try:
@@ -277,17 +283,23 @@ async def update_chunk(
     content: str | None = Query(default=None),
     category: str | None = Query(default=None),
     knowledge_type: str | None = Query(default=None),
-    status: str | None = Query(default=None),
+    chunk_status: str | None = Query(default=None, alias="status"),
     metadata: str | None = Query(default=None),
     reindex: bool = Query(default=True, description="内容变化时是否重建索引"),
 ):
-    """更新知识块字段。内容变化时强制重新计算 content_hash 并触发/排队重建索引。"""
+    """更新知识块字段。内容变化时强制重新计算 content_hash 并触发/排队重建索引。
+
+    注意: chunk_status 参数通过 alias="status" 接收前端传递的 status 字段，
+    避免参数名遮蔽 `from fastapi import status` 模块。
+    """
+    from fastapi import status as http_status
+
     chunk = _resolve_chunk(chunk_id)
     if chunk is None:
         return error_json(
             ErrorCode.CHUNK_NOT_FOUND,
             f"知识块 {chunk_id} 不存在",
-            status.HTTP_404_NOT_FOUND,
+            http_status.HTTP_404_NOT_FOUND,
         )
 
     content_changed = False
@@ -303,8 +315,8 @@ async def update_chunk(
         chunk.category = category
     if knowledge_type is not None:
         chunk.knowledge_type = KnowledgeType(knowledge_type)
-    if status is not None:
-        new_status = ChunkStatus(status)
+    if chunk_status is not None:
+        new_status = ChunkStatus(chunk_status)
         if new_status != chunk.status:
             status_changed = True
         chunk.status = new_status
@@ -402,10 +414,11 @@ async def restore_chunk(chunk_id: str):
 # ── 5.7 重建索引 ──────────────────────────────────────────────────
 
 @router.post("/batch/reindex")
-async def reindex_batch(chunk_ids: list[str] = Query(...)):
+async def reindex_batch(body: dict[str, list[str]] = Body(...)):
     """批量重建知识块索引。"""
     from app.api.v1.services import reindex_chunks_batch
 
+    chunk_ids = body.get("chunk_ids", [])
     chunks = []
     for cid in chunk_ids:
         chunk = _resolve_chunk(cid)
@@ -469,12 +482,12 @@ async def reindex_single(chunk_id: str):
 # ── 5.8 批量状态操作 ───────────────────────────────────────────────
 
 @router.post("/batch")
-async def batch_chunk_operation(
-    action: str = Query(..., description="delete | restore | update_status"),
-    chunk_ids: list[str] = Query(...),
-    new_status: str | None = Query(default=None, alias="status", description="update_status 时的新状态"),
-):
+async def batch_chunk_operation(body: dict[str, Any] = Body(...)):
     """对多个知识块执行批量状态操作。"""
+    action = body.get("action", "")
+    chunk_ids = body.get("chunk_ids", [])
+    new_status = body.get("status")
+
     if not chunk_ids:
         return error_json(
             ErrorCode.VALIDATION_ERROR,

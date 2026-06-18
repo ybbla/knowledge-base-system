@@ -10,6 +10,7 @@ const DocumentDetail = (() => {
   let activeTab = 'overview';
 
   async function render(docId) {
+    activeTab = 'overview';
     UI.setBreadcrumb([
       { label: '仪表盘', path: '#/' },
       { label: '文档管理', path: '#/documents' },
@@ -29,11 +30,14 @@ const DocumentDetail = (() => {
       elements = elementsRes?.data || [];
     } catch (e) {
       UI.render(`
-        <div class="empty-state">
-          <div class="empty-state-icon">⚠</div>
+        <div class="empty-state empty-state-error">
+          <div class="empty-state-icon">!</div>
           <div class="empty-state-title">加载失败</div>
           <div class="empty-state-desc">${UI.escapeHtml(e.message)}</div>
-          <button class="btn btn-secondary" onclick="history.back()" style="margin-top: var(--space-4);">← 返回</button>
+          <div class="empty-actions">
+            <button class="btn btn-primary" onclick="DocumentDetail.render('${UI.escapeHtml(docId)}')">重新加载</button>
+            <button class="btn btn-secondary" onclick="App.router.navigate('/documents')">返回文档列表</button>
+          </div>
         </div>
       `);
       return;
@@ -57,7 +61,7 @@ const DocumentDetail = (() => {
             ${UI.statusBadge(doc.status || 'active')}
           </div>
           <div class="page-actions">
-            <button class="btn btn-secondary btn-sm" onclick="Documents.ingestDocument('${doc.doc_id}')">↻ 重新入库</button>
+            <button class="btn btn-secondary btn-sm" onclick="Documents.ingestDocument('${doc.doc_id}')">↻ 重新处理</button>
             ${doc.status === 'deleted'
               ? `<button class="btn btn-success btn-sm" onclick="Documents.restoreDoc('${doc.doc_id}')">恢复文档</button>`
               : `<button class="btn btn-danger btn-sm" onclick="Documents.deleteDoc('${doc.doc_id}')">删除文档</button>`}
@@ -97,18 +101,21 @@ const DocumentDetail = (() => {
 
   function renderOverviewHtml() {
     const doc = currentDoc || {};
+    const stats = doc.index_summary || {};
     return `
-      <div class="card">
+      <div class="card detail-overview-card">
         <h3 class="card-title">文档信息</h3>
-        <table>
-          <tbody>
-            <tr><td style="font-weight:500;">来源 URI</td><td style="font-family: var(--font-mono); font-size: var(--text-xs); word-break: break-all;">${UI.escapeHtml(doc.source_uri || '—')}</td></tr>
-            <tr><td style="font-weight:500;">来源哈希</td><td style="font-family: var(--font-mono); font-size: var(--text-xs);">${UI.escapeHtml(doc.source_hash || '—')}</td></tr>
-            <tr><td style="font-weight:500;">父文档</td><td>${UI.escapeHtml(doc.parent_doc_id || '—')}</td></tr>
-            <tr><td style="font-weight:500;">根文档</td><td>${UI.escapeHtml(doc.root_doc_id || '—')}</td></tr>
-            <tr><td style="font-weight:500;">入库任务</td><td style="font-family: var(--font-mono); font-size: var(--text-xs);">${UI.escapeHtml(doc.ingest_job_id || '—')}</td></tr>
-          </tbody>
-        </table>
+        <div class="detail-grid detail-grid-compact">
+          <div class="detail-field"><label>来源</label><span class="mono-wrap">${UI.escapeHtml(doc.source_uri || '—')}</span></div>
+          <div class="detail-field"><label>分类</label><span>${UI.escapeHtml(doc.category || '通用')}</span></div>
+          <div class="detail-field"><label>入库任务</label><span class="mono-wrap">${UI.escapeHtml(doc.ingest_job_id || '—')}</span></div>
+          <div class="detail-field"><label>索引结果</label><span>${stats.indexed || 0} 已索引 / ${stats.failed || 0} 失败 / ${stats.pending || 0} 待处理</span></div>
+        </div>
+        <div class="detail-actions">
+          ${doc.ingest_job_id ? `<button class="btn btn-secondary btn-sm" onclick="App.router.navigate('/ingestion')">查看入库任务</button>` : ''}
+          <button class="btn btn-secondary btn-sm" onclick="DocumentDetail.switchTab('chunks')">查看知识块</button>
+          <button class="btn btn-secondary btn-sm" onclick="DocumentDetail.switchTab('elements')">查看解析元素</button>
+        </div>
       </div>`;
   }
 
@@ -159,6 +166,11 @@ const DocumentDetail = (() => {
     return `
       <div class="card">
         <h3 class="card-title">元数据</h3>
+        <div class="detail-grid detail-grid-compact" style="margin-bottom: var(--space-4);">
+          <div class="detail-field"><label>来源哈希</label><span class="mono-wrap">${UI.escapeHtml(doc.source_hash || '—')}</span></div>
+          <div class="detail-field"><label>父文档</label><span class="mono-wrap">${UI.escapeHtml(doc.parent_doc_id || '—')}</span></div>
+          <div class="detail-field"><label>根文档</label><span class="mono-wrap">${UI.escapeHtml(doc.root_doc_id || '—')}</span></div>
+        </div>
         <pre class="code-block">${UI.escapeHtml(JSON.stringify(doc.metadata || {}, null, 2))}</pre>
       </div>
       <div class="card" style="margin-top: var(--space-4);">
