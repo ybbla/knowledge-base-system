@@ -305,12 +305,17 @@ def _enrich_candidate_with_title(candidates: list[tuple[str, float]]) -> list[di
 
 
 def _enrich_rerank_results(rerank_results: list[dict]) -> list[dict]:
-    """给 Rerank 结果补充标题信息。"""
+    """给 Rerank 结果补充标题信息，并统一 score 字段名。
+
+    前端 renderCandidateList 使用 c.score 显示，但 Reranker 返回 relevance_score。
+    """
     result: list[dict] = []
     for entry in rerank_results:
         chunk = _get_chunk(entry.get("chunk_id", ""))
+        # 将 relevance_score 映射为 score，供前端统一使用
         result.append({
             **entry,
+            "score": entry.get("relevance_score", 0.0),
             "title": chunk.title if chunk else None,
         })
     return result

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import threading
 from datetime import datetime, timezone
@@ -251,6 +252,10 @@ class IngestionPipeline:
         if self._document_repo:
             self._document_repo.update(doc)
 
+        # 6. 自动生成评测数据（后台异步）
+        if settings.auto_eval_enabled and chunks:
+            self._trigger_eval_data_generation(doc, chunks)
+
     def _run_update(
         self,
         doc: Document,
@@ -363,6 +368,10 @@ class IngestionPipeline:
             target_doc.version = doc.version
             if self._document_repo:
                 self._document_repo.update(target_doc)
+
+        # 9. 自动生成评测数据（后台异步）
+        if settings.auto_eval_enabled and all_new_chunks:
+            self._trigger_eval_data_generation(doc, all_new_chunks)
 
     def _prepare_assets(self, assets: list[Asset]) -> list[Asset]:
         """应用资源数量限制，并处理图片资源生命周期。"""
@@ -498,3 +507,67 @@ class IngestionPipeline:
             ],
             "metadata": chunk.metadata,
         }
+
+    def _trigger_eval_data_generation(self, doc: Document, chunks: list[KnowledgeChunk]) -> None:
+        """在后台异步触发评测数据生成。
+
+        失败不影响主流程，仅记录日志。
+        """
+        def _generate() -> None:
+            try:
+                import asyncio
+                from tests.evaluation.gen_dataset import generate_for_chunks
+                from tests.evaluation.storage import (
+                    merge_to_global_dataset,
+                    save_per_doc_dataset,
+                )
+
+                # 转换 chunk 格式
+                chunk_dicts = [
+                    {"chunk_id": c.chunk_id, "title": c.title, "content": c.content}
+                    for c in chunks
+                ]
+
+                # 生成评测数据
+                items, errors = generate_for_chunks(
+                    chunks=chunk_dicts,
+                    doc_id=doc.doc_id,
+                    doc_title=doc.title or doc.doc_id,
+                    query_count=settings.auto_eval_queries_per_doc,
+                )
+
+                if errors:
+                    logger.warning(
+                        "评测数据生成有 %d 个警告：%s",
+                        len(errors), errors[:3],
+                    )
+
+                if not items:
+                    logger.warning("没有生成有效的评测数据")
+                    return
+
+                # 保存分文档数据集
+                save_per_doc_dataset(
+                    doc_id=doc.doc_id,
+                    doc_title=doc.title or doc.doc_id,
+                    items=items,
+                    chunk_count=len(chunks),
+                )
+
+                # 合并到全局数据集
+                added = merge_to_global_dataset(items)
+                logger.info(
+                    "文档 %s 评测数据生成完成，新增 %d 条",
+                    doc.doc_id, added,
+                )
+
+            except ImportError:
+                # LLM 调用异常，不影响主流程
+                logger.exception("评测数据生成失败，已跳过")
+            except Exception:
+                # 捕获所有异常，确保不影响主流程
+                logger.exception("评测数据生成异常，已跳过")
+
+        # 启动后台线程执行
+        thread = threading.Thread(target=_generate, daemon=True)
+        thread.start()

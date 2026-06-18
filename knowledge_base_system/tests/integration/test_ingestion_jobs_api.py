@@ -885,8 +885,8 @@ class TestIngestionWithSimulatedFiles:
             assert job_id, f"{fmt} 上传后应有 ingest_job_id"
             job_ids.append(job_id)
 
-        # 所有上传成功的文档都应能在列表中查到
-        list_resp = client.get("/api/v1/ingest/jobs", params={"page_size": 500})
+        # 所有上传成功的文档都应能在列表中查到（page_size 最大值为 200）
+        list_resp = client.get("/api/v1/ingest/jobs", params={"page_size": 200})
         all_jobs = list_resp.json()["data"]
         all_job_ids = {j["job_id"] for j in all_jobs}
 
@@ -1126,8 +1126,8 @@ class TestIngestionEdgeCases:
 
         assert len(doc_ids) >= 2, f"至少应成功创建 2 个任务: {len(doc_ids)}"
 
-        # 所有任务都在列表中
-        list_resp = client.get("/api/v1/ingest/jobs", params={"page_size": 500})
+        # 所有任务都在列表中（page_size 最大值为 200）
+        list_resp = client.get("/api/v1/ingest/jobs", params={"page_size": 200})
         all_jobs = list_resp.json()["data"]
         all_doc_ids = set()
         for j in all_jobs:

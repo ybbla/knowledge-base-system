@@ -8,12 +8,13 @@
 
 ### Requirement: 评测数据集管理
 
-系统 SHALL 提供结构化评测数据集，包含至少 20 条标注查询。标注工作在一次性准备阶段完成：源文档入库后记录实际 chunk_id 和 chunk 内容，由大模型辅助标注各查询期望命中哪些 chunk 以及内容关键词，并由人工抽检/确认。评测脚本仅执行检索，不重复入库。
+系统 SHALL 提供结构化评测数据集，包含人工标注和自动生成的混合查询集。标注工作支持一次性准备阶段（源文档入库后，大模型辅助标注，人工确认）和入库自动生成两种模式。评测脚本仅执行检索，不重复入库。
 
 #### Scenario: 数据集格式
 
 - **WHEN** 加载评测数据集
 - **THEN** 每条记录包含 `query`（用户查询）、`expected_chunk_ids`（期望命中的 chunk ID 列表）和 `expected_content_contains`（chunk 内容应包含的关键词列表）
+- **AND** 记录可选择性包含元数据字段：`source_doc_id`、`source_doc_title`、`category`、`difficulty`、`source`、`generated_at`
 
 #### Scenario: 一次性准备阶段回填 chunk_id
 
@@ -27,6 +28,45 @@
 - **WHEN** 加载评测数据集
 - **THEN** 系统校验每条记录包含必需的 `query` 和 `expected_chunk_ids` 字段
 - **AND** 缺失字段的记录被标记并报告
+
+### Requirement: 评测数据集多源加载
+
+系统 SHALL 支持加载多个来源的评测数据集（全局 + 分文档）。
+
+#### Scenario: 合并加载所有数据集
+
+- **WHEN** 运行评测时未指定特定数据集文件
+- **THEN** 系统 SHALL 加载 `eval_dataset.json` 中的所有条目
+- **AND** 系统 SHALL 加载 `datasets/` 目录下所有分文档的评测数据
+- **AND** 系统 SHALL 按查询文本进行全局去重
+- **AND** 重复条目 SHALL 保留先出现的版本（全局文件优先于分文档文件）
+
+#### Scenario: 指定单个数据集文件
+
+- **WHEN** 用户通过 `--dataset` 参数指定特定文件
+- **THEN** 系统 SHALL 只加载该指定文件的内容
+- **AND** 系统 SHALL NOT 加载其他文件
+
+### Requirement: EvalItem 数据结构扩展
+
+EvalItem 数据结构 SHALL 扩展以支持筛选和元数据管理。
+
+#### Scenario: 保留向后兼容性
+
+- **GIVEN** 旧格式的评测数据文件（无新增元数据字段）
+- **WHEN** 加载旧格式数据
+- **THEN** 系统 SHALL 正常解析
+- **AND** 缺失的元数据字段 SHALL 使用默认值（如 difficulty 默认 "medium"）
+
+#### Scenario: 新增元数据字段完整
+
+- **WHEN** 处理新格式的评测数据
+- **THEN** 系统 SHALL 正确识别 `source_doc_id` 字段
+- **AND** 系统 SHALL 正确识别 `source_doc_title` 字段
+- **AND** 系统 SHALL 正确识别 `category` 字段
+- **AND** 系统 SHALL 正确识别 `difficulty` 字段
+- **AND** 系统 SHALL 正确识别 `source` 字段
+- **AND** 系统 SHALL 正确识别 `generated_at` 字段
 
 ### Requirement: 自动化指标计算
 
@@ -64,7 +104,18 @@
 - **WHEN** 运行 `pytest tests/evaluation/`
 - **THEN** 评测用例执行检索并验证 Recall@5 和 MRR 不低于预设基线值
 
+#### Scenario: pytest 兼容新增筛选参数
+
+- **WHEN** 通过 pytest 运行评测并传递筛选参数
+- **THEN** 参数 SHALL 正确传递并应用到筛选逻辑
+
 #### Scenario: 独立脚本运行
 
 - **WHEN** 运行 `python tests/evaluation/test_evaluation.py`
 - **THEN** 脚本执行全量评测并输出 Markdown 报告
+
+#### Scenario: 命令行帮助信息完整
+
+- **WHEN** 用户执行 `python tests/evaluation/test_evaluation.py --help`
+- **THEN** 帮助信息 SHALL 列出所有支持的筛选参数
+- **AND** 帮助信息 SHALL 包含使用示例

@@ -610,5 +610,44 @@
       "--category",
       "指定分类"
     ]
+  },
+  {
+    "query": "查询1",
+    "expected_chunk_ids": [
+      "chunk_1"
+    ],
+    "expected_content_contains": [],
+    "source_doc_id": null,
+    "source_doc_title": null,
+    "category": null,
+    "difficulty": "medium",
+    "source": "auto",
+    "generated_at": null
+  },
+  {
+    "query": "查询2",
+    "expected_chunk_ids": [
+      "chunk_2"
+    ],
+    "expected_content_contains": [],
+    "source_doc_id": null,
+    "source_doc_title": null,
+    "category": null,
+    "difficulty": "medium",
+    "source": "auto",
+    "generated_at": null
+  },
+  {
+    "query": "人工查询",
+    "expected_chunk_ids": [
+      "chunk_1"
+    ],
+    "expected_content_contains": [],
+    "source_doc_id": null,
+    "source_doc_title": null,
+    "category": null,
+    "difficulty": "medium",
+    "source": "auto",
+    "generated_at": null
   }
 ]

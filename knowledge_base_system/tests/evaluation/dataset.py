@@ -13,6 +13,32 @@ class EvalItem:
     expected_chunk_ids: list[str] = field(default_factory=list)
     expected_content_contains: list[str] = field(default_factory=list)
 
+    # 新增元数据字段（用于筛选和追溯）
+    source_doc_id: str | None = None
+    source_doc_title: str | None = None
+    category: str | None = None
+    difficulty: str = "medium"
+    source: str = "auto"  # auto / manual
+    generated_at: str | None = None
+
+    # 运行时字段（仅用于筛选上次失败的）
+    _last_passed: bool | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "EvalItem":
+        """从字典创建 EvalItem，缺失字段使用默认值。"""
+        return cls(
+            query=data["query"],
+            expected_chunk_ids=data.get("expected_chunk_ids", []),
+            expected_content_contains=data.get("expected_content_contains", []),
+            source_doc_id=data.get("source_doc_id"),
+            source_doc_title=data.get("source_doc_title"),
+            category=data.get("category"),
+            difficulty=data.get("difficulty", "medium"),
+            source=data.get("source", "auto"),
+            generated_at=data.get("generated_at"),
+        )
+
 
 def load_dataset(path: Path | str | None = None) -> list[EvalItem]:
     """Load evaluation dataset from JSON file.
@@ -48,12 +74,7 @@ def load_dataset(path: Path | str | None = None) -> list[EvalItem]:
                 "expected_chunk_ids or expected_content_contains"
             )
 
-        items.append(
-            EvalItem(
-                query=query,
-                expected_chunk_ids=list(expected_chunk_ids),
-                expected_content_contains=list(expected_content_contains),
-            )
-        )
+        # 使用 from_dict 支持所有新字段的解析，保持向后兼容
+        items.append(EvalItem.from_dict(record))
 
     return items

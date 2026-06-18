@@ -43,6 +43,9 @@ QUERIES_PER_CHUNK = 3       # 每个 chunk 生成几条查询
 MAX_AUTO_COUNT = 50          # 自动模式最大查询数
 LLM_INPUT_CHUNK_LIMIT = 40   # 单次 LLM 调用的 chunk 上限
 
+# 导入新增加的存储和校验函数
+from tests.evaluation.storage import merge_to_global_dataset, save_per_doc_dataset
+
 # ── LLM Prompt ──────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """你是知识库检索评测数据构建助手。
@@ -210,15 +213,110 @@ def _merge(
     return merged
 
 
-def _validate(items: list[dict]) -> list[str]:
-    """校验数据集条目，返回错误信息列表。"""
-    errors: list[str] = []
+def _validate_annotations(
+    items: list[dict],
+    chunks: list[dict],
+) -> tuple[list[dict], list[str]]:
+    """校验生成的评测数据，过滤无效条目。
+
+    校验内容：
+    1. expected_chunk_ids 必须存在于输入的 chunks 中（防止 LLM 编造 ID）
+    2. expected_content_contains 中的关键词必须在对应的 chunk 中存在
+
+    Args:
+        items: 待校验的评测条目列表
+        chunks: 知识块列表（用于校验 chunk_id 和关键词）
+
+    Returns:
+        (有效条目列表, 错误信息列表)
+    """
+    chunk_id_set = {c["chunk_id"] for c in chunks}
+    chunk_content_map = {c["chunk_id"]: c.get("content", "") for c in chunks}
+
+    valid_items = []
+    errors = []
+
     for i, item in enumerate(items):
-        if not item.get("query"):
+        query = item.get("query", "")
+        if not query:
             errors.append(f"条目 {i}: 缺少 query")
-        if not item.get("expected_chunk_ids") and not item.get("expected_content_contains"):
-            errors.append(f"条目 {i} ('{item.get('query', '')}'): 缺少标注")
-    return errors
+            continue
+
+        expected_chunk_ids = item.get("expected_chunk_ids", [])
+        expected_keywords = item.get("expected_content_contains", [])
+
+        # 1. 校验 chunk_id 合法性
+        invalid_ids = [cid for cid in expected_chunk_ids if cid not in chunk_id_set]
+        if invalid_ids:
+            errors.append(f"条目 '{query}': 无效的 chunk_id {invalid_ids}")
+            # 过滤掉无效的 chunk_id
+            expected_chunk_ids = [cid for cid in expected_chunk_ids if cid in chunk_id_set]
+            item["expected_chunk_ids"] = expected_chunk_ids
+
+        # 2. 校验关键词在 chunk 中存在
+        if expected_chunk_ids:
+            # 收集所有关联 chunk 的内容
+            related_content = " ".join(
+                chunk_content_map.get(cid, "") for cid in expected_chunk_ids
+            )
+            # 过滤掉不在任何 chunk 中的关键词
+            valid_keywords = [
+                kw for kw in expected_keywords
+                if kw.lower() in related_content.lower()
+            ]
+            if len(valid_keywords) != len(expected_keywords):
+                invalid_kws = set(expected_keywords) - set(valid_keywords)
+                errors.append(f"条目 '{query}': 关键词不在 chunk 中 - {invalid_kws}")
+                item["expected_content_contains"] = valid_keywords
+
+        # 只要有一个维度有标注，条目就是有效的
+        if expected_chunk_ids or item.get("expected_content_contains"):
+            valid_items.append(item)
+        else:
+            errors.append(f"条目 '{query}': 缺少有效标注，已过滤")
+
+    return valid_items, errors
+
+
+def generate_for_chunks(
+    chunks: list[dict],
+    doc_id: str,
+    doc_title: str,
+    query_count: int = 4,
+) -> tuple[list[dict], list[str]]:
+    """为指定文档的知识块生成评测数据。
+
+    这是供入库流程调用的 API，不依赖命令行参数。
+
+    Args:
+        chunks: 知识块列表，每个 dict 包含 chunk_id, title, content
+        doc_id: 文档 ID
+        doc_title: 文档标题
+        query_count: 期望生成的查询数量（默认 4）
+
+    Returns:
+        (生成的条目列表, 错误信息列表)
+    """
+    from datetime import datetime
+
+    # 调用 LLM 生成
+    items = _generate(chunks, target_count=query_count, dry_run=False)
+    if not items:
+        return [], ["LLM 未生成任何条目"]
+
+    # 校验标注合法性
+    valid_items, errors = _validate_annotations(items, chunks)
+
+    # 补充元数据
+    for item in valid_items:
+        item["source_doc_id"] = doc_id
+        item["source_doc_title"] = doc_title
+        item["generated_at"] = datetime.now().isoformat()
+        item["source"] = "auto"
+        # 默认难度为 medium，后续可以根据查询复杂度调整
+        item["difficulty"] = "medium"
+
+    return valid_items, errors
 
 
 # ── 主入口 ──────────────────────────────────────────────────────────
@@ -275,25 +373,28 @@ def main() -> int:
         print("LLM 未生成任何条目，请检查 API 配置。")
         return 1
 
-    # 3. 校验
-    errors = _validate(new_items)
+    # 3. 校验（含 chunk_id 和关键词合法性）
+    valid_items, errors = _validate_annotations(new_items, chunks)
     if errors:
         print(f"\n⚠ 校验发现 {len(errors)} 个问题：")
-        for e in errors:
+        for e in errors[:10]:  # 最多显示 10 条
             print(f"  - {e}")
+        if len(errors) > 10:
+            print(f"  ... 还有 {len(errors) - 10} 条未显示")
         print()
-        resp = input("存在校验问题，是否继续合并？[y/N] ")
-        if resp.lower() != "y":
-            print("已取消。")
-            return 1
 
-    # 4. 合并 & 保存
-    merged = _merge(existing, new_items)
-    output_path.write_text(
-        json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    print(f"\n已保存 {len(merged)} 条评测数据到: {output_path}")
+    if not valid_items:
+        print("所有条目校验失败，没有可保存的有效数据。")
+        return 1
+
+    # 4. 合并到全局数据集
+    added = merge_to_global_dataset(valid_items)
+
+    if added > 0:
+        print(f"✅ 新增 {added} 条评测数据到全局数据集")
+    else:
+        print("ℹ️  没有新增数据（所有 query 已存在）")
+
     print()
     print("评测数据已生成。运行评测：")
     print(f"  python -m pytest {EVAL_DIR}/test_evaluation.py -v")

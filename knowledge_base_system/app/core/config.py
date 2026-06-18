@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     # 多模态视觉理解
     image_vision_enabled: bool = Field(default=True, validation_alias="IMAGE_VISION_ENABLED")
 
+    # 评测数据自动生成
+    auto_eval_enabled: bool = Field(default=True, validation_alias="AUTO_EVAL_ENABLED")
+    auto_eval_queries_per_doc: int = Field(default=4, validation_alias="AUTO_EVAL_QUERIES_PER_DOC")
+
     def reload_runtime_env(self) -> "Settings":
         """按需刷新运行期可调配置，支持评测和线上调参无需重启。"""
         fresh = type(self)()
