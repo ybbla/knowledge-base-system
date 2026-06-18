@@ -113,7 +113,7 @@ class TestBackwardCompatibility:
 
             # 缺失的元数据字段有合理默认值
             assert item.source_doc_id is None
-            assert item.category is None
+            assert item.category == "未分类"  # 设计默认值
             assert item.difficulty == "medium"  # 默认中等难度
             assert item.source == "auto"  # 默认自动生成
             assert item.generated_at is None

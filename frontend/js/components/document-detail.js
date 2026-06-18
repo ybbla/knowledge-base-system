@@ -61,6 +61,7 @@ const DocumentDetail = (() => {
             ${UI.statusBadge(doc.status || 'active')}
           </div>
           <div class="page-actions">
+            <button class="btn btn-secondary btn-sm" onclick="Documents.showEditDialog('${doc.doc_id}')">编辑</button>
             <button class="btn btn-secondary btn-sm" onclick="Documents.ingestDocument('${doc.doc_id}')">↻ 重新处理</button>
             ${doc.status === 'deleted'
               ? `<button class="btn btn-success btn-sm" onclick="Documents.restoreDoc('${doc.doc_id}')">恢复文档</button>`

@@ -1,10 +1,8 @@
-"""检索 API v1 — 普通检索、预览检索、调试检索、筛选项和反馈。
+"""检索 API v1 — 标准检索、调试检索和筛选项。
 
-POST /api/v1/search          — 标准检索，支持完整过滤和选项
-POST /api/v1/search/preview  — 快速预览，默认跳过 LLM Rerank
-POST /api/v1/search/debug    — 调试模式，返回分阶段候选
-GET  /api/v1/search/filters  — 可用筛选项
-POST /api/v1/search/feedback — 检索反馈（不影响排序）
+POST /api/v1/search         — 标准检索，支持完整过滤和选项
+POST /api/v1/search/debug   — 调试模式，返回分阶段候选
+GET  /api/v1/search/filters — 可用筛选项
 """
 
 from __future__ import annotations
@@ -195,52 +193,6 @@ def _enrich_result(result_dict: dict, options: SearchOptions) -> dict:
     return result_dict
 
 
-def _execute_preview_search(request: SearchRequest) -> dict[str, Any]:
-    """执行不依赖 LLM Rerank 的轻量预览检索。"""
-    if hasattr(chunk_store, "list_all"):
-        chunks = chunk_store.list_all()
-    else:
-        chunks = list(getattr(chunk_store, "_chunks", {}).values())
-
-    items: list[dict[str, Any]] = []
-    query = request.query.lower()
-    for chunk in chunks:
-        doc = _get_doc(chunk.doc_id)
-        if not _matches_filters(chunk, doc, request.filters):
-            continue
-        haystack = f"{chunk.title}\n{chunk.content}".lower()
-        if query and query not in haystack:
-            continue
-        item = {
-            "chunk_id": chunk.chunk_id,
-            "doc_id": chunk.doc_id,
-            "doc_title": getattr(doc, "title", None) or chunk.metadata.get("title", chunk.doc_id),
-            "doc_version": chunk.doc_version,
-            "title": chunk.title,
-            "content": chunk.content,
-            "score": 0.5,
-            "category": chunk.category,
-            "knowledge_type": _value(chunk.knowledge_type),
-            "score_components": {"vector": 0.0, "bm25": 0.0, "rerank": 0.0},
-            "asset_refs": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in chunk.asset_refs],
-            "source_refs": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in chunk.source_refs],
-            "metadata": chunk.metadata,
-        }
-        if request.options.highlight:
-            item["highlight"] = _make_highlight(chunk.content, request.query)
-        items.append(item)
-        if len(items) >= request.top_k:
-            break
-
-    return {
-        "search_id": "",
-        "query": request.query,
-        "rewritten_query": request.query,
-        "total_count": len(items),
-        "results": items,
-    }
-
-
 # ── 6.4 标准检索 ──────────────────────────────────────────────────
 
 @router.post("")
@@ -268,27 +220,7 @@ async def search(request: SearchRequest):
         return error_json("INTERNAL_ERROR", f"检索失败: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# ── 6.5 预览检索 ──────────────────────────────────────────────────
-
-@router.post("/preview")
-async def search_preview(request: SearchRequest):
-    """快速预览检索 — 默认跳过 LLM Rerank。
-
-    LLM 不可用时自动回退到基础候选。
-    """
-    # 强制跳过 Rerank
-    request.options.rerank = False
-
-    result = _execute_preview_search(request)
-
-    result = _enrich_result(result, request.options)
-    return APIResponse(
-        data=result,
-        meta={"mode": "preview", "rerank_skipped": True},
-    ).model_dump(mode="json")
-
-
-# ── 6.6 调试检索 ──────────────────────────────────────────────────
+# ── 6.5 调试检索 ──────────────────────────────────────────────────
 
 
 def _enrich_candidate_with_title(candidates: list[tuple[str, float]]) -> list[dict]:
@@ -479,23 +411,3 @@ async def search_filters():
 
     return APIResponse(data=filter_options).model_dump(mode="json")
 
-
-# ── 6.8 检索反馈 ──────────────────────────────────────────────────
-
-class FeedbackRequest(BaseModel):
-    search_id: str = ""
-    chunk_id: str
-    feedback: str = Field(..., description="relevant | not_relevant | clicked")
-
-
-@router.post("/feedback", status_code=status.HTTP_202_ACCEPTED)
-async def search_feedback(request: FeedbackRequest):
-    """接收检索反馈。当前为占位实现，不影响排序。"""
-    logger.info(
-        "检索反馈: search_id=%s chunk_id=%s feedback=%s",
-        request.search_id, request.chunk_id, request.feedback,
-    )
-    return APIResponse(
-        data={"status": "accepted", "chunk_id": request.chunk_id, "feedback": request.feedback},
-        meta={"note": "反馈已记录，不影响当前检索排序"},
-    ).model_dump(mode="json")

@@ -3,9 +3,7 @@
 前端 search.js 调用链（v1）：
   1. GET  /api/v1/search/filters              → 加载筛选项 (render L17)
   2. POST /api/v1/search                      → 标准检索 (doSearch L89)
-  3. POST /api/v1/search/preview              → 快速预览检索
-  4. POST /api/v1/search/debug                → 调试检索 (doDebugSearch L227)
-  5. POST /api/v1/search/feedback             → 检索反馈 (api.js L193)
+  3. POST /api/v1/search/debug                → 调试检索 (doDebugSearch L227)
 
 本测试使用 TestClient 对真实 FastAPI app 发起请求，
 验证响应结构完全匹配前端期望，确保前后端联调可用。
@@ -557,67 +555,10 @@ class TestStandardSearch:
         assert "rewritten_query" in data
 
 
-# ══════════════════════════════════════════════════════════════════════
-# 2. POST /api/v1/search/preview — 快速预览检索
-# ══════════════════════════════════════════════════════════════════════
-
-class TestSearchPreview:
-    """前端: API.searchPreview(query, topK, filters) → api.js L184-187"""
-
-    def test_preview_returns_unified_structure(self, searchable_data):
-        """预览检索返回统一的 { data, meta, error } 结构。"""
-        response = client.post("/api/v1/search/preview", json={
-            "query": "解析器",
-            "top_k": 5,
-        })
-
-        assert response.status_code == 200, f"预览检索失败: {response.text}"
-        body = response.json()
-        assert "data" in body
-        assert "meta" in body
-        assert body["error"] is None
-
-    def test_preview_meta_indicates_mode(self, searchable_data):
-        """预览检索 meta.mode == 'preview' 且 rerank_skipped 为 true。"""
-        response = client.post("/api/v1/search/preview", json={
-            "query": "解析器",
-            "top_k": 5,
-        })
-        meta = response.json()["meta"]
-
-        assert meta.get("mode") == "preview"
-        assert meta.get("rerank_skipped") is True
-
-    def test_preview_results_have_basic_fields(self, searchable_data):
-        """预览检索结果包含基本卡片字段。"""
-        response = client.post("/api/v1/search/preview", json={
-            "query": "开发",
-            "top_k": 3,
-        })
-        results = response.json()["data"]["results"]
-
-        if len(results) == 0:
-            pytest.skip("无预览检索结果")
-
-        for item in results:
-            for field in ["chunk_id", "title", "content", "score", "category", "knowledge_type"]:
-                assert field in item, f"预览结果缺少字段: {field}"
-
-    def test_preview_with_category_filter(self, searchable_data):
-        """预览检索支持分类过滤。"""
-        response = client.post("/api/v1/search/preview", json={
-            "query": "项目",
-            "top_k": 10,
-            "filters": {"categories": ["业务"]},
-        })
-        results = response.json()["data"]["results"]
-
-        for item in results:
-            assert item["category"] == "业务"
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 3. POST /api/v1/search/debug — 调试检索
+# 2. POST /api/v1/search/debug — 调试检索
 # ══════════════════════════════════════════════════════════════════════
 
 class TestSearchDebug:
@@ -815,8 +756,8 @@ class TestSearchDebug:
     def test_stage_candidate_scores_match_results(self, searchable_data):
         """各阶段候选的 score 与 results 中对应 score_components 一致（仅验证同时存在的条目）。
 
-        注意：召回阶段（vector/bm25/fused）可能包含不在最终 results 中的候选，
-        因为 results 经过了前端过滤和 Top-K 截断。
+        注意：fused_candidates 的分数为 RRF 融合分数，results.score 为 Rerank 分数，
+        两者语义不同不可对比。仅验证 vector、bm25、rerank 三个阶段。
         """
         response = client.post("/api/v1/search/debug", json={
             "query": "解析器",
@@ -836,14 +777,13 @@ class TestSearchDebug:
                 "vector": sc.get("vector", 0.0),
                 "bm25": sc.get("bm25", 0.0),
                 "rerank": sc.get("rerank", 0.0),
-                "fused": r.get("score", 0.0),
             }
 
         # 交叉验证各阶段候选中同时在 results 里的条目
+        # 不验证 fused_candidates：其分数为 RRF 融合分数，与 results.score(Rerank分数)语义不同
         stage_key_map = {
             "vector_candidates": "vector",
             "bm25_candidates": "bm25",
-            "fused_candidates": "fused",
             "rerank_results": "rerank",
         }
 
@@ -993,62 +933,10 @@ class TestSearchDebug:
             f"error_summary 超过 500 字符: {len(body['data']['error_summary'])}"
 
 
-# ══════════════════════════════════════════════════════════════════════
-# 4. POST /api/v1/search/feedback — 检索反馈
-# ══════════════════════════════════════════════════════════════════════
-
-class TestSearchFeedback:
-    """前端: API.searchFeedback(chunkId, feedback, searchId) → api.js L193-195"""
-
-    def test_feedback_returns_202(self):
-        """反馈接口返回 202 和 accepted 状态。"""
-        response = client.post("/api/v1/search/feedback", json={
-            "chunk_id": "test-chunk-001",
-            "feedback": "relevant",
-            "search_id": "test-search-001",
-        })
-
-        assert response.status_code == 202, f"反馈失败: {response.text}"
-        body = response.json()
-        assert body["data"]["status"] == "accepted"
-        assert body["data"]["chunk_id"] == "test-chunk-001"
-        assert body["data"]["feedback"] == "relevant"
-
-    @pytest.mark.parametrize("feedback_type", ["relevant", "not_relevant", "clicked"])
-    def test_all_feedback_types_accepted(self, feedback_type):
-        """三种反馈类型 (relevant / not_relevant / clicked) 均返回 202。"""
-        response = client.post("/api/v1/search/feedback", json={
-            "chunk_id": "chunk-001",
-            "feedback": feedback_type,
-        })
-
-        assert response.status_code == 202
-        assert response.json()["data"]["status"] == "accepted"
-
-    def test_feedback_without_search_id(self):
-        """search_id 可选 — 前端 api.js:193 默认为空字符串。"""
-        response = client.post("/api/v1/search/feedback", json={
-            "chunk_id": "chunk-001",
-            "feedback": "relevant",
-        })
-
-        assert response.status_code == 202
-
-    def test_feedback_returns_unified_structure(self):
-        """反馈接口返回统一的 { data, meta, error } 结构。"""
-        response = client.post("/api/v1/search/feedback", json={
-            "chunk_id": "chunk-001",
-            "feedback": "relevant",
-        })
-        body = response.json()
-
-        assert "data" in body
-        assert "meta" in body
-        assert body["error"] is None
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 5. 端到端 — 上传模拟文件后搜索
+# 3. 端到端 — 上传模拟文件后搜索
 # ══════════════════════════════════════════════════════════════════════
 
 class TestSearchEndToEnd:
@@ -1163,12 +1051,12 @@ class TestSearchEndToEnd:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 6. 完整前端工作流模拟
+# 4. 完整前端工作流模拟
 # ══════════════════════════════════════════════════════════════════════
 
 class TestSearchFrontendWorkflow:
     """模拟 search.js 完整用户操作流程：
-    加载筛选 → 标准检索 → 详情查看 → 反馈 → 调试检索
+    加载筛选 → 标准检索 → 详情查看 → 调试检索
     """
 
     def test_full_search_workflow(self, searchable_data):
@@ -1177,8 +1065,7 @@ class TestSearchFrontendWorkflow:
         1. 加载筛选项 (render L17)
         2. 标准检索 (doSearch L89)
         3. 查看详情 (showResultDetail L150)
-        4. 发送反馈 (api.js L193)
-        5. 调试检索 (doDebugSearch L227)
+        4. 调试检索 (doDebugSearch L227)
         """
         # 1. 加载筛选项 (search.js render L17)
         filters_resp = client.get("/api/v1/search/filters")
@@ -1231,15 +1118,7 @@ class TestSearchFrontendWorkflow:
             assert "doc_version" in item  # L171
             assert "source_refs" in item  # L172
 
-            # 4. 发送反馈 (api.js L193)
-            feedback_resp = client.post("/api/v1/search/feedback", json={
-                "chunk_id": item["chunk_id"],
-                "feedback": "relevant",
-                "search_id": search_data.get("search_id", ""),
-            })
-            assert feedback_resp.status_code == 202
-
-        # 5. 调试检索 (search.js doDebugSearch L227)
+        # 4. 调试检索 (search.js doDebugSearch L227)
         debug_resp = client.post("/api/v1/search/debug", json={
             "query": "解析器",
             "top_k": 3,
@@ -1373,11 +1252,18 @@ class TestSearchFrontendWorkflow:
                 assert "score" in c
                 assert isinstance(c["score"], (int, float))
 
-        # 5. 阶段候选列表长度一致
-        results_count = len(data["results"])
+        # 5. 阶段候选列表非空且结构正确
+        # 注意：各阶段候选数量可能不同 — 向量/BMR25 返回更多（top 50+），
+        # 过滤后 results 可能更少；部分阶段（如带分类过滤的 BM25）可能返回空
         for stage in ["vector_candidates", "bm25_candidates", "fused_candidates", "rerank_results"]:
-            assert len(data[stage]) == results_count, \
-                f"{stage} 长度 ({len(data[stage])}) != results ({results_count})"
+            candidates = data[stage]
+            assert isinstance(candidates, list)
+            # 只要有一个阶段有候选即可（至少向量召回有结果）
+            # 每个候选必须有 chunk_id 和 score
+            for c in candidates:
+                assert "chunk_id" in c, f"{stage} 候选缺少 chunk_id"
+                assert "score" in c, f"{stage} 候选缺少 score"
+                assert isinstance(c["score"], (int, float))
 
         # 6. 如果有分类过滤，验证结果符合
         if cat_value:

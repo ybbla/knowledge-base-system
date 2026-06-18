@@ -846,10 +846,10 @@ class TestChunksBatch:
     def test_batch_delete(self):
         """批量软删除知识块。"""
         target_ids = self.chunk_ids[:2]
-        params = [("action", "delete")]
-        for cid in target_ids:
-            params.append(("chunk_ids", cid))
-        response = client.post("/api/v1/chunks/batch", params=params)
+        response = client.post("/api/v1/chunks/batch", json={
+            "action": "delete",
+            "chunk_ids": target_ids,
+        })
 
         assert response.status_code == 200, f"批量删除失败: {response.text}"
         body = response.json()
@@ -871,10 +871,10 @@ class TestChunksBatch:
 
         # 批量恢复前两个
         target_ids = self.chunk_ids[:2]
-        params = [("action", "restore")]
-        for cid in target_ids:
-            params.append(("chunk_ids", cid))
-        response = client.post("/api/v1/chunks/batch", params=params)
+        response = client.post("/api/v1/chunks/batch", json={
+            "action": "restore",
+            "chunk_ids": target_ids,
+        })
 
         assert response.status_code == 200, f"批量恢复失败: {response.text}"
         body = response.json()
@@ -889,10 +889,11 @@ class TestChunksBatch:
     def test_batch_update_status(self):
         """批量更新知识块状态。"""
         target_ids = self.chunk_ids[:2]
-        params = [("action", "update_status"), ("status", "deleted")]
-        for cid in target_ids:
-            params.append(("chunk_ids", cid))
-        response = client.post("/api/v1/chunks/batch", params=params)
+        response = client.post("/api/v1/chunks/batch", json={
+            "action": "update_status",
+            "status": "deleted",
+            "chunk_ids": target_ids,
+        })
 
         assert response.status_code == 200, f"批量更新状态失败: {response.text}"
         body = response.json()
@@ -900,17 +901,17 @@ class TestChunksBatch:
         assert body["data"]["new_status"] == "deleted"
 
     def test_batch_empty_chunk_ids_returns_error(self):
-        """chunk_ids 为空时返回 4xx 错误（FastAPI 参数校验返回 422）。"""
-        response = client.post("/api/v1/chunks/batch", params={
+        """chunk_ids 为空时返回 400（后端 chunk_ids 不能为空）。"""
+        response = client.post("/api/v1/chunks/batch", json={
             "action": "delete",
-            # 不传 chunk_ids — FastAPI 会因必填参数缺失返回 422
+            "chunk_ids": [],
         })
         assert response.status_code in (400, 422), \
             f"期望 400 或 422, 实际 {response.status_code}"
 
     def test_batch_invalid_action_returns_400(self):
         """不支持的操作返回 400。"""
-        response = client.post("/api/v1/chunks/batch", params={
+        response = client.post("/api/v1/chunks/batch", json={
             "action": "invalid_action",
             "chunk_ids": self.chunk_ids,
         })
@@ -945,10 +946,9 @@ class TestChunksBatchReindex:
 
     def test_batch_reindex_returns_200(self):
         """批量重建索引返回 200。"""
-        params = []
-        for cid in self.chunk_ids:
-            params.append(("chunk_ids", cid))
-        response = client.post("/api/v1/chunks/batch/reindex", params=params)
+        response = client.post("/api/v1/chunks/batch/reindex", json={
+            "chunk_ids": self.chunk_ids,
+        })
 
         # embedding 可能不可用
         assert response.status_code in (200, 500), \
@@ -960,14 +960,14 @@ class TestChunksBatchReindex:
             assert "failed" in body["data"]
 
     def test_batch_reindex_empty_ids(self):
-        """空 ID 列表返回 4xx（FastAPI 参数校验要求至少一个 chunk_id）。"""
+        """空 ID 列表返回 200（后端逻辑处理空列表）。"""
         response = client.post(
             "/api/v1/chunks/batch/reindex",
-            params={"chunk_ids": []},
+            json={"chunk_ids": []},
         )
-        # 空 list 可能被 FastAPI 解析为缺失参数（422）或后端逻辑处理（200）
-        assert response.status_code in (200, 422), \
-            f"空 chunk_ids 应返回 200 或 422, 实际: {response.status_code}"
+        # 空列表由后端逻辑处理（返回 succeeded: [], failed: []）
+        assert response.status_code == 200, \
+            f"空 chunk_ids 应返回 200, 实际: {response.status_code}"
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -517,10 +517,7 @@ class IngestionPipeline:
             try:
                 import asyncio
                 from tests.evaluation.gen_dataset import generate_for_chunks
-                from tests.evaluation.storage import (
-                    merge_to_global_dataset,
-                    save_per_doc_dataset,
-                )
+                from tests.evaluation.storage import save_per_doc_dataset
 
                 # 转换 chunk 格式
                 chunk_dicts = [
@@ -546,19 +543,16 @@ class IngestionPipeline:
                     logger.warning("没有生成有效的评测数据")
                     return
 
-                # 保存分文档数据集
-                save_per_doc_dataset(
+                # 保存分文档数据集（不自动合并到全局，保持人工标注与自动生成隔离）
+                path = save_per_doc_dataset(
                     doc_id=doc.doc_id,
                     doc_title=doc.title or doc.doc_id,
                     items=items,
                     chunk_count=len(chunks),
                 )
-
-                # 合并到全局数据集
-                added = merge_to_global_dataset(items)
                 logger.info(
-                    "文档 %s 评测数据生成完成，新增 %d 条",
-                    doc.doc_id, added,
+                    "文档 %s 评测数据生成完成，%d 条 → %s",
+                    doc.doc_id, len(items), path,
                 )
 
             except ImportError:

@@ -1,10 +1,11 @@
-"""仪表板页面前后端联调测试 — 验证前端 dashboard.js 调用的 4 个接口。
+"""仪表板页面前后端联调测试 — 验证前端 dashboard.js 调用的 5 个接口。
 
 前端 dashboard.js 调用链：
-  1. GET /api/v1/health/ready      → readyRes?.data?.status === 'ok'
-  2. GET /api/v1/health/dependencies → depsRes?.data?.dependencies?.backend?.type
-  3. GET /api/v1/documents?page=1&page_size=1 → docsRes?.meta?.total
-  4. GET /api/v1/chunks?page=1&page_size=1    → chunksRes?.meta?.total
+  1. GET /api/v1/health/live       → liveRes?.data?.status === 'ok'
+  2. GET /api/v1/health/ready      → readyRes?.data?.status === 'ok'
+  3. GET /api/v1/health/dependencies → depsRes?.data?.dependencies?.backend?.type
+  4. GET /api/v1/documents?page=1&page_size=1 → docsRes?.meta?.total
+  5. GET /api/v1/chunks?page=1&page_size=1    → chunksRes?.meta?.total
 
 本测试使用 TestClient 对真实 FastAPI app 发起请求，
 验证响应结构完全匹配前端期望，确保前后端联调可用。
@@ -16,6 +17,51 @@ from app.main import app
 
 
 client = TestClient(app)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 0. GET /api/v1/health/live — 存活检查
+# ══════════════════════════════════════════════════════════════════════
+
+class TestDashboardHealthLive:
+    """前端: liveRes?.data?.status === 'ok' — 进程存活探针"""
+
+    def test_live_returns_unified_api_response_structure(self):
+        """存活接口返回统一的 { data, meta, error } 结构。"""
+        response = client.get("/api/v1/health/live")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert isinstance(body, dict)
+        assert "data" in body
+        assert "meta" in body
+        assert body["error"] is None
+
+    def test_live_data_status_is_ok(self):
+        """前端读取 data.status 判断进程是否存活。"""
+        response = client.get("/api/v1/health/live")
+        body = response.json()
+        assert body["data"]["status"] == "ok"
+
+    def test_live_meta_has_service_info(self):
+        """meta 包含服务名和版本号。"""
+        response = client.get("/api/v1/health/live")
+        body = response.json()
+        assert "service" in body["meta"]
+        assert "version" in body["meta"]
+        assert isinstance(body["meta"]["service"], str)
+        assert len(body["meta"]["service"]) > 0
+
+    def test_live_is_fast_and_lightweight(self):
+        """存活检查应极快（无外部依赖调用）。"""
+        import time
+        start = time.perf_counter()
+        response = client.get("/api/v1/health/live")
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        assert response.status_code == 200
+        # 存活检查不应超过 500ms（无 DB、无索引、无网络调用）
+        assert elapsed_ms < 500, f"存活检查耗时 {elapsed_ms:.0f}ms，超过 500ms 阈值"
 
 
 # ══════════════════════════════════════════════════════════════════════

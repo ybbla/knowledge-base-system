@@ -16,7 +16,7 @@ class EvalItem:
     # 新增元数据字段（用于筛选和追溯）
     source_doc_id: str | None = None
     source_doc_title: str | None = None
-    category: str | None = None
+    category: str | None = "未分类"
     difficulty: str = "medium"
     source: str = "auto"  # auto / manual
     generated_at: str | None = None
@@ -33,7 +33,7 @@ class EvalItem:
             expected_content_contains=data.get("expected_content_contains", []),
             source_doc_id=data.get("source_doc_id"),
             source_doc_title=data.get("source_doc_title"),
-            category=data.get("category"),
+            category=data.get("category") or "未分类",
             difficulty=data.get("difficulty", "medium"),
             source=data.get("source", "auto"),
             generated_at=data.get("generated_at"),

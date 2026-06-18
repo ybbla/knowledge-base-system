@@ -72,10 +72,8 @@
 | 方法 | 路径 | 功能 | 请求体 |
 |------|------|------|------|
 | `POST` | `/api/v1/search` | 标准混合检索，支持完整过滤和 LLM Rerank | `{ query, top_k(1-100), filters: { doc_ids, categories, knowledge_types, chunk_status, index_status, source_types, doc_status, created_after, created_before }, options: { rewrite, hybrid, rerank, highlight, include_assets, include_sources, include_score_components } }` |
-| `POST` | `/api/v1/search/preview` | 快速预览检索，跳过 LLM Rerank | 同上（强制 `rerank=false`） |
 | `POST` | `/api/v1/search/debug` | 调试检索，返回各阶段候选和评分 | 同上 |
 | `GET` | `/api/v1/search/filters` | 返回可用筛选项（分类/来源/知识类型/状态） | — |
-| `POST` | `/api/v1/search/feedback` | 检索反馈（占位，不影响排序） | `{ search_id, chunk_id, feedback: relevant|not_relevant|clicked }` |
 
 **响应结构：**
 ```json
@@ -189,11 +187,11 @@ POST `/ingest` 请求体：`{ documents: [{ title, source_type, source_uri, sour
 | 健康检查 (v1) | 3 | `/api/v1/health` |
 | 文档管理 (v1) | 9 | `/api/v1/documents` |
 | 知识块管理 (v1) | 9 | `/api/v1/chunks` |
-| 检索 (v1) | 5 | `/api/v1/search` |
+| 检索 (v1) | 3 | `/api/v1/search` |
 | 入库任务 (v1) | 4 | `/api/v1/ingest/jobs` |
-| **活跃 v1 接口合计** | **30** | — |
+| **活跃 v1 接口合计** | **28** | — |
 | 旧版文档 | 4 | `/documents` [已废弃] |
 | 旧版上传 | 1 | `/upload` [已废弃] |
 | 旧版入库 | 2 | `/ingest` [已废弃] |
 | 旧版检索 | 1 | `/search` [已废弃] |
-| **总计** | **38** | — |
+| **总计** | **36** | — |

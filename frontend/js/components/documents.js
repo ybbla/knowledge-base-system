@@ -111,6 +111,7 @@ const Documents = (() => {
             ${doc.status === 'deleted'
               ? `<button class="btn btn-sm btn-success" onclick="Documents.restoreDoc('${doc.doc_id}')">恢复</button>`
               : `
+                <button class="btn btn-sm btn-ghost" onclick="Documents.showEditDialog('${doc.doc_id}')">编辑</button>
                 <button class="btn btn-sm btn-ghost" onclick="Documents.ingestDocument('${doc.doc_id}')">重处理</button>
                 <button class="btn btn-sm btn-danger" onclick="Documents.deleteDoc('${doc.doc_id}')">删除</button>
               `}
@@ -280,6 +281,103 @@ const Documents = (() => {
     UI.toast(`批量删除完成: ${done}/${selectedIds.size}`, 'success');
     selectedIds.clear();
     loadPage(currentPage);
+  }
+
+  /* -----------------------------------------------------------------------
+     编辑文档元数据
+     ----------------------------------------------------------------------- */
+  async function showEditDialog(docId) {
+    try {
+      const res = await API.getDocument(docId);
+      const doc = res?.data || {};
+
+      let existingCategories = [];
+      try {
+        const filtersRes = await API.searchFilters();
+        existingCategories = (filtersRes?.data?.categories || []).map(c => c.value);
+      } catch (e) { /* ignore */ }
+
+      const currentCategory = doc.category || '通用';
+      const catOptions = [...new Set(['通用', ...existingCategories, currentCategory])]
+        .map(c => `<option value="${UI.escapeHtml(c)}" ${currentCategory === c ? 'selected' : ''}>${UI.escapeHtml(c)}</option>`)
+        .join('');
+
+      UI.showModal(
+        '编辑文档',
+        `
+          <div class="form-stack">
+            <div id="editDocFormError" class="form-error is-hidden"></div>
+            <div>
+              <label class="field-label">文档标题 <span>*</span></label>
+              <input id="editDocTitle" class="input" style="width: 100%;" value="${UI.escapeHtml(doc.title || '')}" />
+            </div>
+            <div>
+              <label class="field-label">分类 <span>(选择已有或输入新分类)</span></label>
+              <select class="select" id="editDocCategorySelect" onchange="Documents.onEditCategorySelect()" style="width: 100%;">
+                ${catOptions}
+                <option value="__custom__">✚ 新增分类…</option>
+              </select>
+              <input class="input" type="text" id="editDocCategoryInput" placeholder="输入新分类名称" style="width: 100%; margin-top: var(--space-2); display: none;">
+            </div>
+          </div>
+        `,
+        `
+          <button class="btn btn-secondary" onclick="this.closest('.modal-backdrop').remove()">取消</button>
+          <button class="btn btn-primary" onclick="Documents.saveEdit('${docId}')">保存修改</button>
+        `
+      );
+    } catch (e) {
+      UI.toast(`加载文档失败: ${e.message}`, 'error');
+    }
+  }
+
+  function onEditCategorySelect() {
+    const select = document.getElementById('editDocCategorySelect');
+    const input = document.getElementById('editDocCategoryInput');
+    if (!select || !input) return;
+    if (select.value === '__custom__') {
+      input.style.display = 'block';
+      input.focus();
+    } else {
+      input.style.display = 'none';
+    }
+  }
+
+  async function saveEdit(docId) {
+    const title = document.getElementById('editDocTitle')?.value?.trim();
+    const categorySelect = document.getElementById('editDocCategorySelect');
+    const categoryInput = document.getElementById('editDocCategoryInput');
+    const errorEl = document.getElementById('editDocFormError');
+
+    let category = '通用';
+    if (categorySelect) {
+      if (categorySelect.value === '__custom__') {
+        category = categoryInput?.value?.trim() || '通用';
+      } else {
+        category = categorySelect.value;
+      }
+    }
+
+    if (!title) {
+      if (errorEl) {
+        errorEl.textContent = '请输入文档标题。';
+        errorEl.classList.remove('is-hidden');
+      }
+      return;
+    }
+
+    try {
+      await API.updateDocument(docId, { title, category });
+      UI.toast('文档已更新', 'success');
+      document.querySelector('.modal-backdrop:last-child')?.remove();
+      loadPage(currentPage);
+    } catch (e) {
+      if (errorEl) {
+        errorEl.textContent = e.message || '保存失败';
+        errorEl.classList.remove('is-hidden');
+      }
+      UI.toast(`保存失败: ${e.message}`, 'error');
+    }
   }
 
   /* -----------------------------------------------------------------------
@@ -532,5 +630,5 @@ const Documents = (() => {
     return map[ext] || 'unknown';
   }
 
-  return { renderList, showUploadModal, closeUploadModal, onCategorySelect, doSearch, resetFilters, loadPage, deleteDoc, restoreDoc, ingestDocument, toggleSelectAll, toggleSelect, batchDelete, selectFile, clearFile, removeSelectedFile, doUpload };
+  return { renderList, showUploadModal, closeUploadModal, onCategorySelect, onEditCategorySelect, doSearch, resetFilters, loadPage, deleteDoc, restoreDoc, ingestDocument, showEditDialog, saveEdit, toggleSelectAll, toggleSelect, batchDelete, selectFile, clearFile, removeSelectedFile, doUpload };
 })();

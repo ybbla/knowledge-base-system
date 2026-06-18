@@ -78,6 +78,8 @@ def run_evaluation(
                 "query": item.query,
                 "expected_chunk_ids": item.expected_chunk_ids,
                 "expected_keywords": item.expected_content_contains,
+                "difficulty": item.difficulty,
+                "category": item.category,
                 "error": str(exc),
                 "recall@5": None, "mrr": None, "kw_recall@5": None,
                 "time": time.time() - t0,
@@ -99,6 +101,8 @@ def run_evaluation(
             "query": item.query,
             "expected_chunk_ids": item.expected_chunk_ids,
             "expected_keywords": item.expected_content_contains,
+            "difficulty": item.difficulty,
+            "category": item.category,
             "returned_ids": chunk_ids[:3],
             "recall@5": r5,
             "mrr": m,
@@ -146,8 +150,8 @@ def _build_markdown_report(result: dict, filter_summary: str = "") -> str:
     by_category: dict[str, dict] = {}
 
     for d in details:
-        diff = d.get("difficulty", "medium")
-        cat = d.get("category", "未分类")
+        diff = d.get("difficulty") or "medium"
+        cat = d.get("category") or "未分类"
 
         for stats_dict, key in [(by_difficulty, diff), (by_category, cat)]:
             if key not in stats_dict:

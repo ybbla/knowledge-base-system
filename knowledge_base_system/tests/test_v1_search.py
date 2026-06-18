@@ -1,4 +1,4 @@
-"""v1 检索接口测试 — 覆盖请求模型、过滤、预览、调试、筛选项和反馈。"""
+"""v1 检索接口测试 — 覆盖请求模型、过滤、调试和筛选项。"""
 
 import pytest
 
@@ -7,7 +7,6 @@ from app.api.v1.search import (
     SearchFilters,
     SearchOptions,
     SearchRequest,
-    FeedbackRequest,
 )
 
 
@@ -98,33 +97,6 @@ class TestSearchResponse:
         assert "doc_ids" not in result  # None 被排除
 
 
-class TestPreviewSearch:
-    """6.5 预览检索。"""
-
-    def test_preview_skips_rerank(self):
-        """预览模式标记 rerank_skipped。"""
-        resp = APIResponse(
-            data={"total_count": 3, "results": []},
-            meta={"mode": "preview", "rerank_skipped": True},
-        )
-        result = resp.model_dump(mode="json")
-        assert result["meta"]["rerank_skipped"] is True
-
-    def test_preview_fallback_when_llm_unavailable(self):
-        """LLM 不可用时返回基础候选。"""
-        resp = APIResponse(
-            data={
-                "query": "测试",
-                "total_count": 0,
-                "results": [],
-                "preview_note": "LLM 不可用，返回基础候选",
-            },
-            meta={"mode": "preview"},
-        )
-        result = resp.model_dump(mode="json")
-        assert "preview_note" in result["data"]
-
-
 class TestDebugSearch:
     """6.6 调试检索。"""
 
@@ -173,20 +145,3 @@ class TestSearchFiltersEndpoint:
         assert "categories" in result["data"]
         assert "knowledge_types" in result["data"]
 
-
-class TestSearchFeedback:
-    """6.8 检索反馈。"""
-
-    def test_feedback_request_model(self):
-        req = FeedbackRequest(chunk_id="chunk_1", feedback="relevant", search_id="search_1")
-        assert req.chunk_id == "chunk_1"
-        assert req.feedback == "relevant"
-
-    def test_feedback_response(self):
-        """反馈接口不影响排序。"""
-        resp = APIResponse(
-            data={"status": "accepted", "chunk_id": "chunk_1", "feedback": "relevant"},
-            meta={"note": "反馈已记录，不影响当前检索排序"},
-        )
-        result = resp.model_dump(mode="json")
-        assert result["data"]["status"] == "accepted"

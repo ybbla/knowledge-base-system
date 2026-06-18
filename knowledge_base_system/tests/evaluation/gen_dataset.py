@@ -38,13 +38,11 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 EVAL_DIR = Path(__file__).resolve().parent
-DEFAULT_DATASET = EVAL_DIR / "eval_dataset.json"
 QUERIES_PER_CHUNK = 3       # 每个 chunk 生成几条查询
 MAX_AUTO_COUNT = 50          # 自动模式最大查询数
 LLM_INPUT_CHUNK_LIMIT = 40   # 单次 LLM 调用的 chunk 上限
 
-# 导入新增加的存储和校验函数
-from tests.evaluation.storage import merge_to_global_dataset, save_per_doc_dataset
+from tests.evaluation.storage import init_storage
 
 # ── LLM Prompt ──────────────────────────────────────────────────────
 
@@ -186,33 +184,6 @@ def _generate(chunks: list[dict], target_count: int, dry_run: bool = False) -> l
     return result.get("items", [])
 
 
-def _merge(
-    existing: list[dict],
-    new_items: list[dict],
-) -> list[dict]:
-    """合并新旧数据集：按 query 去重，已有条目保持不变（保护人工修正）。"""
-    existing_queries = {item["query"] for item in existing}
-    merged = list(existing)
-    added = 0
-
-    for item in new_items:
-        q = item.get("query", "")
-        if q and q not in existing_queries:
-            merged.append({
-                "query": q,
-                "expected_chunk_ids": item.get("expected_chunk_ids", []),
-                "expected_content_contains": item.get("expected_content_contains", []),
-            })
-            existing_queries.add(q)
-            added += 1
-
-    if added > 0:
-        print(f"新增 {added} 条（跳过 {len(new_items) - added} 条重复）")
-    else:
-        print("无新增条目，所有 LLM 生成的 query 已存在于现有数据集中。")
-    return merged
-
-
 def _validate_annotations(
     items: list[dict],
     chunks: list[dict],
@@ -322,6 +293,8 @@ def generate_for_chunks(
 # ── 主入口 ──────────────────────────────────────────────────────────
 
 def main() -> int:
+    from datetime import datetime
+
     parser = argparse.ArgumentParser(
         description="从已入库知识块自动生成评测数据集",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -340,27 +313,24 @@ def main() -> int:
     parser.add_argument(
         "--output",
         default=None,
-        help="输出文件路径（默认追加到 eval_dataset.json）",
+        help="输出文件路径（默认写入 datasets/manual_gen_{timestamp}.json）",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="预览模式：仅打印 LLM 输入，不调用 API、不写文件",
     )
-    parser.add_argument(
-        "--replace",
-        action="store_true",
-        help="完全替换现有数据集（默认：与现有数据合并，保护人工修正的条目）",
-    )
     args = parser.parse_args()
 
-    output_path = Path(args.output) if args.output else DEFAULT_DATASET
+    # 确定输出路径：默认写入 datasets/ 目录，与人工标注的 eval_dataset.json 隔离
+    if args.output:
+        output_path = Path(args.output)
+    else:
+        init_storage()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = EVAL_DIR / "datasets" / f"manual_gen_{timestamp}.json"
 
-    # 1. 加载数据
-    existing = [] if args.replace else _load_existing(output_path)
-    if existing:
-        print(f"已加载 {len(existing)} 条现有评测数据")
-
+    # 1. 加载 chunk
     chunks = _load_chunks(category=args.category)
     print(f"从 chunk_store 读取 {len(chunks)} 个知识块")
 
@@ -377,7 +347,7 @@ def main() -> int:
     valid_items, errors = _validate_annotations(new_items, chunks)
     if errors:
         print(f"\n⚠ 校验发现 {len(errors)} 个问题：")
-        for e in errors[:10]:  # 最多显示 10 条
+        for e in errors[:10]:
             print(f"  - {e}")
         if len(errors) > 10:
             print(f"  ... 还有 {len(errors) - 10} 条未显示")
@@ -387,13 +357,29 @@ def main() -> int:
         print("所有条目校验失败，没有可保存的有效数据。")
         return 1
 
-    # 4. 合并到全局数据集
-    added = merge_to_global_dataset(valid_items)
+    # 4. 写入文件（不合并到全局，保持自动生成与人工标注隔离）
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # 如果文件已存在，追加模式（按 query 去重）
+    existing = _load_existing(output_path)
+    existing_queries = {item["query"] for item in existing}
+    added = 0
+    for item in valid_items:
+        q = item.get("query", "")
+        if q and q not in existing_queries:
+            existing.append(item)
+            existing_queries.add(q)
+            added += 1
+
+    output_path.write_text(
+        json.dumps(existing, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     if added > 0:
-        print(f"✅ 新增 {added} 条评测数据到全局数据集")
+        print(f"✅ 新增 {added} 条评测数据（跳过 {len(valid_items) - added} 条重复）")
     else:
         print("ℹ️  没有新增数据（所有 query 已存在）")
+    print(f"📄 输出文件: {output_path}")
 
     print()
     print("评测数据已生成。运行评测：")
