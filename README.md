@@ -263,6 +263,16 @@ VOLCENGINE_API_KEY=your-api-key-here
 docker compose up -d
 ```
 
+> **Docker 服务端口映射：**
+>
+> | 服务 | 端口 | 说明 |
+> |------|------|------|
+> | PostgreSQL | `5432` | 关系数据库 |
+> | MinIO API | `9000` | 对象存储 |
+> | MinIO Console | `9001` | MinIO Web 管理 |
+> | Milvus | `19530` | 向量数据库 |
+> | Attu | `8001` | Milvus Web 管理界面 |
+
 > **注意**：后端默认自动尝试连接外部服务，不可用时自动回退到内存/本地存储。因此 Docker 服务是可选的，直接运行也能正常工作。
 
 ### 5. 启动应用
@@ -277,7 +287,7 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - **前端界面**：http://localhost:8000
 - **API 文档 (Swagger)**：http://localhost:8000/docs
 - **API 文档 (ReDoc)**：http://localhost:8000/redoc
-- **Milvus 管理 (Attu)**：http://localhost:8000（如果启动了 Attu）
+- **Milvus 管理 (Attu)**：http://localhost:8001（如果启动了 Attu）
 
 ---
 
