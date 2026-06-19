@@ -5,7 +5,6 @@ from pptx import Presentation
 from pptx.util import Inches
 
 from app.core.models import Document, ElementType, KnowledgeChunk
-from assets.memory_store import MemoryAssetStore
 from ingestion.pipeline import IngestionPipeline
 import ingestion.pipeline as ingestion_module
 from parsers.pptx_parser import PptxParser
@@ -71,6 +70,20 @@ class _RecordingChunkStore:
             self.index_statuses[chunk_id] = status
 
 
+class _RecordingAssetStore:
+    def __init__(self) -> None:
+        self.assets = {}
+
+    def put(self, asset):
+        self.assets[asset.asset_id] = asset
+
+    def get(self, asset_id):
+        return self.assets.get(asset_id)
+
+    def delete(self, asset_id):
+        self.assets.pop(asset_id, None)
+
+
 class _FakeEmbedder:
     def __init__(self) -> None:
         self.calls = []
@@ -90,7 +103,7 @@ def test_ingestion_pipeline_dispatches_pptx_parser(monkeypatch):
     vector_index = _RecordingIndex()
     bm25_index = _RecordingIndex()
     chunk_store = _RecordingChunkStore()
-    asset_store = MemoryAssetStore()
+    asset_store = _RecordingAssetStore()
     pipeline = IngestionPipeline(
         parser_registry=registry,
         extractor=extractor,
@@ -136,7 +149,7 @@ def test_ingestion_pipeline_marks_invalid_pptx_failed(monkeypatch):
         extractor=_FakeExtractor(),
         vector_index=_RecordingIndex(),
         bm25_index=_RecordingIndex(),
-        asset_store=MemoryAssetStore(),
+        asset_store=_RecordingAssetStore(),
         chunk_store=_RecordingChunkStore(),
     )
     pipeline._parser_registry.register(PptxParser())

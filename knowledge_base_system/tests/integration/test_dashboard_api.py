@@ -152,8 +152,7 @@ class TestDashboardHealthDependencies:
         assert "status" in backend
         assert "type" in backend
         assert backend["status"] == "ok"
-        # 兼容 memory 和 postgres 两种后端
-        assert backend["type"] in {"memory", "postgres"}
+        assert backend["type"] == "postgres"
 
     def test_dependencies_every_dep_has_status(self):
         """每个依赖项都有 status 字段，前端据此渲染状态标识。"""

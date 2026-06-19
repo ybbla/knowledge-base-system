@@ -6,7 +6,6 @@ from app.core.models import (
     ElementType,
     KnowledgeChunk,
 )
-from assets.memory_store import MemoryAssetStore
 from ingestion.pipeline import IngestionPipeline
 import ingestion.pipeline as ingestion_module
 from parsers.html_parser import HtmlParser
@@ -67,6 +66,20 @@ class _RecordingChunkStore:
             self.index_statuses[chunk_id] = status
 
 
+class _RecordingAssetStore:
+    def __init__(self) -> None:
+        self.assets = {}
+
+    def put(self, asset):
+        self.assets[asset.asset_id] = asset
+
+    def get(self, asset_id):
+        return self.assets.get(asset_id)
+
+    def delete(self, asset_id):
+        self.assets.pop(asset_id, None)
+
+
 class _FakeEmbedder:
     def __init__(self) -> None:
         self.calls = []
@@ -88,7 +101,7 @@ def _pipeline(monkeypatch, *, max_assets_per_doc=None):
     vector_index = _RecordingIndex()
     bm25_index = _RecordingIndex()
     chunk_store = _RecordingChunkStore()
-    asset_store = MemoryAssetStore()
+    asset_store = _RecordingAssetStore()
     pipeline = IngestionPipeline(
         parser_registry=registry,
         extractor=extractor,

@@ -137,10 +137,11 @@ class MilvusCollectionManager:
         )
 
     def disconnect(self) -> None:
+        """断开 Milvus 连接（使用 remove_connection 替代已弃用的 disconnect）。"""
         try:
             from pymilvus import connections
 
-            connections.disconnect(self.alias)
+            connections.remove_connection(self.alias)
         except Exception:
             logger.exception("断开 Milvus 连接失败")
 

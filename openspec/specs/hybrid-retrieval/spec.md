@@ -34,17 +34,29 @@
 
 ### Requirement: 双路检索与混合融合
 
-系统 SHALL 并行执行向量检索和 BM25 检索，支持按文档、分类、来源类型、知识类型、文档状态、知识块状态、索引状态和时间范围过滤，然后融合结果。当 Milvus 可用时使用 Milvus `hybrid_search()` API + `RRFRanker` 原生融合；当 Milvus 不可用或 Hybrid Search 失败时分别调用向量/BM25 检索并在应用层执行 RRF 融合。检索参数（`vector_top_k`、`bm25_top_k`、`fusion_top_k`、`rrf_k`）均可通过配置修改。
+系统 SHALL 并行执行向量检索和 BM25 检索，支持按文档、分类、来源类型、知识类型、文档状态、知识块状态、索引状态和时间范围过滤，然后融合结果。当 `filters.categories` 包含单个值时，系统 SHALL 将该值传给检索管道作为索引级过滤；当 `filters.categories` 包含多个值或为 `None` 时，系统 SHALL 对每个 category 分别执行检索后合并去重（按 chunk_id 去重，保留最高分），确保所有指定分类的相关结果均能被召回。当 Milvus 可用时使用 Milvus `hybrid_search()` API + `RRFRanker` 原生融合；当 Milvus 不可用或 Hybrid Search 失败时分别调用向量/BM25 检索并在应用层执行 RRF 融合。检索参数（`vector_top_k`、`bm25_top_k`、`fusion_top_k`、`rrf_k`）均可通过配置修改。
 
 #### Scenario: 双路检索执行
 
 - **WHEN** 重写后的查询提交检索
 - **THEN** 系统应执行密集向量查询和关键词查询（在 Milvus 内或分别调用两种索引），各取 top 50（可配置）
 
-#### Scenario: 按 category 过滤
+#### Scenario: 按单一 category 过滤
 
-- **WHEN** 检索请求包含 `filters.categories`
-- **THEN** 向量检索和 BM25 检索均仅返回 `category` 属于指定集合的 chunk
+- **WHEN** 检索请求包含 `filters.categories` 且仅有一个值
+- **THEN** 向量检索和 BM25 检索均仅返回 `category` 等于该值的 chunk
+
+#### Scenario: 按多个 categories 过滤
+
+- **WHEN** 检索请求包含 `filters.categories` 且有多个值（如 `["技术", "产品"]`）
+- **THEN** 系统 SHALL 对每个 category 分别执行检索，合并去重后按分数排序
+- **AND** 返回的每个 chunk 的 `category` SHALL 属于 `filters.categories` 中的某个值
+- **AND** 所有指定分类的候选结果 SHALL 在合并结果中得到公平体现，不因单一分类候选数量多而挤掉其他分类的结果
+
+#### Scenario: 无 category 过滤
+
+- **WHEN** 检索请求未包含 `filters.categories` 或其值为空列表/`None`
+- **THEN** 检索不对 category 做索引级过滤，返回所有分类的候选结果
 
 #### Scenario: 按文档和知识类型过滤
 
@@ -175,7 +187,7 @@
 - **AND** 响应 MUST NOT 包含密钥、完整提示词或底层堆栈
 
 ### Requirement: 系统提供检索筛选项
-系统 SHALL 通过 `GET /api/v1/search/filters` 返回前端可展示的分类、来源类型、知识类型、文档状态、知识块状态和索引状态筛选项。
+系统 SHALL 通过 `GET /api/v1/search/filters` 返回前端可展示的分类、来源类型、知识类型、文档状态、知识块状态和索引状态筛选项。筛选项的 `count` 值 SHALL 优先使用 document_repo 统计（覆盖所有文档），仅当 document_repo 不可用时回退到 chunk_store 统计，不使用两种数据源的混合值。
 
 #### Scenario: 获取筛选项
 - **WHEN** 客户端请求检索筛选项
@@ -184,6 +196,17 @@
 #### Scenario: 筛选项包含计数
 - **WHEN** 筛选项来自可统计字段
 - **THEN** 每个筛选项 SHOULD 包含 `value` 和 `count`
+
+#### Scenario: 分类计数优先使用文档仓储
+- **GIVEN** document_repo 可用
+- **WHEN** 客户端请求检索筛选项
+- **THEN** categories 的 `count` SHALL 来自 document_repo 的分类统计
+- **AND** 统计 SHALL 覆盖所有文档（含尚无知识块的新文档），而非仅覆盖已有知识块的文档
+
+#### Scenario: 文档仓储不可用时回退到知识块统计
+- **GIVEN** document_repo 不可用（内存模式）
+- **WHEN** 客户端请求检索筛选项
+- **THEN** categories 的 `count` SHALL 来自 chunk_store 的分类统计
 
 ### Requirement: 系统接收检索反馈
 系统 SHALL 通过 `POST /api/v1/search/feedback` 接收用户对搜索结果的点击、相关或不相关反馈。

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     llm_model: str = "doubao-seed-2-0-pro-260215"
     embedding_model: str = "doubao-embedding-vision-251215"
+    request_timeout_seconds: float = Field(default=3.0, validation_alias="VOLCENGINE_TIMEOUT_SECONDS")
 
     # 检索默认参数。通过原始环境变量读取，便于评测脚本动态覆盖。
     vector_top_k: int = Field(default=50, validation_alias="VECTOR_TOP_K")
@@ -36,14 +37,14 @@ class Settings(BaseSettings):
     # LLM retry
     max_json_retries: int = 3
 
-    # Backend mode（默认尝试外部服务，不可用时自动回退到内存/本地）
+    # 后端模式：仅支持 postgres。
     backend: str = Field(default="postgres", validation_alias="BACKEND")
     database_url: str = Field(
         default="postgresql://kbuser:kbpass@localhost:5432/knowledge_base",
         validation_alias="DATABASE_URL",
     )
 
-    # Milvus（默认尝试连接，不可用时自动回退到内存索引）
+    # Milvus：必须启用并可连接。
     milvus_enabled: bool = Field(default=True, validation_alias="MILVUS_ENABLED")
     milvus_host: str = Field(default="localhost", validation_alias="MILVUS_HOST")
     milvus_port: int = Field(default=19530, validation_alias="MILVUS_PORT")
@@ -55,7 +56,7 @@ class Settings(BaseSettings):
         default=100000, validation_alias="MILVUS_SPARSE_MAX_VOCAB"
     )
 
-    # MinIO（默认尝试连接，不可用时自动回退到本地存储）
+    # MinIO：必须启用并可连接。
     minio_enabled: bool = Field(default=True, validation_alias="MINIO_ENABLED")
     minio_endpoint: str = Field(default="localhost:9000", validation_alias="MINIO_ENDPOINT")
     minio_access_key: str = Field(

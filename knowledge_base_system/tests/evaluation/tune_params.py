@@ -96,9 +96,9 @@ def main() -> None:
     rows: list[dict[str, Any]] = []
     keys = list(GRID)
     original_mode = settings.milvus_enabled
-    # 后续在脚本内切换模式，避免 get_settings(reload_env=True) 被环境变量改回去。
+    # 调参只覆盖外部服务检索路径，避免切换到非 Milvus 模式。
     os.environ.pop("MILVUS_ENABLED", None)
-    modes = [("milvus_hybrid", True), ("app_rrf_fallback", False)]
+    modes = [("milvus_hybrid", True)]
     try:
         for mode_name, enabled in modes:
             settings.milvus_enabled = enabled

@@ -11,6 +11,7 @@ const Documents = (() => {
   let currentSort = 'updated_at:desc';
   let selectedIds = new Set();
   let categoryOptions = [];  // 从后端动态加载的分类列表
+  let pageSize = 15;  // 每页显示数量
 
   async function renderList() {
     UI.setBreadcrumb([{ label: '仪表盘', path: '#/' }, { label: '文档管理' }]);
@@ -31,7 +32,7 @@ const Documents = (() => {
       const [sortBy, sortOrder] = currentSort.split(':');
       const params = {
         page,
-        page_size: 15,
+        page_size: pageSize,
         keyword: currentKeyword || undefined,
         status: currentStatus || undefined,
         category: currentCategory || undefined,
@@ -100,20 +101,32 @@ const Documents = (() => {
           <td>${UI.statusBadge(doc.status || 'active')}</td>
           <td>
             <div class="doc-metrics">
-              <span><strong>${doc.chunk_count ?? 0}</strong> 块</span>
-              <span><strong>${doc.element_count ?? 0}</strong> 元素</span>
-              <span><strong>${doc.asset_count ?? 0}</strong> 资源</span>
+              <span class="metric-item" title="知识块数量"><strong class="metric-num">${doc.chunk_count ?? 0}</strong>块</span>
+              <span class="metric-separator">·</span>
+              <span class="metric-item" title="解析元素数量"><strong class="metric-num">${doc.element_count ?? 0}</strong>元素</span>
+              <span class="metric-separator">·</span>
+              <span class="metric-item" title="资源文件数量"><strong class="metric-num">${doc.asset_count ?? 0}</strong>资源</span>
             </div>
           </td>
           <td>${UI.formatTime(doc.updated_at) || UI.formatTime(doc.created_at)}</td>
           <td class="actions-cell">
-            <button class="btn btn-sm btn-ghost" onclick="App.router.navigate('/documents/${UI.escapeHtml(doc.doc_id)}')">详情</button>
+            <button class="btn btn-sm btn-ghost doc-action-btn" onclick="App.router.navigate('/documents/${UI.escapeHtml(doc.doc_id)}')" title="查看详情">
+              <span class="action-icon">👁</span>详情
+            </button>
             ${doc.status === 'deleted'
-              ? `<button class="btn btn-sm btn-success" onclick="Documents.restoreDoc('${doc.doc_id}')">恢复</button>`
+              ? `<button class="btn btn-sm btn-success doc-action-btn" onclick="Documents.restoreDoc('${doc.doc_id}')" title="恢复文档">
+                   <span class="action-icon">↶</span>恢复
+                 </button>`
               : `
-                <button class="btn btn-sm btn-ghost" onclick="Documents.showEditDialog('${doc.doc_id}')">编辑</button>
-                <button class="btn btn-sm btn-ghost" onclick="Documents.ingestDocument('${doc.doc_id}')">重处理</button>
-                <button class="btn btn-sm btn-danger" onclick="Documents.deleteDoc('${doc.doc_id}')">删除</button>
+                <button class="btn btn-sm btn-ghost doc-action-btn" onclick="Documents.showEditDialog('${doc.doc_id}')" title="编辑文档">
+                  <span class="action-icon">✎</span>编辑
+                </button>
+                <button class="btn btn-sm btn-ghost doc-action-btn" onclick="Documents.ingestDocument('${doc.doc_id}')" title="重新处理">
+                  <span class="action-icon">↻</span>重处理
+                </button>
+                <button class="btn btn-sm btn-danger doc-action-btn" onclick="Documents.deleteDoc('${doc.doc_id}')" title="删除文档">
+                  <span class="action-icon">🗑</span>删除
+                </button>
               `}
           </td>
         </tr>
@@ -145,8 +158,6 @@ const Documents = (() => {
         <select class="select select-sm" id="docStatusFilter" onchange="Documents.doSearch()">
           <option value="">全部状态</option>
           <option value="active" ${currentStatus === 'active' ? 'selected' : ''}>活跃</option>
-          <option value="pending" ${currentStatus === 'pending' ? 'selected' : ''}>待处理</option>
-          <option value="processing" ${currentStatus === 'processing' ? 'selected' : ''}>处理中</option>
           <option value="failed" ${currentStatus === 'failed' ? 'selected' : ''}>失败</option>
           <option value="deleted" ${currentStatus === 'deleted' ? 'selected' : ''}>已删除</option>
         </select>
@@ -163,13 +174,13 @@ const Documents = (() => {
         <table class="doc-table">
           <thead>
             <tr>
-              <th style="width: 3%;"><input type="checkbox" id="docSelectAll" onclick="Documents.toggleSelectAll()" ${items.length === 0 ? 'disabled' : ''} /></th>
-              <th style="width: 30%;">文档名称</th>
-              <th style="width: 10%;">分类</th>
+              <th style="width: 4%;"><input type="checkbox" id="docSelectAll" onclick="Documents.toggleSelectAll()" ${items.length === 0 ? 'disabled' : ''} /></th>
+              <th style="width: 32%;">文档名称</th>
+              <th style="width: 9%;">分类</th>
               <th style="width: 9%;">状态</th>
-              <th style="width: 13%;">解析结果</th>
-              <th style="width: 16%;">更新时间</th>
-              <th style="width: 19%;">操作</th>
+              <th style="width: 12%;">解析结果</th>
+              <th style="width: 14%;">更新时间</th>
+              <th style="width: 20%;">操作</th>
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>

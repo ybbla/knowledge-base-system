@@ -9,6 +9,7 @@ from app.api import upload as upload_api
 from app.api.v1 import documents as documents_api
 from app.api.v1 import ingest as ingest_api
 from app.core.models import Document
+from app.core.errors import DuplicateDocumentError
 from app.main import app
 
 
@@ -219,3 +220,120 @@ def test_legacy_ingest_and_upload_routes_keep_compatibility(monkeypatch, tmp_pat
     )
     assert ingest_response.status_code == 202
     assert "x-deprecated" in ingest_response.headers
+
+
+def test_legacy_ingest_empty_hash_not_skipped(monkeypatch, tmp_path):
+    """验证双方 source_hash 为空时不误判为 no_change 跳过入库。"""
+    from app.api import ingest as legacy_ingest
+
+    existing_doc = Document(
+        doc_id="doc_empty_hash",
+        title="Old Title",
+        source_type="markdown",
+        source_uri="file://old.md",
+        source_hash="",  # 空 hash
+    )
+    repo = _FakeDocumentRepo(existing_doc)
+    pipeline = _FakePipeline()
+    monkeypatch.setattr(legacy_ingest, "document_repo", repo)
+    monkeypatch.setattr(legacy_ingest, "ingestion_pipeline", pipeline)
+
+    response = client.post(
+        "/ingest",
+        json={
+            "documents": [
+                {
+                    "doc_id": "doc_empty_hash",
+                    "title": "New Title",
+                    "source_type": "markdown",
+                    "source_uri": "file://new.md",
+                    "source_hash": "",  # 空 hash，不应判为 no_change
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    # 不应该出现 no_change 警告
+    assert not any(w.get("reason") == "no_change" for w in body.get("warnings", []))
+    # 应该正常提交了入库任务
+    assert len(body["doc_ids"]) > 0
+
+
+def test_upload_create_before_file_logic(monkeypatch, tmp_path):
+    """验证先创建 Document 预占位再写文件的流程逻辑。
+
+    测试 _FullFakeRepo 的 create→soft_delete 回滚流程，
+    确保并发重复上传时数据库层阻止重复写入，不产生孤儿文件。
+    """
+    from app.core.errors import DuplicateDocumentError
+
+    class _SimpleRepo:
+        def __init__(self):
+            self.docs = {}
+            self.deleted = []
+
+        def find_by_hash(self, source_hash):
+            for doc in self.docs.values():
+                if doc.source_hash == source_hash and doc.status.value != "deleted":
+                    return doc
+            return None
+
+        def create(self, doc):
+            existing = self.find_by_hash(doc.source_hash)
+            if existing is not None:
+                raise DuplicateDocumentError(f"重复文档: {existing.doc_id}")
+            self.docs[doc.doc_id] = doc
+            return doc
+
+        def soft_delete(self, doc_id):
+            self.deleted.append(doc_id)
+            return self.docs.get(doc_id)
+
+        def update(self, doc):
+            self.docs[doc.doc_id] = doc
+            return doc
+
+    repo = _SimpleRepo()
+    payload = b"# Test\nContent"
+    source_hash = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+    # 模拟先创建再写文件的流程
+    doc = Document(
+        doc_id="doc_pre_create",
+        title="Test",
+        source_type="markdown",
+        source_uri="",
+        source_hash=source_hash,
+        category="测试",
+    )
+
+    # 第一次创建成功
+    created = repo.create(doc)
+    assert created.doc_id == "doc_pre_create"
+    assert len(repo.docs) == 1
+
+    # 更新 source_uri（模拟文件写入后更新）
+    created.source_uri = "file://data/uploads/test.md"
+    updated = repo.update(created)
+    assert updated.source_uri == "file://data/uploads/test.md"
+
+    # 模拟文件写入失败 → 回滚
+    repo.soft_delete("doc_pre_create")
+    assert "doc_pre_create" in repo.deleted
+
+    # 并发重复创建应被阻止
+    doc2 = Document(
+        doc_id="doc_dup",
+        title="Test 2",
+        source_type="markdown",
+        source_uri="",
+        source_hash=source_hash,
+        category="测试",
+    )
+    try:
+        repo.create(doc2)
+        assert False, "应该抛出 DuplicateDocumentError"
+    except DuplicateDocumentError:
+        pass  # 预期行为

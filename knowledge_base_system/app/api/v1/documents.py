@@ -39,7 +39,7 @@ from app.core.errors import (
     DuplicateDocumentError,
     VersionConflictError,
 )
-from app.core.models import DocStatus, Document, compute_hash
+from app.core.models import DocStatus, Document, compute_hash, new_id
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 logger = logging.getLogger(__name__)
@@ -187,76 +187,11 @@ async def list_documents(
         )
         return PaginatedResponse(data=items, meta=meta.model_dump()).model_dump(mode="json")
 
-    # ── 内存后端 ──
-    docs_list: list[dict] = []
-    try:
-        if hasattr(chunk_store, "list_all"):
-            chunks = chunk_store.list_all()
-        else:
-            chunks = list(getattr(chunk_store, "_chunks", {}).values())
-
-        # 从 chunk 中提取文档信息并去重
-        seen: set[str] = set()
-        for chunk in chunks:
-            doc_id = chunk.doc_id
-            if doc_id in seen:
-                continue
-            seen.add(doc_id)
-
-            doc_item = {
-                "doc_id": doc_id,
-                "title": chunk.metadata.get("title", doc_id) if hasattr(chunk, "metadata") else doc_id,
-                "source_type": chunk.metadata.get("source_type", "unknown") if hasattr(chunk, "metadata") else "unknown",
-                "source_uri": "",
-                "source_hash": "",
-                "category": chunk.category or "通用",
-                "version": chunk.doc_version or 1,
-                "status": "active",
-                "parent_doc_id": None,
-                "root_doc_id": None,
-                "ingest_job_id": chunk.ingest_job_id,
-                "created_at": None,
-                "updated_at": None,
-                "metadata": chunk.metadata if hasattr(chunk, "metadata") else {},
-                "chunk_count": 0,
-                "element_count": 0,
-                "asset_count": 0,
-                "index_summary": {},
-            }
-
-            # 关键词过滤
-            if search.keyword:
-                kw = search.keyword.lower()
-                if kw not in doc_item["title"].lower() and kw not in doc_item.get("source_uri", "").lower():
-                    continue
-
-            # 分类过滤
-            if category and doc_item.get("category") != category:
-                continue
-
-            # 状态过滤
-            if status and doc_item.get("status") != status:
-                continue
-
-            docs_list.append(doc_item)
-
-        # 简单分页
-        total = len(docs_list)
-        start = (pagination.page - 1) * pagination.page_size
-        end = start + pagination.page_size
-        paged = docs_list[start:end]
-        total_pages = (total + pagination.page_size - 1) // pagination.page_size if total > 0 else 0
-        meta = PaginationMeta(
-            page=pagination.page, page_size=pagination.page_size,
-            total=total, total_pages=total_pages,
-        )
-        return PaginatedResponse(data=paged, meta=meta.model_dump()).model_dump(mode="json")
-
-    except Exception as e:
-        logger.exception("查询文档列表失败")
-        return PaginatedResponse(
-            data=[], meta=PaginationMeta(page=1, page_size=20, total=0, total_pages=0).model_dump()
-        ).model_dump(mode="json")
+    return error_json(
+        ErrorCode.SERVICE_UNAVAILABLE,
+        "PostgreSQL 文档仓储不可用",
+        http_status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
 
 
 # ── 4.2 创建文档 ──────────────────────────────────────────────────
@@ -332,27 +267,11 @@ async def create_document(
 
         return APIResponse(data=response_data).model_dump(mode="json")
 
-    # ── 内存后端 ──
-    doc = Document(
-        title=title,
-        source_type=source_type,
-        source_uri=source_uri,
-        source_hash=source_hash,
-        category=category,
-        metadata=meta_dict,
+    return error_json(
+        ErrorCode.SERVICE_UNAVAILABLE,
+        "PostgreSQL 文档仓储不可用",
+        http_status.HTTP_503_SERVICE_UNAVAILABLE,
     )
-    if ingest_after_create:
-        try:
-            job = ingestion_pipeline.submit(doc, options={}, is_update=False)
-            doc.ingest_job_id = job.job_id
-            response_data = _doc_to_item(doc)
-            response_data["ingest_job_id"] = job.job_id
-            response_data["ingest_job"] = job_to_dict(job)
-            return APIResponse(data=response_data).model_dump(mode="json")
-        except Exception as e:
-            logger.exception("入库触发失败")
-
-    return APIResponse(data=_doc_to_item(doc)).model_dump(mode="json")
 
 
 @router.post("/upload", status_code=http_status.HTTP_201_CREATED)
@@ -363,7 +282,12 @@ async def upload_document(
     ingest_after_create: bool = Query(default=True),
     mode: str = Query(default="incremental", description="incremental 或 force"),
 ):
-    """上传文件，创建文档，并可立即提交 v1 入库任务。"""
+    """上传文件，创建文档，并可立即提交 v1 入库任务。
+
+    流程：先创建 Document 预占位（利用数据库唯一索引防竞态），
+    再写文件；文件写入失败时回滚已创建的 Document 记录，
+    杜绝并发重复上传产生的孤儿文件。
+    """
     original_name = file.filename or "upload"
     source_hash, size = upload_api._hash_upload(file)
     resolved_title = title or Path(original_name).stem
@@ -387,18 +311,14 @@ async def upload_document(
                 meta={"duplicate": True},
             ).model_dump(mode="json")
 
-    upload_data = upload_api.save_upload_file(
-        file,
-        title=resolved_title,
-        category=resolved_category,
-        check_duplicate=False,
-    )
+    # ── 先创建 Document 预占位，再写文件 ──
+    pre_doc_id = new_id("doc")
     doc = Document(
-        doc_id=upload_data["doc_id"],
+        doc_id=pre_doc_id,
         title=resolved_title,
         source_type=_source_type_from_filename(original_name),
-        source_uri=upload_data["source_uri"],
-        source_hash=upload_data["source_hash"],
+        source_uri="",  # 文件写入后更新
+        source_hash=source_hash,
         category=resolved_category,
     )
 
@@ -411,6 +331,37 @@ async def upload_document(
                 str(e),
                 http_status.HTTP_409_CONFLICT,
             )
+
+    # ── 写文件 ──
+    try:
+        upload_data = upload_api.save_upload_file(
+            file,
+            title=resolved_title,
+            category=resolved_category,
+            doc_id=pre_doc_id,
+            check_duplicate=False,
+        )
+    except Exception:
+        logger.exception("文件写入失败")
+        # 回滚已创建的 Document 记录
+        if document_repo is not None:
+            try:
+                document_repo.soft_delete(pre_doc_id)
+            except Exception:
+                logger.exception("回滚 Document 记录失败")
+        return error_json(
+            ErrorCode.INTERNAL_ERROR,
+            "文件保存失败",
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    # 更新 source_uri（文件写入后的真实路径）
+    doc.source_uri = upload_data["source_uri"]
+    if document_repo is not None:
+        try:
+            doc = document_repo.update(doc)
+        except Exception:
+            logger.exception("更新文档 source_uri 失败")
 
     response_data = _doc_to_item(doc)
     response_data.update({
@@ -452,45 +403,11 @@ async def get_document(doc_id: str):
             item.update(document_repo.get_stats(doc_id))
         return APIResponse(data=item).model_dump(mode="json")
 
-    # ── 内存后端 ──
-    try:
-        if hasattr(chunk_store, "list_all"):
-            chunks = chunk_store.list_all()
-        else:
-            chunks = list(getattr(chunk_store, "_chunks", {}).values())
-    except Exception:
-        chunks = []
-
-    doc_chunks = [c for c in chunks if c.doc_id == doc_id]
-    if not doc_chunks:
-        return error_json(
-            ErrorCode.DOCUMENT_NOT_FOUND,
-            f"文档 {doc_id} 不存在",
-http_status.HTTP_404_NOT_FOUND,
-        )
-
-    first = doc_chunks[0]
-    item = {
-        "doc_id": doc_id,
-        "title": first.metadata.get("title", doc_id) if hasattr(first, "metadata") else doc_id,
-        "source_type": first.metadata.get("source_type", "unknown") if hasattr(first, "metadata") else "unknown",
-        "source_uri": "",
-        "source_hash": "",
-        "category": first.category or "通用",
-        "version": first.doc_version or 1,
-        "status": "active",
-        "parent_doc_id": None,
-        "root_doc_id": None,
-        "ingest_job_id": first.ingest_job_id,
-        "created_at": None,
-        "updated_at": None,
-        "metadata": first.metadata if hasattr(first, "metadata") else {},
-        "chunk_count": len(doc_chunks),
-        "element_count": 0,
-        "asset_count": 0,
-        "index_summary": {},
-    }
-    return APIResponse(data=item).model_dump(mode="json")
+    return error_json(
+        ErrorCode.SERVICE_UNAVAILABLE,
+        "PostgreSQL 文档仓储不可用",
+        http_status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
 
 
 @router.get("/{doc_id}/elements")
@@ -507,13 +424,11 @@ async def list_document_elements(
         )
 
     if element_repo is None:
-        meta = PaginationMeta(
-            page=pagination.page,
-            page_size=pagination.page_size,
-            total=0,
-            total_pages=0,
+        return error_json(
+            ErrorCode.SERVICE_UNAVAILABLE,
+            "PostgreSQL 解析元素仓储不可用",
+            http_status.HTTP_503_SERVICE_UNAVAILABLE,
         )
-        return PaginatedResponse(data=[], meta=meta.model_dump()).model_dump(mode="json")
 
     elements = sorted(
         element_repo.get_by_doc_id(doc_id),
@@ -584,7 +499,14 @@ http_status.HTTP_409_CONFLICT,
     if category is not None:
         doc.category = category
     if status is not None:
-        doc.status = DocStatus(status)
+        try:
+            doc.status = DocStatus(status)
+        except ValueError:
+            return error_json(
+                ErrorCode.VALIDATION_ERROR,
+                f"无效的文档状态: {status}，有效值为 {[s.value for s in DocStatus]}",
+                http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
     if source_uri is not None and source_uri != doc.source_uri:
         doc.source_uri = source_uri
         needs_reingest = True
@@ -652,10 +574,11 @@ async def delete_document(doc_id: str):
 
         return APIResponse(data=_doc_to_item(doc)).model_dump(mode="json")
 
-    # ── 内存后端 ──
-    return APIResponse(
-        data={"doc_id": doc_id, "status": "deleted", "message": "内存后端仅模拟软删除"}
-    ).model_dump(mode="json")
+    return error_json(
+        ErrorCode.SERVICE_UNAVAILABLE,
+        "PostgreSQL 文档仓储不可用",
+        http_status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
 
 
 # ── 4.6 恢复文档 ──────────────────────────────────────────────────
@@ -687,9 +610,11 @@ async def restore_document(doc_id: str):
             meta={"restored_chunks": restored_chunks_count},
         ).model_dump(mode="json")
 
-    return APIResponse(
-        data={"doc_id": doc_id, "status": "active", "message": "内存后端仅模拟恢复"}
-    ).model_dump(mode="json")
+    return error_json(
+        ErrorCode.SERVICE_UNAVAILABLE,
+        "PostgreSQL 文档仓储不可用",
+        http_status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
 
 
 # ── 4.7 触发入库 ──────────────────────────────────────────────────
@@ -733,14 +658,8 @@ async def ingest_document(
     http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-    # ── 内存后端 ──
-    doc = Document(doc_id=doc_id, title=doc_id, source_type="unknown", source_uri="")
-    job = ingestion_pipeline.submit(
-        doc,
-        options={"force": mode == "force", "mode": mode},
-        is_update=(mode == "incremental"),
+    return error_json(
+        ErrorCode.SERVICE_UNAVAILABLE,
+        "PostgreSQL 文档仓储不可用",
+        http_status.HTTP_503_SERVICE_UNAVAILABLE,
     )
-    return APIResponse(
-        data={"job_id": job.job_id, "doc_id": doc_id, "mode": mode, "job": job_to_dict(job)},
-        meta={"status": "accepted"},
-    ).model_dump(mode="json")

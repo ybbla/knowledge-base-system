@@ -87,120 +87,50 @@ async def list_documents(
 ):
     """获取所有文档列表。"""
     repo = deps.document_repo
-    if repo is not None:
-        try:
-            docs = repo.list(category=category, status=status)
-            return {"documents": [_doc_to_dict(d) for d in docs], "total": len(docs)}
-        except Exception as e:
-            logger.exception("查询文档列表失败")
-            raise HTTPException(status_code=500, detail=f"查询文档列表失败: {e}")
+    if repo is None:
+        raise HTTPException(status_code=503, detail="PostgreSQL 文档仓储不可用")
 
-    # 内存后端 — 从 chunk_store 中提取文档信息
-    chunk_store = deps.chunk_store
-    docs_map = {}
     try:
-        if hasattr(chunk_store, "list_all"):
-            chunks = chunk_store.list_all()
-        else:
-            chunks = list(getattr(chunk_store, "_chunks", {}).values())
-
-        for chunk in chunks:
-            doc_id = chunk.doc_id
-            if doc_id not in docs_map:
-                docs_map[doc_id] = {
-                    "doc_id": doc_id,
-                    "title": chunk.metadata.get("title", doc_id) if hasattr(chunk, "metadata") else doc_id,
-                    "source_type": chunk.metadata.get("source_type", "unknown") if hasattr(chunk, "metadata") else "unknown",
-                    "source_uri": "",
-                    "source_hash": "",
-                    "category": chunk.category or "通用",
-                    "version": chunk.doc_version or 1,
-                    "status": "active",
-                    "parent_doc_id": None,
-                    "root_doc_id": None,
-                    "ingest_job_id": chunk.ingest_job_id,
-                    "created_at": None,
-                    "updated_at": None,
-                    "metadata": chunk.metadata if hasattr(chunk, "metadata") else {},
-                }
+        docs = repo.list(category=category, status=status)
+        return {"documents": [_doc_to_dict(d) for d in docs], "total": len(docs)}
     except Exception as e:
-        logger.warning("无法从 chunk_store 获取文档列表: %s", e)
-
-    docs = list(docs_map.values())
-    if category:
-        docs = [d for d in docs if d.get("category") == category]
-    if status:
-        docs = [d for d in docs if d.get("status") == status]
-
-    return {"documents": docs, "total": len(docs)}
+        logger.exception("查询文档列表失败")
+        raise HTTPException(status_code=500, detail=f"查询文档列表失败: {e}")
 
 
 @router.get("/{doc_id}", deprecated=True)
 async def get_document(doc_id: str):
     """获取单个文档详情。"""
     repo = deps.document_repo
-    if repo is not None:
-        doc = repo.get(doc_id)
-        if doc is None:
-            raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
-        return _doc_to_dict(doc)
+    if repo is None:
+        raise HTTPException(status_code=503, detail="PostgreSQL 文档仓储不可用")
 
-    # 内存后端 — 从 chunk_store 推断
-    chunk_store = deps.chunk_store
-    try:
-        if hasattr(chunk_store, "list_all"):
-            chunks = chunk_store.list_all()
-        else:
-            chunks = list(getattr(chunk_store, "_chunks", {}).values())
-    except Exception:
-        chunks = []
-
-    doc_chunks = [c for c in chunks if c.doc_id == doc_id]
-    if not doc_chunks:
-        raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在于内存中")
-
-    first = doc_chunks[0]
-    return {
-        "doc_id": doc_id,
-        "title": first.metadata.get("title", doc_id) if hasattr(first, "metadata") else doc_id,
-        "source_type": first.metadata.get("source_type", "unknown") if hasattr(first, "metadata") else "unknown",
-        "source_uri": "",
-        "source_hash": "",
-        "category": first.category or "通用",
-        "version": first.doc_version or 1,
-        "status": "active",
-        "parent_doc_id": None,
-        "root_doc_id": None,
-        "ingest_job_id": first.ingest_job_id,
-        "created_at": None,
-        "updated_at": None,
-        "metadata": first.metadata if hasattr(first, "metadata") else {},
-    }
+    doc = repo.get(doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
+    return _doc_to_dict(doc)
 
 
 @router.get("/{doc_id}/elements", deprecated=True)
 async def get_document_elements(doc_id: str):
     """获取文档的解析元素列表。"""
     repo = deps.element_repo
-    if repo is not None:
-        elements = repo.get_by_doc_id(doc_id)
-        return {"elements": [_element_to_dict(el) for el in elements], "total": len(elements)}
+    if repo is None:
+        raise HTTPException(status_code=503, detail="PostgreSQL 解析元素仓储不可用")
 
-    # 内存后端暂不支持元素查询
-    return {"elements": [], "total": 0}
+    elements = repo.get_by_doc_id(doc_id)
+    return {"elements": [_element_to_dict(el) for el in elements], "total": len(elements)}
 
 
 @router.get("/{doc_id}/chunks", deprecated=True)
 async def get_document_chunks(doc_id: str):
     """获取文档的知识块列表。"""
     chunk_store = deps.chunk_store
-    try:
-        if hasattr(chunk_store, "list_all"):
-            all_chunks = chunk_store.list_all()
-        else:
-            all_chunks = list(getattr(chunk_store, "_chunks", {}).values())
-    except Exception:
-        all_chunks = []
+    if chunk_store is None:
+        raise HTTPException(status_code=503, detail="PostgreSQL 知识块存储不可用")
 
-    chunks = [c for c in all_chunks if c.doc_id == doc_id]
+    if hasattr(chunk_store, "list_by_doc_id"):
+        chunks = chunk_store.list_by_doc_id(doc_id)
+    else:
+        chunks = [c for c in chunk_store.list_all() if c.doc_id == doc_id]
     return {"chunks": [_chunk_to_dict(c) for c in chunks], "total": len(chunks)}

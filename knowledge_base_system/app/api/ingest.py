@@ -44,8 +44,8 @@ async def ingest(request: IngestRequest, response: Response):
                     status_code=404,
                     detail=f"Document {item.doc_id} not found",
                 )
-            if existing.source_hash == item.source_hash:
-                # 内容未变化，跳过
+            if item.source_hash and existing.source_hash == item.source_hash:
+                # 内容未变化，跳过（空 hash 表示未计算，不能作为 no_change 依据）
                 warnings.append({
                     "doc_id": item.doc_id,
                     "reason": "no_change",

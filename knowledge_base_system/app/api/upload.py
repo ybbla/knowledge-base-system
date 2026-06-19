@@ -1,16 +1,13 @@
 import hashlib
 import logging
-import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, Response, UploadFile
 
 from app.core.config import get_settings
-from app.core.deps import document_repo
+from app.core.deps import document_repo, minio_asset_store
 from app.core.models import new_id
-from app.core.paths import UPLOAD_DIR, UPLOAD_URI_PREFIX
-from assets.memory_store import MemoryAssetStore
-from assets.minio_store import MinioAssetStore, make_minio_key
+from assets.minio_store import make_minio_key
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 logger = logging.getLogger(__name__)
@@ -62,26 +59,21 @@ def save_upload_file(
                 "category": category or DEFAULT_CATEGORY,
             }
 
-    if cfg.minio_enabled:
-        try:
-            store = MinioAssetStore(MemoryAssetStore())
-            key = make_minio_key(resolved_doc_id, original_name)
-            store.ensure_buckets()
-            file.file.seek(0)
-            store.client.put_object(
-                cfg.minio_bucket_input,
-                key,
-                file.file,
-                length=size,
-                content_type=file.content_type or "application/octet-stream",
-                part_size=MINIO_PART_SIZE,
-            )
-            source_uri = f"minio://{cfg.minio_bucket_input}/{key}"
-        except Exception:
-            logger.exception("MinIO 上传失败，回退到本地磁盘存储")
-            source_uri = _write_local_upload(file, original_name)
-    else:
-        source_uri = _write_local_upload(file, original_name)
+    if not cfg.minio_enabled or minio_asset_store is None:
+        raise RuntimeError("MinIO 未启用，文件上传失败")
+
+    key = make_minio_key(resolved_doc_id, original_name)
+    minio_asset_store.ensure_buckets()
+    file.file.seek(0)
+    minio_asset_store.client.put_object(
+        cfg.minio_bucket_input,
+        key,
+        file.file,
+        length=size,
+        content_type=file.content_type or "application/octet-stream",
+        part_size=MINIO_PART_SIZE,
+    )
+    source_uri = f"minio://{cfg.minio_bucket_input}/{key}"
 
     return {
         "duplicate": False,
@@ -104,17 +96,3 @@ def _hash_upload(file: UploadFile) -> tuple[str, int]:
         size += len(chunk)
     file.file.seek(0)
     return f"sha256:{hasher.hexdigest()}", size
-
-
-def _write_local_upload(file: UploadFile, original_name: str) -> str:
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    suffix = Path(original_name).suffix
-    stored_name = f"{uuid.uuid4().hex}{suffix}"
-    stored_path = UPLOAD_DIR / stored_name
-
-    file.file.seek(0)
-    with stored_path.open("wb") as output:
-        while chunk := file.file.read(CHUNK_SIZE):
-            output.write(chunk)
-    file.file.seek(0)
-    return f"file://{UPLOAD_URI_PREFIX}/{stored_name}"

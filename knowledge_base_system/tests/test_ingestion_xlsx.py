@@ -11,7 +11,6 @@ from app.core.models import (
     KnowledgeChunk,
     ParsedElement,
 )
-from assets.memory_store import MemoryAssetStore
 from ingestion.pipeline import IngestionPipeline
 import ingestion.pipeline as ingestion_module
 from parsers.base import DocumentParser, ParseResult
@@ -83,6 +82,20 @@ class _RecordingChunkStore:
             self.index_statuses[chunk_id] = status
 
 
+class _RecordingAssetStore:
+    def __init__(self) -> None:
+        self.assets = {}
+
+    def put(self, asset):
+        self.assets[asset.asset_id] = asset
+
+    def get(self, asset_id):
+        return self.assets.get(asset_id)
+
+    def delete(self, asset_id):
+        self.assets.pop(asset_id, None)
+
+
 class _FakeEmbedder:
     def __init__(self) -> None:
         self.calls = []
@@ -148,7 +161,7 @@ def test_ingestion_pipeline_dispatches_xlsx_parser(monkeypatch):
     vector_index = _RecordingIndex()
     bm25_index = _RecordingIndex()
     chunk_store = _RecordingChunkStore()
-    asset_store = MemoryAssetStore()
+    asset_store = _RecordingAssetStore()
     pipeline = IngestionPipeline(
         parser_registry=registry,
         extractor=extractor,
@@ -195,7 +208,7 @@ def test_ingestion_pipeline_recurses_embedded_docs_without_repeating_root(monkey
     vector_index = _RecordingIndex()
     bm25_index = _RecordingIndex()
     chunk_store = _RecordingChunkStore()
-    asset_store = MemoryAssetStore()
+    asset_store = _RecordingAssetStore()
     pipeline = IngestionPipeline(
         parser_registry=registry,
         extractor=extractor,
@@ -226,6 +239,6 @@ def test_ingestion_pipeline_recurses_embedded_docs_without_repeating_root(monkey
         "嵌入文档入口",
         "子文档内容",
     ]
-    assert [asset.original_uri for asset in asset_store._store.values()] == [
+    assert [asset.original_uri for asset in asset_store.assets.values()] == [
         "https://example.com/root.mp4"
     ]

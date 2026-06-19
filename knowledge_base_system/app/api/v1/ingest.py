@@ -22,7 +22,8 @@ router = APIRouter(prefix="/ingest/jobs", tags=["ingest-jobs"])
 def job_to_dict(job: Any) -> dict[str, Any]:
     """将入库任务对象转换为前端可展示的 v1 字典。"""
     doc_id = getattr(job, "doc_id", "") or (getattr(job, "doc_ids", []) or [""])[0]
-    doc_title = getattr(job, "doc_title", "") or doc_id
+    raw_title = getattr(job, "doc_title", None)
+    doc_title = raw_title if (raw_title is not None and raw_title != "") else doc_id
     if document_repo is not None and doc_id:
         try:
             doc = document_repo.get(doc_id)

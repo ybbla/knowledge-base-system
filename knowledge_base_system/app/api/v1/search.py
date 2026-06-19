@@ -62,18 +62,42 @@ class SearchRequest(BaseModel):
 # ── 辅助函数 ──────────────────────────────────────────────────────
 
 async def _execute_search(request: SearchRequest) -> dict[str, Any]:
-    """执行检索 pipeline，返回完整结果。"""
+    """执行检索 pipeline，返回完整结果。
+
+    当 filters.categories 包含多个值时，对每个 category 分别检索后合并去重，
+    确保所有指定分类的候选结果都能被公平召回。
+    """
     filters = request.filters
     retrieval_top_k = max(request.top_k * 10, 50)
 
-    result = retrieval_pipeline.search(
-        request.query,
-        top_k=retrieval_top_k,
-        category=filters.categories[0] if filters.categories and len(filters.categories) == 1 else None,
-    )
+    # 确定需要检索的 category 列表
+    if filters.categories and len(filters.categories) >= 2:
+        categories = filters.categories
+    elif filters.categories and len(filters.categories) == 1:
+        categories = [filters.categories[0]]
+    else:
+        categories = [None]
 
-    result_dict = result.model_dump(mode="json")
-    return _filter_and_enrich_result(result_dict, request)
+    # 对每个 category 分别检索，合并结果
+    all_results: dict[str, dict[str, Any]] = {}
+    for cat in categories:
+        result = retrieval_pipeline.search(
+            request.query,
+            top_k=retrieval_top_k,
+            category=cat,
+        )
+        result_dict = result.model_dump(mode="json")
+        for item in result_dict.get("results", []):
+            chunk_id = item.get("chunk_id", "")
+            if chunk_id not in all_results or item.get("score", 0) > all_results[chunk_id].get("score", 0):
+                all_results[chunk_id] = item
+
+    # 构建合并后的结果（按分数降序排列）
+    merged_items = sorted(all_results.values(), key=lambda x: x.get("score", 0), reverse=True)
+    merged_dict = result_dict.copy()
+    merged_dict["results"] = merged_items
+
+    return _filter_and_enrich_result(merged_dict, request)
 
 
 def _value(raw: Any) -> str:
@@ -85,7 +109,7 @@ def _get_chunk(chunk_id: str):
     """从 chunk_store 获取知识块。"""
     if hasattr(chunk_store, "get"):
         return chunk_store.get(chunk_id)
-    return getattr(chunk_store, "_chunks", {}).get(chunk_id)
+    return None
 
 
 def _get_doc(doc_id: str):
@@ -341,11 +365,11 @@ async def search_filters():
         "index_statuses": [],
     }
 
-    # 从知识块存储收集枚举值
+    # 从知识块存储收集枚举值（knowledge_types, chunk_statuses, index_statuses 仅从 chunk_store 获取）
+    cats: dict[str, int] = {}
     if hasattr(chunk_store, "list_all"):
         try:
             chunks = chunk_store.list_all()
-            cats: dict[str, int] = {}
             kts: dict[str, int] = {}
             ch_stats: dict[str, int] = {}
             idx_stats: dict[str, int] = {}
@@ -359,17 +383,16 @@ async def search_filters():
                 ist = c.index_status.value if hasattr(c.index_status, "value") else str(c.index_status)
                 idx_stats[ist] = idx_stats.get(ist, 0) + 1
 
-            filter_options["categories"] = [{"value": k, "count": v} for k, v in cats.items()]
             filter_options["knowledge_types"] = [{"value": k, "count": v} for k, v in kts.items()]
             filter_options["chunk_statuses"] = [{"value": k, "count": v} for k, v in ch_stats.items()]
             filter_options["index_statuses"] = [{"value": k, "count": v} for k, v in idx_stats.items()]
         except Exception:
             pass
 
-    # 补充文档仓储中的分类，覆盖尚未生成知识块的新文档。
+    # 分类统计：优先使用 document_repo（覆盖所有文档，含尚无 chunk 的新文档）
+    # 仅当 document_repo 不可用时回退到 chunk_store 统计
     if document_repo is not None and hasattr(document_repo, "list_paginated"):
         try:
-            existing_categories = {item["value"]: item.get("count", 0) for item in filter_options["categories"]}
             doc_categories: dict[str, int] = {}
             page = 1
             page_size = 200
@@ -381,14 +404,16 @@ async def search_filters():
                 if page * page_size >= total or not docs:
                     break
                 page += 1
-            for category, count in existing_categories.items():
-                doc_categories[category] = max(doc_categories.get(category, 0), count)
             filter_options["categories"] = [
                 {"value": value, "count": count}
                 for value, count in sorted(doc_categories.items())
             ]
         except Exception:
             pass
+
+    # 若 document_repo 不可用，回退到 chunk_store 的分类统计
+    if not filter_options["categories"]:
+        filter_options["categories"] = [{"value": k, "count": v} for k, v in cats.items()]
 
     # 来源类型（从文档仓储获取）
     if document_repo is not None and hasattr(document_repo, "list_paginated"):
@@ -410,4 +435,3 @@ async def search_filters():
     ]
 
     return APIResponse(data=filter_options).model_dump(mode="json")
-

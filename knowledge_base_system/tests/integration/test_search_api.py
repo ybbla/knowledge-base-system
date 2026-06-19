@@ -146,7 +146,7 @@ def searchable_data():
              "declarative", "技术"),
             ("添加新解析器的步骤", "实现自定义解析器需要三步：1. 继承 DocumentParser 基类；2. 实现 supports() 和 parse() 方法；3. 在启动时注册到 ParserRegistry。",
              "procedural", "技术"),
-            ("调试本地开发模式", "使用 export BACKEND=memory 跳过 PostgreSQL，export MOCK_LLM=true 跳过 LLM 调用，启动命令 python -m uvicorn app.main:app --reload。",
+            ("调试外部服务开发模式", "使用 Docker 启动 PostgreSQL、Milvus 和 MinIO，设置 MOCK_LLM=true 跳过 LLM 调用，启动命令 python -m uvicorn app.main:app --reload。",
              "procedural", "技术"),
         ]
         for title, content, kt, cat in chunks_doc1:

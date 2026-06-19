@@ -51,6 +51,19 @@ class TestDocumentListResponse:
         assert result["meta"]["total"] == 0
         assert result["error"] is None
 
+    def test_memory_list_with_unsupported_filters(self):
+        """内存模式下传不支持的过滤参数时 meta 应包含 unsupported_filters。"""
+        meta_dict = {
+            "page": 1,
+            "page_size": 20,
+            "total": 0,
+            "total_pages": 0,
+            "unsupported_filters": ["source_type", "parent_doc_id", "sort"],
+        }
+        resp = PaginatedResponse(data=[], meta=meta_dict)
+        result = resp.model_dump(mode="json")
+        assert result["meta"]["unsupported_filters"] == ["source_type", "parent_doc_id", "sort"]
+
 
 class TestDocumentCreateResponse:
     """4.2 文档创建响应结构。"""
@@ -80,6 +93,16 @@ class TestDocumentCreateResponse:
         })
         result = resp.model_dump(mode="json")
         assert result["data"]["ingest_job_id"] == "job_xxx"
+
+    def test_memory_mode_create_no_ingest_warning(self):
+        """内存模式下创建文档但不入库时返回 warning 提示。"""
+        resp = APIResponse(
+            data={"doc_id": "doc_new", "title": "新建文档", "status": "pending"},
+            meta={"warning": "内存模式下文档仅在入库后可通过列表/详情接口查询，建议设置 ingest_after_create=true"},
+        )
+        result = resp.model_dump(mode="json")
+        assert "warning" in result["meta"]
+        assert "内存模式" in result["meta"]["warning"]
 
 
 class TestDocumentDetailResponse:
@@ -174,7 +197,6 @@ class TestDocumentIngest:
         result = resp.model_dump(mode="json")
         assert result["data"]["job_id"] == "job_xxx"
         assert result["meta"]["status"] == "accepted"
-
 
 # ── 知识块管理测试 ────────────────────────────────────────────────
 
@@ -313,3 +335,51 @@ class TestChunkBatch:
             error=ErrorDetail(code="VALIDATION_ERROR", message="不支持的操作: invalid"),
         )
         assert err.error.code == "VALIDATION_ERROR"
+
+    def test_batch_invalid_status_returns_validation_error(self):
+        """批量 update_status 传无效状态应返回 VALIDATION_ERROR。"""
+        err = APIErrorResponse(
+            error=ErrorDetail(
+                code="VALIDATION_ERROR",
+                message="无效的知识块状态: archived，有效值为 ['active', 'superseded', 'deleted']",
+            ),
+        )
+        assert err.error.code == "VALIDATION_ERROR"
+        assert "无效的知识块状态" in err.error.message
+
+
+class TestInvalidEnumHandling:
+    """枚举无效值校验 — 验证返回 422 而非 500。"""
+
+    def test_document_update_invalid_status_422(self):
+        """更新文档时传非法 status 返回 422。"""
+        err = APIErrorResponse(
+            error=ErrorDetail(
+                code="VALIDATION_ERROR",
+                message="无效的文档状态: archived，有效值为 ['active', 'deleted', 'failed', 'pending', 'processing']",
+            ),
+        )
+        assert err.error.code == "VALIDATION_ERROR"
+        assert "无效的文档状态" in err.error.message
+
+    def test_chunk_update_invalid_status_422(self):
+        """更新知识块时传非法 status 返回 422。"""
+        err = APIErrorResponse(
+            error=ErrorDetail(
+                code="VALIDATION_ERROR",
+                message="无效的知识块状态: archived，有效值为 ['active', 'superseded', 'deleted']",
+            ),
+        )
+        assert err.error.code == "VALIDATION_ERROR"
+        assert "无效的知识块状态" in err.error.message
+
+    def test_chunk_update_invalid_knowledge_type_422(self):
+        """更新知识块时传非法 knowledge_type 返回 422。"""
+        err = APIErrorResponse(
+            error=ErrorDetail(
+                code="VALIDATION_ERROR",
+                message="无效的知识类型: unknown_type，有效值为 ['declarative', 'procedural', 'reference', 'faq']",
+            ),
+        )
+        assert err.error.code == "VALIDATION_ERROR"
+        assert "无效的知识类型" in err.error.message

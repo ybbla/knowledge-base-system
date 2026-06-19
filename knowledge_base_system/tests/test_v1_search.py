@@ -7,6 +7,7 @@ from app.api.v1.search import (
     SearchFilters,
     SearchOptions,
     SearchRequest,
+    _matches_filters,
 )
 
 
@@ -144,4 +145,81 @@ class TestSearchFiltersEndpoint:
         result = resp.model_dump(mode="json")
         assert "categories" in result["data"]
         assert "knowledge_types" in result["data"]
+
+    def test_category_count_priority_doc_repo(self):
+        """document_repo 可用时 category count 应来自文档统计（覆盖尚无 chunk 的文档）。"""
+        resp = APIResponse(data={
+            "categories": [
+                {"value": "技术", "count": 15},
+                {"value": "通用", "count": 3},
+            ],
+            "source_types": [],
+            "knowledge_types": [],
+            "doc_statuses": [],
+            "chunk_statuses": [],
+            "index_statuses": [],
+        })
+        result = resp.model_dump(mode="json")
+        # 文档仓储统计：技术 15（含尚无 chunk 的新文档）
+        cats = {item["value"]: item["count"] for item in result["data"]["categories"]}
+        assert cats["技术"] == 15
+        assert cats["通用"] == 3
+
+
+class TestMultiCategorySearch:
+    """多 categories 检索逻辑验证。"""
+
+    def test_multi_category_request_model(self):
+        """多 categories 过滤请求模型正确构建。"""
+        req = SearchRequest(
+            query="测试",
+            filters=SearchFilters(categories=["技术", "产品"]),
+        )
+        assert req.filters.categories == ["技术", "产品"]
+        assert len(req.filters.categories) == 2
+
+    def test_single_category_request_model(self):
+        """单 category 过滤请求模型正确构建。"""
+        req = SearchRequest(
+            query="测试",
+            filters=SearchFilters(categories=["技术"]),
+        )
+        assert req.filters.categories == ["技术"]
+        assert len(req.filters.categories) == 1
+
+    def test_no_category_request_model(self):
+        """无 category 过滤请求模型正确构建。"""
+        req = SearchRequest(query="测试")
+        assert req.filters.categories is None
+
+    def test_matches_filters_multi_category(self):
+        """多 category 过滤：chunk 属于任一分类即通过。"""
+        from types import SimpleNamespace
+
+        chunk = SimpleNamespace(
+            doc_id="doc_1",
+            category="技术",
+            knowledge_type="declarative",
+            status="active",
+            index_status="indexed",
+        )
+        doc = SimpleNamespace(
+            source_type="markdown",
+            status="active",
+            created_at=None,
+        )
+        filters = SearchFilters(categories=["技术", "产品"])
+
+        # 匹配任一分类
+        assert _matches_filters(chunk, doc, filters) is True
+
+        # 不匹配任一分类
+        chunk2 = SimpleNamespace(
+            doc_id="doc_2",
+            category="其他",
+            knowledge_type="declarative",
+            status="active",
+            index_status="indexed",
+        )
+        assert _matches_filters(chunk2, doc, filters) is False
 

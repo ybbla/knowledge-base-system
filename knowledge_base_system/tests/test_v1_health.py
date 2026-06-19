@@ -74,7 +74,7 @@ class TestHealthDependenciesResponse:
         resp = APIResponse(
             data={
                 "dependencies": {
-                    "backend": {"status": "ok", "type": "memory"},
+                    "backend": {"status": "ok", "type": "postgres"},
                     "document_repo": {"status": "not_configured"},
                     "element_repo": {"status": "not_configured"},
                     "chunk_store": {"status": "ok"},

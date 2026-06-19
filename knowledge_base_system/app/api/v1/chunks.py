@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Query, status
@@ -98,11 +99,9 @@ def _chunk_to_detail(chunk: KnowledgeChunk) -> dict[str, Any]:
 
 
 def _resolve_chunk(chunk_id: str) -> KnowledgeChunk | None:
-    """解析知识块，支持 PG 和内存后端。"""
+    """从 PostgreSQL 知识块存储解析知识块。"""
     if hasattr(chunk_store, "get"):
         return chunk_store.get(chunk_id)
-    if hasattr(chunk_store, "_chunks"):
-        return getattr(chunk_store, "_chunks", {}).get(chunk_id)
     return None
 
 
@@ -148,45 +147,11 @@ async def list_chunks(
         )
         return PaginatedResponse(data=items, meta=meta.model_dump()).model_dump(mode="json")
 
-    # ── 内存后端 ──
-    try:
-        if hasattr(chunk_store, "list_all"):
-            all_chunks = chunk_store.list_all()
-        else:
-            all_chunks = list(getattr(chunk_store, "_chunks", {}).values())
-    except Exception:
-        all_chunks = []
-
-    filtered = all_chunks
-    if search.keyword:
-        kw = search.keyword.lower()
-        filtered = [c for c in filtered if kw in c.title.lower() or kw in c.content.lower()]
-    if doc_id:
-        filtered = [c for c in filtered if c.doc_id == doc_id]
-    if category:
-        filtered = [c for c in filtered if c.category == category]
-    if knowledge_type:
-        kt = knowledge_type
-        filtered = [c for c in filtered if (
-            c.knowledge_type.value if hasattr(c.knowledge_type, "value") else c.knowledge_type) == kt]
-    if status:
-        st = status
-        filtered = [c for c in filtered if (c.status.value if hasattr(c.status, "value") else c.status) == st]
-    if index_status:
-        ist = index_status
-        filtered = [c for c in filtered if (c.index_status.value if hasattr(c.index_status, "value") else c.index_status) == ist]
-
-    total = len(filtered)
-    start = (pagination.page - 1) * pagination.page_size
-    end = start + pagination.page_size
-    paged = filtered[start:end]
-    total_pages = (total + pagination.page_size - 1) // pagination.page_size if total > 0 else 0
-    meta = PaginationMeta(
-        page=pagination.page, page_size=pagination.page_size, total=total, total_pages=total_pages,
+    return error_json(
+        ErrorCode.SERVICE_UNAVAILABLE,
+        "PostgreSQL 知识块存储不可用",
+        503,
     )
-    return PaginatedResponse(
-        data=[_chunk_to_list_item(c) for c in paged], meta=meta.model_dump()
-    ).model_dump(mode="json")
 
 
 # ── 5.2 创建知识块 ──────────────────────────────────────────────────
@@ -314,9 +279,23 @@ async def update_chunk(
     if category is not None:
         chunk.category = category
     if knowledge_type is not None:
-        chunk.knowledge_type = KnowledgeType(knowledge_type)
+        try:
+            chunk.knowledge_type = KnowledgeType(knowledge_type)
+        except ValueError:
+            return error_json(
+                ErrorCode.VALIDATION_ERROR,
+                f"无效的知识类型: {knowledge_type}，有效值为 {[k.value for k in KnowledgeType]}",
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
     if chunk_status is not None:
-        new_status = ChunkStatus(chunk_status)
+        try:
+            new_status = ChunkStatus(chunk_status)
+        except ValueError:
+            return error_json(
+                ErrorCode.VALIDATION_ERROR,
+                f"无效的知识块状态: {chunk_status}，有效值为 {[s.value for s in ChunkStatus]}",
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
         if new_status != chunk.status:
             status_changed = True
         chunk.status = new_status
@@ -460,7 +439,7 @@ async def reindex_single(chunk_id: str):
         reindex_chunk(chunk, vector_index, bm25_index, embedding_client)
 
         chunk.index_status = ChunkIndexStatus.indexed
-        chunk.indexed_at = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        chunk.indexed_at = datetime.now(timezone.utc)
         chunk.index_error = None
         if hasattr(chunk_store, "put"):
             chunk_store.put(chunk)
@@ -540,6 +519,16 @@ async def batch_chunk_operation(body: dict[str, Any] = Body(...)):
         ).model_dump(mode="json")
 
     elif action == "update_status" and new_status is not None:
+        # 校验新状态是否合法
+        try:
+            ChunkStatus(new_status)
+        except ValueError:
+            return error_json(
+                ErrorCode.VALIDATION_ERROR,
+                f"无效的知识块状态: {new_status}，有效值为 {[s.value for s in ChunkStatus]}",
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
         if hasattr(chunk_store, "bulk_update_status_by_chunk_ids"):
             updated = chunk_store.bulk_update_status_by_chunk_ids(chunk_ids, new_status)
         else:

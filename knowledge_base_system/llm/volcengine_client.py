@@ -24,6 +24,16 @@ def _extract_json(text: str) -> str:
     return text.strip()
 
 
+def _create_ark_client(settings) -> Ark:
+    """创建带统一超时的火山方舟客户端。"""
+    return Ark(
+        api_key=settings.api_key,
+        base_url=settings.base_url,
+        timeout=settings.request_timeout_seconds,
+        max_retries=0,
+    )
+
+
 class LLMClient:
     """火山引擎方舟 LLM 客户端 — 基于 Ark SDK。"""
 
@@ -41,7 +51,7 @@ class LLMClient:
         if not settings.api_key:
             raise LLMError("VOLCENGINE_API_KEY 未配置")
 
-        client = Ark(api_key=settings.api_key)
+        client = _create_ark_client(settings)
         last_error: str = ""
 
         for attempt in range(max_retries + 1):
@@ -73,6 +83,9 @@ class LLMClient:
                     raise LLMError(
                         f"LLM 调用在 {max_retries + 1} 次尝试后失败: {last_error}"
                     ) from exc
+            except Exception as exc:
+                logger.exception("LLM 调用失败")
+                raise LLMError(f"LLM 调用失败: {exc}") from exc
 
         raise LLMError(f"LLM 调用失败: {last_error}")
 
@@ -123,7 +136,7 @@ class LLMClient:
         ]
 
         try:
-            client = Ark(api_key=settings.api_key)
+            client = _create_ark_client(settings)
             response = client.chat.completions.create(
                 model=settings.llm_model,
                 messages=messages,  # type: ignore[arg-type]
@@ -178,7 +191,7 @@ class LLMClient:
         ]
 
         try:
-            client = Ark(api_key=settings.api_key)
+            client = _create_ark_client(settings)
             response = client.chat.completions.create(
                 model=settings.llm_model,
                 messages=messages,  # type: ignore[arg-type]
@@ -211,7 +224,7 @@ class EmbeddingClient:
         if not settings.api_key:
             raise LLMError("VOLCENGINE_API_KEY 未配置")
 
-        client = Ark(api_key=settings.api_key)
+        client = _create_ark_client(settings)
         model = settings.embedding_model
         embeddings: list[list[float]] = []
 

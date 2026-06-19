@@ -145,11 +145,17 @@ const Chunks = (() => {
         sort_by: sortBy || 'chunk_id',
         sort_order: sortOrder || 'desc',
       });
+      if (!isChunkPageMounted()) return;
       renderTable(res);
     } catch (e) {
+      if (!isChunkPageMounted()) return;
       renderError(e.message || '请求失败');
       UI.toast(`加载知识块失败：${e.message}`, 'error');
     }
+  }
+
+  function isChunkPageMounted() {
+    return Boolean(document.getElementById('chunkTableBody'));
   }
 
   function renderLoading() {
@@ -182,6 +188,7 @@ const Chunks = (() => {
   function renderTable(res) {
     selectedIds.clear();
     const tbody = document.getElementById('chunkTableBody');
+    if (!tbody) return;
     const data = res?.data || [];
     const meta = res?.meta || {};
     const total = meta.total || 0;
@@ -238,6 +245,7 @@ const Chunks = (() => {
 
     // 分页
     const pagEl = document.getElementById('chunkPagination');
+    if (!pagEl) return;
     const totalPages = meta.total_pages || 1;
     if (totalPages > 1) {
       pagEl.innerHTML = `

@@ -5,7 +5,6 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.core.models import (
-    KnowledgeChunk,
     ScoreComponents,
     SearchResult,
     SearchResultItem,
@@ -51,24 +50,6 @@ def _renderable_storage_uri(storage_uri: str | None) -> str | None:
     return f"file:///{Path(storage_uri).resolve().as_posix()}"
 
 
-@dataclass
-class ChunkStore:
-    """Simple in-memory chunk store for lookup by ID."""
-    _chunks: dict[str, KnowledgeChunk] = field(default_factory=dict)
-
-    def put(self, chunk: KnowledgeChunk) -> None:
-        self._chunks[chunk.chunk_id] = chunk
-
-    def get(self, chunk_id: str) -> KnowledgeChunk | None:
-        return self._chunks.get(chunk_id)
-
-    def get_batch(self, chunk_ids: list[str]) -> list[KnowledgeChunk]:
-        return [c for cid in chunk_ids if (c := self._chunks.get(cid))]
-
-    def count(self) -> int:
-        return len(self._chunks)
-
-
 class RetrievalPipeline:
     """Orchestrate the full retrieval flow."""
 
@@ -76,7 +57,7 @@ class RetrievalPipeline:
         self,
         vector_index: VectorIndex,
         bm25_index: BM25Index,
-        chunk_store: ChunkStore,
+        chunk_store: Any,
         asset_store: AssetStore | None = None,
     ) -> None:
         self._vector_index = vector_index

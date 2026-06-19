@@ -9,7 +9,7 @@
 ## Requirements
 
 ### Requirement: 文档列表支持分页、筛选和展示统计
-系统 SHALL 通过 `GET /api/v1/documents` 返回分页文档列表，并支持按关键词、分类、状态、来源类型、父文档、根文档、入库任务和时间范围筛选。
+系统 SHALL 通过 `GET /api/v1/documents` 返回分页文档列表，并支持按关键词、分类、状态、来源类型、父文档、根文档、入库任务和时间范围筛选。当后端为内存模式且无法支持某些高级筛选参数时，系统 SHALL 在响应 `meta` 中标注未应用的筛选参数。
 
 #### Scenario: 按分类和状态查询文档
 - **GIVEN** 系统中存在多个分类和状态的文档
@@ -28,6 +28,12 @@
 - **THEN** 系统返回 `data=[]`
 - **AND** `meta.total` 为 `0`
 - **AND** `error` 为 `null`
+
+#### Scenario: 内存模式下不支持的筛选参数被标注
+- **GIVEN** 后端为内存模式
+- **WHEN** 客户端请求包含 `source_type`、`parent_doc_id`、`root_doc_id`、`ingest_job_id`、`sort_by` 等内存后端不支持的参数
+- **THEN** 系统 SHALL 仍返回匹配基础筛选（关键词、分类、状态）的结果
+- **AND** 响应 `meta` SHALL 包含 `unsupported_filters` 字段列出未应用的参数名
 
 ### Requirement: 文档文件可通过 v1 上传并创建
 
@@ -56,7 +62,7 @@
 
 ### Requirement: 文档记录可被创建
 
-系统 SHALL 通过 `POST /api/v1/documents` 创建 Document 记录，并允许客户端选择是否创建后立即触发入库。该接口用于后端可访问的 `source_uri`，文件上传 SHALL 使用 `POST /api/v1/documents/upload`。
+系统 SHALL 通过 `POST /api/v1/documents` 创建 Document 记录，并允许客户端选择是否创建后立即触发入库。该接口用于后端可访问的 `source_uri`，文件上传 SHALL 使用 `POST /api/v1/documents/upload`。当后端为内存模式（`document_repo` 不可用）且 `ingest_after_create=False` 时，系统 SHALL 在响应 `meta` 中返回 `warning` 提示文档仅在入库后可见。
 
 #### Scenario: 创建文档但不立即入库
 - **GIVEN** 客户端已有后端可访问的 `source_uri`
@@ -78,6 +84,12 @@
 - **WHEN** 客户端创建新文档
 - **THEN** 系统 SHALL 返回冲突错误
 - **AND** 错误 `code` SHALL 为 `DOCUMENT_DUPLICATE`
+
+#### Scenario: 内存模式下创建文档但不入库
+- **GIVEN** 后端为内存模式（`document_repo` 不可用）
+- **WHEN** 客户端创建文档且 `ingest_after_create=false`
+- **THEN** 系统 SHALL 返回成功响应
+- **AND** 响应 `meta` SHALL 包含 `warning` 提示该文档在入库前不可通过列表或详情接口查询
 
 ### Requirement: 文档详情返回聚合信息
 系统 SHALL 通过 `GET /api/v1/documents/{doc_id}` 返回文档基础字段、入库状态、统计信息、子文档信息和元数据。
@@ -132,7 +144,7 @@
 
 ### Requirement: 文档可触发入库动作
 
-系统 SHALL 通过 `POST /api/v1/documents/{doc_id}/ingest` 对指定文档触发入库、增量更新或强制重建，并返回可被入库任务页面展示和轮询的任务信息。
+系统 SHALL 通过 `POST /api/v1/documents/{doc_id}/ingest` 对指定文档触发入库、增量更新或强制重建，并返回可被入库任务页面展示和轮询的任务信息。当后端为内存模式时，系统 SHALL 从 chunk_store 中获取已有文档信息来补全 Document 对象的关键字段。
 
 #### Scenario: 对已有文档触发增量入库
 - **GIVEN** 文档 `doc_xxx` 存在
@@ -152,3 +164,9 @@
 - **WHEN** 客户端请求文档入库
 - **THEN** 系统 SHALL 返回 404
 - **AND** 错误 `code` SHALL 为 `DOCUMENT_NOT_FOUND`
+
+#### Scenario: 内存模式下对已有文档触发入库
+- **GIVEN** 后端为内存模式，文档已有 chunk 在 chunk_store 中
+- **WHEN** 客户端请求 `POST /api/v1/documents/{doc_id}/ingest`
+- **THEN** 系统 SHALL 从 chunk_store 中获取该文档的 title、source_type、source_hash、category 信息
+- **AND** 系统 SHALL 用补全后的 Document 对象提交入库任务

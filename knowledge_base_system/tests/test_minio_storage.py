@@ -3,8 +3,21 @@ import os
 import pytest
 
 from app.core.models import Asset, AssetType
-from assets.memory_store import MemoryAssetStore
 from assets.minio_store import MinioAssetStore, make_minio_key, parse_minio_uri
+
+
+class _MetadataStore:
+    def __init__(self) -> None:
+        self.assets = {}
+
+    def put(self, asset):
+        self.assets[asset.asset_id] = asset
+
+    def get(self, asset_id):
+        return self.assets.get(asset_id)
+
+    def delete(self, asset_id):
+        self.assets.pop(asset_id, None)
 
 
 def test_minio_uri_helpers():
@@ -24,7 +37,7 @@ def test_minio_uri_helpers():
 )
 class TestMinioAssetStore:
     def test_put_get_delete_and_presigned_url(self):
-        metadata_store = MemoryAssetStore()
+        metadata_store = _MetadataStore()
         store = MinioAssetStore(metadata_store)
         store.ensure_buckets()
 

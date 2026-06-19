@@ -26,10 +26,12 @@ from app.core.config import settings
 from llm.volcengine_client import embedding_client
 
 router = APIRouter(prefix="/health", tags=["health"])
+
 logger = logging.getLogger(__name__)
 
 
-# ── 3.1 存活检查 ──────────────────────────────────────────────────
+# ── 3.1 存活检查 ──────────────────────────────────────────────────────
+
 
 @router.get("/live")
 async def health_live():
@@ -40,7 +42,8 @@ async def health_live():
     ).model_dump(mode="json")
 
 
-# ── 3.2 就绪检查 ──────────────────────────────────────────────────
+# ── 3.2 就绪检查 ──────────────────────────────────────────────────────
+
 
 @router.get("/ready")
 async def health_ready():
@@ -51,7 +54,7 @@ async def health_ready():
     """
     checks: dict[str, dict[str, Any]] = {}
 
-    # ── 文档仓储 ──
+    # ── 数据存储 ──
     if document_repo is not None:
         try:
             document_repo.get("_health_check_")
@@ -61,7 +64,6 @@ async def health_ready():
     else:
         checks["document_repo"] = {"status": "not_configured"}
 
-    # ── 元素仓储 ──
     if element_repo is not None:
         try:
             element_repo.get_by_doc_id("_health_check_")
@@ -71,10 +73,8 @@ async def health_ready():
     else:
         checks["element_repo"] = {"status": "not_configured"}
 
-    # ── 知识块存储 ──
     try:
         if chunk_store is not None:
-            # 轻量校验：尝试计数
             count = chunk_store.count() if hasattr(chunk_store, "count") else None
             checks["chunk_store"] = {"status": "ok", "count": count}
         else:
@@ -82,17 +82,15 @@ async def health_ready():
     except Exception as e:
         checks["chunk_store"] = {"status": "error", "summary": _safe_summary(e)}
 
-    # ── 向量索引 ──
+    # ── 检索索引 ──
     try:
         if vector_index is not None:
-            # 轻量校验：确保实例可用
             checks["vector_index"] = {"status": "ok"}
         else:
             checks["vector_index"] = {"status": "not_configured"}
     except Exception as e:
         checks["vector_index"] = {"status": "error", "summary": _safe_summary(e)}
 
-    # ── BM25 索引 ──
     try:
         if bm25_index is not None:
             checks["bm25_index"] = {"status": "ok"}
@@ -101,10 +99,9 @@ async def health_ready():
     except Exception as e:
         checks["bm25_index"] = {"status": "error", "summary": _safe_summary(e)}
 
-    # ── 资源存储 ──
+    # ── 外部服务 ──
     if asset_store is not None:
         try:
-            # 资源存储可能不支持健康检查；存在即可
             checks["asset_store"] = {"status": "ok"}
         except Exception as e:
             checks["asset_store"] = {"status": "error", "summary": _safe_summary(e)}
@@ -126,28 +123,21 @@ async def health_ready():
     ), response_status)
 
 
-# ── 3.3 依赖状态详情 ──────────────────────────────────────────────
+# ── 3.3 依赖状态详情 ──────────────────────────────────────────────────
+
 
 @router.get("/dependencies")
 async def health_dependencies():
     """返回各依赖的状态详情。
 
     隐藏敏感信息：不暴露密钥、连接密码或完整堆栈。
+    仅显示外部服务：PostgreSQL、Milvus、MinIO、LLM。
     """
     deps: dict[str, dict[str, Any]] = {
-        "backend": {
-            "status": "ok",
-            "name": "后端引擎",
-            "type": settings.backend,
-        },
-        "document_repo": _check_repo(document_repo, "文档仓储"),
-        "element_repo": _check_repo(element_repo, "元素仓储"),
-        "chunk_store": _check_chunk_store(),
-        "vector_index": _check_index(vector_index, "向量索引"),
-        "bm25_index": _check_index(bm25_index, "BM25 索引"),
-        "embedding": _check_embedding(),
+        "postgresql": _check_postgresql(),
+        "milvus": _check_milvus(),
+        "minio": _check_minio(),
         "llm": _check_llm(),
-        "asset_store": _check_asset_store(),
     }
 
     return APIResponse(
@@ -156,7 +146,8 @@ async def health_dependencies():
     ).model_dump(mode="json")
 
 
-# ── 辅助函数 ──────────────────────────────────────────────────────
+# ── 辅助函数 ─────────────────────────────────────────────────────────────
+
 
 def _safe_summary(exc: Exception) -> str:
     """安全提取异常摘要，不暴露堆栈。"""
@@ -168,7 +159,6 @@ def _check_repo(repo, name: str) -> dict[str, Any]:
     if repo is None:
         return {"status": "not_configured", "name": name}
     try:
-        # 轻量操作
         if hasattr(repo, "get"):
             repo.get("_health_check_")
         return {"status": "ok", "name": name}
@@ -180,14 +170,14 @@ def _check_repo(repo, name: str) -> dict[str, Any]:
 def _check_chunk_store() -> dict[str, Any]:
     """检查知识块存储。"""
     if chunk_store is None:
-        return {"status": "not_configured", "name": "知识块存储"}
+        return {"status": "not_configured", "name": "知识块库"}
     try:
         if hasattr(chunk_store, "count"):
-            return {"status": "ok", "name": "知识块存储", "count": chunk_store.count()}
-        return {"status": "ok", "name": "知识块存储"}
+            return {"status": "ok", "name": "知识块库", "count": chunk_store.count()}
+        return {"status": "ok", "name": "知识块库"}
     except Exception as e:
-        logger.warning("知识块存储健康检查失败: %s", e)
-        return {"status": "error", "name": "知识块存储", "summary": _safe_summary(e)}
+        logger.warning("知识块库健康检查失败: %s", e)
+        return {"status": "error", "name": "知识块库", "summary": _safe_summary(e)}
 
 
 def _check_index(index, name: str) -> dict[str, Any]:
@@ -201,15 +191,48 @@ def _check_index(index, name: str) -> dict[str, Any]:
         return {"status": "error", "name": name, "summary": _safe_summary(e)}
 
 
-def _check_embedding() -> dict[str, Any]:
-    """检查 Embedding 服务。"""
+def _check_postgresql() -> dict[str, Any]:
+    """检查 PostgreSQL 数据库连接。"""
     try:
-        if embedding_client is not None:
-            return {"status": "ok", "name": "Embedding"}
-        return {"status": "not_configured", "name": "Embedding"}
+        from sqlalchemy import text
+        from app.db.engine import get_engine
+
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ok", "name": "PostgreSQL"}
     except Exception as e:
-        logger.warning("Embedding 健康检查失败: %s", e)
-        return {"status": "error", "name": "Embedding", "summary": _safe_summary(e)}
+        logger.warning("PostgreSQL 健康检查失败: %s", e)
+        return {"status": "error", "name": "PostgreSQL", "summary": _safe_summary(e)}
+
+
+def _check_milvus() -> dict[str, Any]:
+    """检查 Milvus 向量数据库连接。"""
+    try:
+        from app.core.deps import milvus_manager
+
+        if milvus_manager is not None:
+            milvus_manager.ensure_collection()
+            return {"status": "ok", "name": "Milvus"}
+        return {"status": "not_configured", "name": "Milvus"}
+    except Exception as e:
+        logger.warning("Milvus 健康检查失败: %s", e)
+        return {"status": "error", "name": "Milvus", "summary": _safe_summary(e)}
+
+
+def _check_minio() -> dict[str, Any]:
+    """检查 MinIO 对象存储连接。"""
+    try:
+        from app.core.deps import minio_asset_store
+
+        if minio_asset_store is not None:
+            # 简单检查：列出 buckets 来验证连接
+            minio_asset_store.client.list_buckets()
+            return {"status": "ok", "name": "MinIO"}
+        return {"status": "not_configured", "name": "MinIO"}
+    except Exception as e:
+        logger.warning("MinIO 健康检查失败: %s", e)
+        return {"status": "error", "name": "MinIO", "summary": _safe_summary(e)}
 
 
 def _check_llm() -> dict[str, Any]:
@@ -220,16 +243,5 @@ def _check_llm() -> dict[str, Any]:
             return {"status": "ok", "name": "LLM"}
         return {"status": "not_configured", "name": "LLM"}
     except Exception as e:
-        logger.warning("LLM 健康检查失败: %s", e)
+        logger.warning("LLM 服务健康检查失败: %s", e)
         return {"status": "error", "name": "LLM", "summary": _safe_summary(e)}
-
-
-def _check_asset_store() -> dict[str, Any]:
-    """检查资源存储。"""
-    if asset_store is None:
-        return {"status": "not_configured", "name": "资源存储"}
-    try:
-        return {"status": "ok", "name": "资源存储"}
-    except Exception as e:
-        logger.warning("资源存储健康检查失败: %s", e)
-        return {"status": "error", "name": "资源存储", "summary": _safe_summary(e)}

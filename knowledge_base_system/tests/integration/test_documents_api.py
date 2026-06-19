@@ -1227,12 +1227,9 @@ class TestDocumentsUpload:
         }, data={"title": "重复"}, params={"ingest_after_create": "false", "mode": "incremental"})
         assert resp2.status_code in {200, 201}, f"重复上传异常: {resp2.status_code}"
         body2 = resp2.json()
-        # PG 后端：duplicate=true；内存后端：无去重检查，duplicate=false
-        if body2["data"]["duplicate"]:
-            assert body2["data"]["existing_doc_id"] == doc_id
-            assert body2["meta"].get("duplicate") is True
-        else:
-            _cleanup_doc(body2["data"]["doc_id"])
+        assert body2["data"]["duplicate"] is True
+        assert body2["data"]["existing_doc_id"] == doc_id
+        assert body2["meta"].get("duplicate") is True
 
         _cleanup_doc(doc_id)
 
@@ -1264,12 +1261,8 @@ class TestDocumentsUpload:
         }, params={"ingest_after_create": "false", "mode": "incremental"})
         assert resp2.status_code in {200, 201}, f"第二次上传异常: {resp2.status_code}"
         body2 = resp2.json()
-        if body2["data"]["duplicate"]:
-            # PG 后端：检测到重复
-            assert body2["data"]["existing_doc_id"] == doc1
-        else:
-            # 内存后端：无去重检查
-            _cleanup_doc(body2["data"]["doc_id"])
+        assert body2["data"]["duplicate"] is True
+        assert body2["data"]["existing_doc_id"] == doc1
 
         _cleanup_doc(doc1)
 

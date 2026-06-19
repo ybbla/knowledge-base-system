@@ -1,13 +1,10 @@
-"""Application-wide dependency injection / shared state."""
+"""应用级依赖注入与共享状态。"""
 
 import logging
 
 from app.core.config import settings
 from app.core.models import ChunkIndexStatus
-from assets.memory_store import MemoryAssetStore
 from assets.minio_store import MinioAssetStore
-from indexing.memory_bm25 import MemoryBM25Index
-from indexing.memory_vector import MemoryVectorIndex
 from ingestion.pipeline import IngestionPipeline
 from llm.semantic_extractor import SemanticExtractor
 from llm.volcengine_client import embedding_client
@@ -18,7 +15,7 @@ from parsers.pdf_parser import PdfParser
 from parsers.pptx_parser import PptxParser
 from parsers.registry import ParserRegistry
 from parsers.xlsx_parser import XlsxParser
-from retrieval.pipeline import ChunkStore, RetrievalPipeline
+from retrieval.pipeline import RetrievalPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +24,10 @@ logger = logging.getLogger(__name__)
 parser_registry = ParserRegistry()
 parser_registry.register(MarkdownParser(), DocxParser(), XlsxParser(), HtmlParser(), PptxParser(), PdfParser())
 
-# ── Backend selection ─────────────────────────────────────────────────
+# ── 外部服务后端 ─────────────────────────────────────────────────────
 
-def _init_postgres_backend() -> bool:
-    """尝试初始化 PostgreSQL 后端。不可用时自动回退到内存后端。"""
+def _init_postgres_backend() -> None:
+    """初始化 PostgreSQL 后端；不可用时直接终止启动。"""
     from sqlalchemy import text
 
     try:
@@ -56,68 +53,53 @@ def _init_postgres_backend() -> bool:
         globals()["chunk_store"] = PgChunkStore(sf)
         globals()["document_repo"] = DocumentRepository(sf)
         globals()["element_repo"] = ParsedElementRepository(sf)
-        return True
-    except Exception:
-        logger.exception("PostgreSQL 不可用，回退到内存后端")
-        return False
+    except Exception as exc:
+        logger.exception("PostgreSQL 初始化失败")
+        raise RuntimeError("PostgreSQL 不可用，服务启动失败") from exc
 
 
-def _init_memory_backend() -> None:
-    """初始化内存后端作为兜底。"""
-    globals()["asset_store"] = MemoryAssetStore()
-    globals()["chunk_store"] = ChunkStore()
-    globals()["document_repo"] = None
-    globals()["element_repo"] = None
-    globals()["session_factory"] = None
-
-
-# 默认值（内存后端），确保变量始终有定义
 session_factory = None
-asset_store: MemoryAssetStore = MemoryAssetStore()
-chunk_store: ChunkStore = ChunkStore()
+asset_store = None
+chunk_store = None
 document_repo = None
 element_repo = None
 
-if settings.backend == "postgres":
-    if not _init_postgres_backend():
-        _init_memory_backend()
-elif settings.backend == "memory":
-    _init_memory_backend()
-else:
-    logger.warning("未知的 backend 配置 '%s'，回退到内存后端", settings.backend)
-    _init_memory_backend()
+if settings.backend != "postgres":
+    raise RuntimeError(f"仅支持 BACKEND=postgres，当前配置为 {settings.backend!r}")
 
-# ── Optional MinIO backend ─────────────────────────────────────────────
+_init_postgres_backend()
+
+# ── MinIO backend ─────────────────────────────────────────────────────
 
 minio_asset_store = None
-if settings.minio_enabled:
-    try:
-        minio_asset_store = MinioAssetStore(asset_store)
-        minio_asset_store.ensure_buckets()
-        asset_store = minio_asset_store
-    except Exception:
-        logger.exception("MinIO 初始化失败，回退到原 AssetStore")
-        minio_asset_store = None
+if not settings.minio_enabled:
+    raise RuntimeError("必须设置 MINIO_ENABLED=true，资源文件仅允许写入 MinIO")
 
-# ── Optional Milvus backend ────────────────────────────────────────────
+try:
+    minio_asset_store = MinioAssetStore(asset_store)
+    minio_asset_store.ensure_buckets()
+    asset_store = minio_asset_store
+except Exception as exc:
+    logger.exception("MinIO 初始化失败")
+    raise RuntimeError("MinIO 不可用，服务启动失败") from exc
+
+# ── Milvus backend ────────────────────────────────────────────────────
 
 milvus_manager = None
-if settings.milvus_enabled:
-    try:
-        from indexing.milvus_sparse import MilvusSparseIndex
-        from indexing.milvus_vector import MilvusCollectionManager, MilvusVectorIndex
+if not settings.milvus_enabled:
+    raise RuntimeError("必须设置 MILVUS_ENABLED=true，检索索引仅允许写入 Milvus")
 
-        milvus_manager = MilvusCollectionManager()
-        vector_index = MilvusVectorIndex(milvus_manager)
-        bm25_index = MilvusSparseIndex(milvus_manager, session_factory=session_factory)
-    except Exception:
-        logger.exception("Milvus 初始化失败，回退到内存索引")
-        milvus_manager = None
-        vector_index = MemoryVectorIndex()
-        bm25_index = MemoryBM25Index()
-else:
-    vector_index = MemoryVectorIndex()
-    bm25_index = MemoryBM25Index()
+try:
+    from indexing.milvus_sparse import MilvusSparseIndex
+    from indexing.milvus_vector import MilvusCollectionManager, MilvusVectorIndex
+
+    milvus_manager = MilvusCollectionManager()
+    milvus_manager.ensure_collection()
+    vector_index = MilvusVectorIndex(milvus_manager)
+    bm25_index = MilvusSparseIndex(milvus_manager, session_factory=session_factory)
+except Exception as exc:
+    logger.exception("Milvus 初始化失败")
+    raise RuntimeError("Milvus 不可用，服务启动失败") from exc
 
 extractor = SemanticExtractor()
 
@@ -141,15 +123,13 @@ retrieval_pipeline = RetrievalPipeline(
 
 
 def rebuild_retrieval_indexes_from_chunks(category: str | None = None) -> int:
-    """从已持久化的知识块重建内存检索索引。仅恢复 status='active' 的块。"""
-    if hasattr(chunk_store, "list_all"):
-        chunks = chunk_store.list_all(category=category)
-    else:
-        chunks = list(getattr(chunk_store, "_chunks", {}).values())
-        if category is not None:
-            chunks = [chunk for chunk in chunks if chunk.category == category]
+    """从 PostgreSQL 持久化知识块重建 Milvus 检索索引。"""
+    if not hasattr(chunk_store, "list_all"):
+        raise RuntimeError("当前知识块存储不支持重建检索索引")
 
-    # ── 仅索引活跃知识块 ──
+    chunks = chunk_store.list_all(category=category)
+
+    # 仅索引活跃知识块。
     chunks = [c for c in chunks if c.status.value == "active"]
 
     for chunk in chunks:
@@ -182,7 +162,7 @@ def rebuild_retrieval_indexes_from_chunks(category: str | None = None) -> int:
 
 def recover_pending_chunk_indexes(limit: int | None = None) -> int:
     """恢复已经持久化但还没完成 Milvus 索引写入的知识块。"""
-    if not settings.milvus_enabled or not hasattr(chunk_store, "list_by_index_status"):
+    if not hasattr(chunk_store, "list_by_index_status"):
         return 0
 
     chunks = chunk_store.list_by_index_status(

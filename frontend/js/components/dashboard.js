@@ -4,12 +4,24 @@
 
 const Dashboard = (() => {
 
+  function _formatStatus(status) {
+    if (status === 'ok') return '正常';
+    if (status === 'error') return '异常';
+    if (status === 'not_configured') return '未配置';
+    return status || '—';
+  }
+
+  function _getStatusClass(status) {
+    if (status === 'ok') return 'is-ok';
+    if (status === 'error') return 'is-error';
+    return '';
+  }
+
   async function render() {
     UI.setBreadcrumb([{ label: '仪表盘' }]);
 
     // 使用 v1 健康检查和依赖状态
     let healthOk = false;
-    let backendType = '—';
     let depStatuses = {};
     let activeJobCount = 0;
     let failedJobCount = 0;
@@ -23,7 +35,6 @@ const Dashboard = (() => {
         API.healthDependencies(),
       ]);
       healthOk = readyRes?.data?.status === 'ok';
-      backendType = depsRes?.data?.dependencies?.backend?.type || '—';
       depStatuses = depsRes?.data?.dependencies || {};
     } catch (e) { /* offline */ }
 
@@ -62,6 +73,14 @@ const Dashboard = (() => {
       pendingIndexChunkCount = pendingIndexRes?.meta?.total || 0;
     } catch (e) { /* ignore */ }
 
+    // 只显示外部服务
+    const externalDeps = [
+      depStatuses.postgresql,
+      depStatuses.milvus,
+      depStatuses.minio,
+      depStatuses.llm
+    ].filter(Boolean);
+
     UI.render(`
       <div class="page-header">
         <h1 class="page-title">知识库概览</h1>
@@ -87,12 +106,6 @@ const Dashboard = (() => {
           <div class="stat-value stat-value-sm">${activeJobCount}</div>
           <div class="stat-detail"><span>${failedJobCount ? `${failedJobCount} 个失败任务待处理` : '暂无失败任务'}</span></div>
         </div>
-        <div class="stat-card">
-          <div class="stat-icon">⚙</div>
-          <div class="stat-label">后端引擎</div>
-          <div class="stat-value stat-value-sm">${UI.escapeHtml(backendType)}</div>
-          <div class="stat-detail"><span>${healthOk ? 'API 服务在线' : '请检查服务状态'}</span></div>
-        </div>
       </div>
 
       <div class="dashboard-grid">
@@ -100,25 +113,29 @@ const Dashboard = (() => {
           <div class="card-header">
             <div>
               <h3 class="card-title">系统状态</h3>
-              <p class="card-subtitle">仅在仪表盘集中展示健康与依赖状态</p>
+              <p class="card-subtitle">外部服务连接状态</p>
             </div>
             <span class="badge badge-${healthOk ? 'success' : 'error'}">${healthOk ? '在线' : '异常'}</span>
           </div>
-          <div class="status-panel status-panel-compact">
+          <div class="status-panel">
             <div class="status-item">
               <span class="status-item-label">API 服务</span>
               <span class="status-item-value ${healthOk ? 'is-ok' : 'is-error'}">
                 ${healthOk ? '在线' : '离线'}
               </span>
             </div>
-            ${Object.entries(depStatuses).slice(0, 6).map(([key, dep]) => `
-              <div class="status-item">
-                <span class="status-item-label">${dep.name || key}</span>
-                <span class="status-item-value ${dep.status === 'ok' ? 'is-ok' : dep.status === 'error' ? 'is-error' : ''}">
-                  ${dep.status || '—'}
-                </span>
-              </div>
-            `).join('')}
+
+            ${externalDeps.length ? `
+              <div class="status-group-header">外部服务</div>
+              ${externalDeps.map(dep => `
+                <div class="status-item">
+                  <span class="status-item-label">${dep.name}</span>
+                  <span class="status-item-value ${_getStatusClass(dep.status)}">
+                    ${_formatStatus(dep.status)}
+                  </span>
+                </div>
+              `).join('')}
+            ` : ''}
           </div>
         </div>
 
