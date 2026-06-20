@@ -741,7 +741,7 @@ class PdfParser(DocumentParser):
                     storage_uri=None,
                     mime_type=mime_type,
                     content_hash=content_hash_val,
-                    status=AssetStatus.pending,
+                    status=AssetStatus.ready,
                     extracted_text=None,
                     metadata={
                         "page": page_number,
@@ -853,7 +853,7 @@ class PdfParser(DocumentParser):
             original_uri=url,
             storage_uri=None,
             mime_type=self._guess_mime(url, asset_type),
-            status=AssetStatus.pending,
+            status=AssetStatus.ready,
             extracted_text=None,
             metadata=metadata,
         )

@@ -50,7 +50,6 @@ def test_search_filters_are_applied(monkeypatch):
         category="设备维护",
         knowledge_type="procedural",
         status="active",
-        index_status="indexed",
         metadata={"title": "匹配文档"},
         asset_refs=[],
         source_refs=[],
@@ -64,7 +63,6 @@ def test_search_filters_are_applied(monkeypatch):
         category="其他",
         knowledge_type="declarative",
         status="active",
-        index_status="indexed",
         metadata={"title": "其他文档"},
         asset_refs=[],
         source_refs=[],
@@ -127,7 +125,6 @@ def test_search_filters_are_applied(monkeypatch):
                 "categories": ["设备维护"],
                 "knowledge_types": ["procedural"],
                 "chunk_status": ["active"],
-                "index_status": ["indexed"],
             },
             "options": {"highlight": True},
         },
@@ -139,26 +136,6 @@ def test_search_filters_are_applied(monkeypatch):
     assert results[0]["doc_id"] == "doc_match"
     assert results[0]["doc_title"] == "匹配文档"
     assert "highlight" in results[0]
-
-
-def test_preview_search_does_not_call_retrieval_pipeline(monkeypatch):
-    from app.api.v1 import search as search_api
-
-    class BrokenPipeline:
-        def search(self, *args, **kwargs):
-            raise AssertionError("preview 不应调用带 rerank 的 retrieval_pipeline.search")
-
-    class EmptyChunkStore:
-        def list_all(self):
-            return []
-
-    monkeypatch.setattr(search_api, "retrieval_pipeline", BrokenPipeline())
-    monkeypatch.setattr(search_api, "chunk_store", EmptyChunkStore())
-
-    response = client.post("/api/v1/search/preview", json={"query": "测试"})
-
-    assert response.status_code == 200
-    assert response.json()["meta"]["rerank_skipped"] is True
 
 
 def test_debug_search_contains_stage_keys(monkeypatch):
@@ -174,8 +151,26 @@ def test_debug_search_contains_stage_keys(monkeypatch):
                 "results": [],
             }
 
+    class FakeDebugInfo:
+        def __init__(self):
+            self.original_query = "测试"
+            self.rewritten_query = "测试"
+            self.keywords = ["测试"]
+            self.vector_candidates = []
+            self.bm25_candidates = []
+            self.fused_candidates = []
+            self.rerank_results = []
+            self.vector_count = 0
+            self.bm25_count = 0
+            self.fused_count = 0
+            self.rerank_count = 0
+            self.used_milvus_hybrid = False
+            self.errors = []
+
     class FakePipeline:
         def search(self, *args, **kwargs):
+            if kwargs.get("debug"):
+                return (FakeResult(), FakeDebugInfo())
             return FakeResult()
 
     monkeypatch.setattr(search_api, "retrieval_pipeline", FakePipeline())

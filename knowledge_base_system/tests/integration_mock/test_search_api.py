@@ -114,7 +114,13 @@ class TestSearchDebug(_OrigTestSearchDebug):
 
 
 class TestSearchEndToEnd(_OrigTestSearchEndToEnd):
-    """Mock 版：端到端测试 — 上传模拟文件后搜索。"""
+    """Mock 版：端到端测试 — 上传模拟文件后搜索。
+
+    覆盖说明：
+    - test_upload_and_search / test_upload_and_debug_search 不再依赖 ingest job。
+      上传后直接创建知识块并验证搜索/调试检索，无需轮询或检查 ingest job 状态。
+    - _create_chunk 不再传递 index_after_create 参数（v1 API 已移除）。
+    """
     pass
 
 

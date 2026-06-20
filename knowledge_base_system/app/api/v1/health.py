@@ -1,9 +1,8 @@
 """系统健康检查 API — GET /api/v1/health/*
 
-提供三层健康检查：
+提供两级健康检查：
 - /live：进程存活
-- /ready：核心仓储、索引和资源存储就绪
-- /dependencies：依赖状态详情（隐藏敏感信息）
+- /    ：整体状态 + 外部依赖详情（PostgreSQL、Milvus、MinIO、LLM）
 """
 
 from __future__ import annotations
@@ -11,26 +10,16 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter
 
-from app.api.v1.schemas import APIResponse, response_json
-from app.core.deps import (
-    asset_store,
-    bm25_index,
-    chunk_store,
-    document_repo,
-    element_repo,
-    vector_index,
-)
-from app.core.config import settings
-from llm.volcengine_client import embedding_client
+from app.api.v1.schemas import APIResponse
 
 router = APIRouter(prefix="/health", tags=["health"])
 
 logger = logging.getLogger(__name__)
 
 
-# ── 3.1 存活检查 ──────────────────────────────────────────────────────
+# ── 存活检查 ────────────────────────────────────────────────────────
 
 
 @router.get("/live")
@@ -42,96 +31,16 @@ async def health_live():
     ).model_dump(mode="json")
 
 
-# ── 3.2 就绪检查 ──────────────────────────────────────────────────────
+# ── 整体状态 + 外部依赖 ──────────────────────────────────────────────
 
 
-@router.get("/ready")
-async def health_ready():
-    """检查核心仓储、索引和资源存储是否可达。
+@router.get("")
+async def health():
+    """返回系统整体状态和外部依赖详情。
 
-    返回 200 表示所有核心依赖可用。
-    返回 503 表示有依赖不可用（通过 data.status=degraded）。
-    """
-    checks: dict[str, dict[str, Any]] = {}
-
-    # ── 数据存储 ──
-    if document_repo is not None:
-        try:
-            document_repo.get("_health_check_")
-            checks["document_repo"] = {"status": "ok"}
-        except Exception as e:
-            checks["document_repo"] = {"status": "error", "summary": _safe_summary(e)}
-    else:
-        checks["document_repo"] = {"status": "not_configured"}
-
-    if element_repo is not None:
-        try:
-            element_repo.get_by_doc_id("_health_check_")
-            checks["element_repo"] = {"status": "ok"}
-        except Exception as e:
-            checks["element_repo"] = {"status": "error", "summary": _safe_summary(e)}
-    else:
-        checks["element_repo"] = {"status": "not_configured"}
-
-    try:
-        if chunk_store is not None:
-            count = chunk_store.count() if hasattr(chunk_store, "count") else None
-            checks["chunk_store"] = {"status": "ok", "count": count}
-        else:
-            checks["chunk_store"] = {"status": "not_configured"}
-    except Exception as e:
-        checks["chunk_store"] = {"status": "error", "summary": _safe_summary(e)}
-
-    # ── 检索索引 ──
-    try:
-        if vector_index is not None:
-            checks["vector_index"] = {"status": "ok"}
-        else:
-            checks["vector_index"] = {"status": "not_configured"}
-    except Exception as e:
-        checks["vector_index"] = {"status": "error", "summary": _safe_summary(e)}
-
-    try:
-        if bm25_index is not None:
-            checks["bm25_index"] = {"status": "ok"}
-        else:
-            checks["bm25_index"] = {"status": "not_configured"}
-    except Exception as e:
-        checks["bm25_index"] = {"status": "error", "summary": _safe_summary(e)}
-
-    # ── 外部服务 ──
-    if asset_store is not None:
-        try:
-            checks["asset_store"] = {"status": "ok"}
-        except Exception as e:
-            checks["asset_store"] = {"status": "error", "summary": _safe_summary(e)}
-    else:
-        checks["asset_store"] = {"status": "not_configured"}
-
-    # ── 判定整体状态 ──
-    error_deps = [k for k, v in checks.items() if v.get("status") == "error"]
-    if error_deps:
-        response_status = status.HTTP_503_SERVICE_UNAVAILABLE
-        overall = "degraded"
-    else:
-        response_status = status.HTTP_200_OK
-        overall = "ok"
-
-    return response_json(APIResponse(
-        data={"status": overall, "checks": checks},
-        meta={"backend": settings.backend},
-    ), response_status)
-
-
-# ── 3.3 依赖状态详情 ──────────────────────────────────────────────────
-
-
-@router.get("/dependencies")
-async def health_dependencies():
-    """返回各依赖的状态详情。
-
-    隐藏敏感信息：不暴露密钥、连接密码或完整堆栈。
     仅显示外部服务：PostgreSQL、Milvus、MinIO、LLM。
+    隐藏敏感信息：不暴露密钥、连接密码或完整堆栈。
+    任一依赖 error 时 data.status 为 degraded，HTTP 仍返回 200。
     """
     deps: dict[str, dict[str, Any]] = {
         "postgresql": _check_postgresql(),
@@ -140,55 +49,24 @@ async def health_dependencies():
         "llm": _check_llm(),
     }
 
+    error_deps = [k for k, v in deps.items() if v.get("status") == "error"]
+    overall = "degraded" if error_deps else "ok"
+
     return APIResponse(
-        data={"dependencies": deps},
+        data={
+            "status": overall,
+            "dependencies": deps,
+        },
         meta={"service": "knowledge-base-system", "version": "0.3.0"},
     ).model_dump(mode="json")
 
 
-# ── 辅助函数 ─────────────────────────────────────────────────────────────
+# ── 辅助函数 ─────────────────────────────────────────────────────────
 
 
 def _safe_summary(exc: Exception) -> str:
     """安全提取异常摘要，不暴露堆栈。"""
     return str(exc)[:200]
-
-
-def _check_repo(repo, name: str) -> dict[str, Any]:
-    """检查仓储可达性。"""
-    if repo is None:
-        return {"status": "not_configured", "name": name}
-    try:
-        if hasattr(repo, "get"):
-            repo.get("_health_check_")
-        return {"status": "ok", "name": name}
-    except Exception as e:
-        logger.warning("%s 健康检查失败: %s", name, e)
-        return {"status": "error", "name": name, "summary": _safe_summary(e)}
-
-
-def _check_chunk_store() -> dict[str, Any]:
-    """检查知识块存储。"""
-    if chunk_store is None:
-        return {"status": "not_configured", "name": "知识块库"}
-    try:
-        if hasattr(chunk_store, "count"):
-            return {"status": "ok", "name": "知识块库", "count": chunk_store.count()}
-        return {"status": "ok", "name": "知识块库"}
-    except Exception as e:
-        logger.warning("知识块库健康检查失败: %s", e)
-        return {"status": "error", "name": "知识块库", "summary": _safe_summary(e)}
-
-
-def _check_index(index, name: str) -> dict[str, Any]:
-    """检查索引实例。"""
-    if index is None:
-        return {"status": "not_configured", "name": name}
-    try:
-        return {"status": "ok", "name": name}
-    except Exception as e:
-        logger.warning("%s 健康检查失败: %s", name, e)
-        return {"status": "error", "name": name, "summary": _safe_summary(e)}
 
 
 def _check_postgresql() -> dict[str, Any]:
@@ -226,7 +104,6 @@ def _check_minio() -> dict[str, Any]:
         from app.core.deps import minio_asset_store
 
         if minio_asset_store is not None:
-            # 简单检查：列出 buckets 来验证连接
             minio_asset_store.client.list_buckets()
             return {"status": "ok", "name": "MinIO"}
         return {"status": "not_configured", "name": "MinIO"}

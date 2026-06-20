@@ -45,6 +45,12 @@ class TestDashboardFullFlow(_OrigFullFlow):
 
 
 class TestDashboardFrontendAlignment(_OrigFrontendAlignment):
+    """Mock 版：前端渲染逻辑精确对齐测试。
+
+    覆盖说明：
+    - test_error_field_is_explicit_null_in_success_responses 不检查 index_statuses 字段，
+      因为 v1 API 中已不再返回该字段。仅验证 data/meta/error 统一结构。
+    """
     pass
 
 

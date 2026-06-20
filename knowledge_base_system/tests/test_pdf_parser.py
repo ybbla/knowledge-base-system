@@ -283,7 +283,7 @@ class TestPdfParser:
         assert len(image_assets) >= 1
         asset = image_assets[0]
         assert asset.content_hash.startswith("sha256:")
-        assert asset.status.value == "pending"
+        assert asset.status.value == "ready"
         assert hasattr(asset, "_data")
 
         image_elements = [el for el in result.elements if el.element_type == ElementType.image]

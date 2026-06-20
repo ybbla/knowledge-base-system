@@ -172,39 +172,6 @@ class MilvusCollectionManager:
         self.collection.delete(expr=f'chunk_id == "{_escape_expr_value(chunk_id)}"')
         self.collection.flush()
 
-    def update_status_batch(self, chunk_ids: list[str], status: str) -> None:
-        """批量更新知识块的 status 字段，保留原有向量和元数据不变。
-
-        通过 query 查询现有实体并替换 status 字段后 upsert。
-        """
-        if not chunk_ids:
-            return
-        self.ensure_collection()
-        if self.collection is None:
-            raise RuntimeError("Milvus collection is not initialized")
-
-        escaped_ids = ", ".join(
-            f'"{_escape_expr_value(cid)}"' for cid in chunk_ids
-        )
-        results = self.collection.query(
-            expr=f"chunk_id in [{escaped_ids}]",
-            output_fields=["*"],
-        )
-        entities = []
-        for row in results:
-            entity = dict(row)
-            entity["status"] = status
-            entities.append(entity)
-
-        if entities:
-            self.collection.upsert(entities)
-            self.collection.flush()
-            # 同步更新内存缓存
-            for entity in entities:
-                cid = entity["chunk_id"]
-                if cid in self._cache:
-                    self._cache[cid]["status"] = status
-
 
 class MilvusVectorIndex(VectorIndex):
     """基于 Milvus 的 dense vector 索引实现。"""
@@ -267,10 +234,6 @@ class MilvusVectorIndex(VectorIndex):
 
     def delete(self, chunk_id: str) -> None:
         self._manager.delete(chunk_id)
-
-    def update_status_batch(self, chunk_ids: list[str], status: str) -> None:
-        """将一批知识块的 status 更新为指定值（保留原有向量和元数据）。"""
-        self._manager.update_status_batch(chunk_ids, status)
 
     def search(
         self,

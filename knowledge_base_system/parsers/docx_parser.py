@@ -12,6 +12,7 @@ from docx.oxml.ns import qn
 from app.core.paths import resolve_file_uri
 from app.core.models import (
     Asset,
+    AssetStatus,
     AssetType,
     Document,
     ElementType,
@@ -277,7 +278,7 @@ class DocxParser(DocumentParser):
                         original_uri=f"docx://{doc.doc_id}/media/image{idx+1}.{ext}",
                         mime_type=mimetype_map.get(ext, "application/octet-stream"),
                         content_hash=f"sha256:{content_hash}",
-                        status="pending",
+                        status=AssetStatus.ready,
                         storage_uri=None,
                         extracted_text=None,
                         metadata={"width": None, "height": None},
@@ -310,7 +311,7 @@ class DocxParser(DocumentParser):
         doc: Document,
         elements: list[ParsedElement],
     ) -> list[Asset]:
-        """从段落文本中识别视频链接并创建 pending Asset。"""
+        """从段落文本中识别视频链接并创建 ready Asset。"""
         assets: list[Asset] = []
         seen: set[str] = set()
         for el in list(elements):

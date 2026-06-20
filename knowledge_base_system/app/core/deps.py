@@ -3,7 +3,6 @@
 import logging
 
 from app.core.config import settings
-from app.core.models import ChunkIndexStatus
 from assets.minio_store import MinioAssetStore
 from ingestion.pipeline import IngestionPipeline
 from llm.semantic_extractor import SemanticExtractor
@@ -161,16 +160,14 @@ def rebuild_retrieval_indexes_from_chunks(category: str | None = None) -> int:
 
 
 def recover_pending_chunk_indexes(limit: int | None = None) -> int:
-    """恢复已经持久化但还没完成 Milvus 索引写入的知识块。"""
-    if not hasattr(chunk_store, "list_by_index_status"):
+    """启动时恢复所有活跃知识块的索引。"""
+    if not hasattr(chunk_store, "list_all"):
         return 0
 
-    chunks = chunk_store.list_by_index_status(
-        [ChunkIndexStatus.pending, ChunkIndexStatus.indexing],
-        limit=limit,
-    )
-    # ── 仅恢复活跃知识块（superseded 的不应被重新索引） ──
-    chunks = [c for c in chunks if c.status.value == "active"]
+    all_chunks = chunk_store.list_all()
+    chunks = [c for c in all_chunks if c.status.value == "active"]
+    if limit is not None:
+        chunks = chunks[:limit]
     if not chunks:
         return 0
 
@@ -184,12 +181,10 @@ def startup_resources() -> None:
         minio_asset_store.ensure_buckets()
     if milvus_manager is not None:
         milvus_manager.ensure_collection()
-        try:
-            recovered = recover_pending_chunk_indexes()
-            if recovered:
-                logger.info("Recovered %d pending chunk indexes", recovered)
-        except Exception:
-            logger.exception("恢复未完成知识块索引失败")
+        # 启动时不再自动全量重建索引。
+        # Milvus 数据由 Docker 持久卷保障，不会因服务重启丢失。
+        # 如需手动恢复，调用 POST /api/v1/chunks/batch/reindex 或
+        # 管理接口 rebuild_retrieval_indexes_from_chunks()。
 
 
 def shutdown_resources() -> None:

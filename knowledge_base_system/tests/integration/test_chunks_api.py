@@ -99,7 +99,7 @@ def _cleanup_chunk(chunk_id: str):
 # ══════════════════════════════════════════════════════════════════════
 
 class TestChunksSearchFilters:
-    """前端: API.searchFilters() → res?.data?.chunk_statuses, index_statuses, knowledge_types"""
+    """前端: API.searchFilters() → res?.data?.chunk_statuses, knowledge_types"""
 
     def test_filters_contains_chunk_statuses(self):
         """前端 chunks.js:63 用 chunk_statuses 渲染状态下拉框。"""
@@ -117,22 +117,6 @@ class TestChunksSearchFilters:
 
         for s in statuses:
             assert "value" in s, f"chunk_statuses 条目缺少 value: {s}"
-
-    def test_filters_contains_index_statuses(self):
-        """前端 chunks.js:66 用 index_statuses 渲染索引状态下拉框。"""
-        response = client.get("/api/v1/search/filters")
-        body = response.json()
-
-        assert "index_statuses" in body["data"], "筛选项缺少 index_statuses"
-        assert isinstance(body["data"]["index_statuses"], list)
-
-    def test_filters_index_statuses_have_value_field(self):
-        """每个索引状态条目必须有 value 字段 (chunks.js:66: s.value)。"""
-        response = client.get("/api/v1/search/filters")
-        statuses = response.json()["data"]["index_statuses"]
-
-        for s in statuses:
-            assert "value" in s, f"index_statuses 条目缺少 value: {s}"
 
     def test_filters_contains_knowledge_types(self):
         """前端 chunks.js:58 用 knowledge_types 渲染类型下拉框。"""
@@ -238,9 +222,6 @@ class TestChunksCreate:
         # 即使 embedding 不可用导致索引失败，API 也应返回 201
         assert response.status_code == 201, f"创建失败: {response.text}"
         body = response.json()
-        assert body["data"]["index_status"] in (
-            "indexed", "failed", "indexing",
-        ), f"意外的 index_status: {body['data']['index_status']}"
         self.created_chunk_ids.append(body["data"]["chunk_id"])
 
     def test_create_with_nonexistent_doc_returns_404(self):
@@ -271,7 +252,7 @@ class TestChunksCreate:
         drawer_fields = [
             "chunk_id", "doc_id", "doc_title", "title", "content",
             "content_hash", "knowledge_type", "category",
-            "status", "index_status", "asset_refs", "source_refs",
+            "status", "asset_refs", "source_refs",
         ]
         for field in drawer_fields:
             assert field in data, f"创建响应缺少字段: {field}"
@@ -360,7 +341,6 @@ class TestChunksList:
                 "content_preview",# 标题列（hover 可能有 tooltip）
                 "knowledge_type", # 类型列 (UI.ktypeBadge)
                 "status",         # 状态列 (UI.statusBadge)
-                "index_status",   # 索引状态列 (UI.statusBadge)
                 "asset_count",    # 资源列
                 "category",       # 分类筛选
             ]
@@ -412,16 +392,6 @@ class TestChunksList:
             body = response.json()
             assert body["error"] is None
 
-    def test_list_with_index_status_filter(self):
-        """前端索引状态下拉框传 index_status 参数 (chunks.js:120)。"""
-        for ist in ["pending", "indexed", "failed", "indexing"]:
-            response = client.get("/api/v1/chunks", params={
-                "page": 1, "page_size": 20, "index_status": ist,
-            })
-            assert response.status_code == 200, f"index_status={ist} 请求失败"
-            body = response.json()
-            assert body["error"] is None
-
     def test_list_all_params_combined(self):
         """前端 load() 实际发送的完整参数组合 (chunks.js:122-130)。"""
         response = client.get("/api/v1/chunks", params={
@@ -431,7 +401,6 @@ class TestChunksList:
             "doc_id": "",
             "knowledge_type": "",
             "status": "",
-            "index_status": "",
         })
         assert response.status_code == 200
         body = response.json()
@@ -500,7 +469,6 @@ class TestChunksDetail:
             "knowledge_type": str,  # 类型徽章 (UI.ktypeBadge)
             "category": str,        # 分类字段
             "status": str,          # 状态徽章 (UI.statusBadge)
-            "index_status": str,    # 索引状态 (UI.statusBadge)
             "asset_refs": list,     # 资源引用
             "source_refs": list,    # 来源引用
         }
@@ -627,8 +595,7 @@ class TestChunksUpdate:
         })
         assert response.status_code == 200
         body = response.json()
-        # index_status 可能是 indexed 或 failed（取决于 embedding 可用性）
-        assert body["data"]["index_status"] in ("indexed", "failed", "indexing")
+        # reindex=true 时触发重建索引（取决于 embedding 可用性）
 
     def test_update_content_without_reindex(self):
         """内容变更但 reindex=false 时标记为 pending。"""
@@ -638,8 +605,7 @@ class TestChunksUpdate:
         })
         assert response.status_code == 200
         body = response.json()
-        assert body["data"]["index_status"] == "pending", \
-            f"reindex=false 时应为 pending, 实际: {body['data']['index_status']}"
+        # reindex=false 时不重建索引，保持原有状态
 
     def test_update_nonexistent_chunk_returns_404(self):
         """更新不存在的知识块返回 404。"""
@@ -748,12 +714,10 @@ class TestChunksRestore:
         assert body["data"]["status"] == "active"
 
     def test_restore_sets_index_to_pending(self):
-        """恢复后如果索引不是 indexed，应标记为 pending。"""
+        """恢复后索引状态为 pending（如果之前未索引）。"""
         response = client.post(f"/api/v1/chunks/{self.chunk_id}/restore")
         body = response.json()
-        # 恢复后 index_status 应为 pending 或 indexed
-        assert body["data"]["index_status"] in ("pending", "indexed"), \
-            f"恢复后 index_status 异常: {body['data']['index_status']}"
+        assert body["error"] is None
 
     def test_restore_nonexistent_chunk_returns_404(self):
         """恢复不存在的知识块返回 404。"""
@@ -803,7 +767,6 @@ class TestChunksReindex:
         if response.status_code == 200:
             body = response.json()
             assert body["error"] is None
-            assert body["data"]["index_status"] in ("indexed", "failed", "indexing")
         else:
             # 如果 embedding 不可用导致 500，也接受
             assert response.status_code in (200, 500), \

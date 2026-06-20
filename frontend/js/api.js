@@ -92,15 +92,17 @@ const API = (() => {
   /* =======================================================================
      API v1 — 健康检查（主版本）
      ======================================================================= */
-  async function healthLive()     { return get('/api/v1/health/live'); }
-  async function healthReady()    { return get('/api/v1/health/ready'); }
-  async function healthDependencies() { return get('/api/v1/health/dependencies'); }
+  async function healthLive() { return get('/api/v1/health/live'); }
+  async function health()     { return get('/api/v1/health'); }
 
   /* =======================================================================
      API v1 — 文档管理（主版本）
      ======================================================================= */
   async function listDocuments(params = {}) {
     return get('/api/v1/documents', { params });
+  }
+  async function listDocumentIds(params = {}) {
+    return get('/api/v1/documents/ids', { params });
   }
   async function createDocument(params) {
     return post('/api/v1/documents', null, { params });
@@ -120,8 +122,8 @@ const API = (() => {
   async function restoreDocument(docId) {
     return post(`/api/v1/documents/${docId}/restore`);
   }
-  async function ingestDocument(docId, mode = 'incremental') {
-    return post(`/api/v1/documents/${docId}/ingest`, null, { params: { mode } });
+  async function retryDocument(docId) {
+    return post(`/api/v1/documents/${docId}/retry`);
   }
   async function uploadDocument(file, title = '', category = '通用', options = {}) {
     const fd = new FormData();
@@ -130,23 +132,15 @@ const API = (() => {
     if (category) fd.append('category', category);
     const params = {
       ingest_after_create: options.ingestAfterCreate !== false,
-      mode: options.mode || 'incremental',
+      replace_doc_id: options.replaceDocId,
+      confirm_replace: options.confirmReplace,
     };
     return post('/api/v1/documents/upload', fd, { params, timeout: 120000 });
   }
-  async function listIngestJobs(params = {}) {
-    return get('/api/v1/ingest/jobs', { params });
-  }
-  async function getIngestJobV1(jobId) {
-    return get(`/api/v1/ingest/jobs/${jobId}`);
-  }
-  async function retryIngestJob(jobId) {
-    return post(`/api/v1/ingest/jobs/${jobId}/retry`);
-  }
-  async function cancelIngestJob(jobId) {
-    return post(`/api/v1/ingest/jobs/${jobId}/cancel`);
-  }
 
+  async function getDocumentHistory(docId) {
+    return get(`/api/v1/documents/${docId}/history`);
+  }
   /* =======================================================================
      API v1 — 知识块管理（主版本）
      ======================================================================= */
@@ -161,12 +155,6 @@ const API = (() => {
   }
   async function restoreChunk(chunkId) {
     return post(`/api/v1/chunks/${chunkId}/restore`);
-  }
-  async function reindexChunk(chunkId) {
-    return post(`/api/v1/chunks/${chunkId}/reindex`);
-  }
-  async function batchReindexChunks(chunkIds) {
-    return post('/api/v1/chunks/batch/reindex', { chunk_ids: chunkIds });
   }
   async function batchChunkOperation(action, chunkIds, status = null) {
     return post('/api/v1/chunks/batch', { action, chunk_ids: chunkIds, status });
@@ -188,15 +176,14 @@ const API = (() => {
      ======================================================================= */
   return {
     // ── v1 健康检查 ──
-    healthLive, healthReady, healthDependencies,
+    healthLive, health,
     // ── v1 文档 ──
-    listDocuments, createDocument, getDocument, listDocumentElements, updateDocument,
-    deleteDocument, restoreDocument, ingestDocument, uploadDocument,
-    listIngestJobs, getIngestJobV1, retryIngestJob, cancelIngestJob,
+    listDocuments, listDocumentIds, createDocument, getDocument, listDocumentElements, updateDocument,
+    deleteDocument, restoreDocument, retryDocument, uploadDocument, getDocumentHistory,
     // ── v1 知识块 ──
     listChunks, createChunk, getChunk, updateChunk,
-    deleteChunk, restoreChunk, reindexChunk,
-    batchReindexChunks, batchChunkOperation,
+    deleteChunk, restoreChunk,
+    batchChunkOperation,
     // ── v1 检索 ──
     search, searchDebug, searchFilters,
   };

@@ -13,9 +13,9 @@ class _FakeIngestionPipeline:
     def __init__(self) -> None:
         self.submitted = []
 
-    def submit(self, doc, raw_content="", options=None, is_update=False):
+    def ingest(self, doc, raw_content="", options=None):
         self.submitted.append((doc, options or {}))
-        return SimpleNamespace(job_id=doc.doc_id)
+        return doc
 
 
 class _FakeDocumentRepo:

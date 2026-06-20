@@ -2,7 +2,7 @@ import logging
 from collections.abc import Callable
 
 from app.core.config import settings
-from app.core.models import Document, ParsedElement
+from app.core.models import DocStatus, Document, ParsedElement
 from parsers.base import ParseResult
 
 logger = logging.getLogger(__name__)
@@ -75,14 +75,14 @@ class RecursiveLoader:
         if depth > self._max_depth:
             logger.warning("Max depth %d exceeded for %s", self._max_depth, doc.doc_id)
             doc.metadata["skipped_reason"] = "max_depth_exceeded"
-            doc.status = "failed"
+            doc.status = DocStatus.failed
             all_docs.append(doc)
             return
 
         pre_parse_hash = doc.source_hash
         if pre_parse_hash and pre_parse_hash in self._visited_hashes:
             doc.metadata["skipped_reason"] = "duplicated_document"
-            doc.status = "failed"
+            doc.status = DocStatus.failed
             all_docs.append(doc)
             return
 
@@ -99,7 +99,7 @@ class RecursiveLoader:
             and post_parse_hash != pre_parse_hash
         ):
             doc.metadata["skipped_reason"] = "duplicated_document"
-            doc.status = "failed"
+            doc.status = DocStatus.failed
             all_docs.append(doc)
             return
         if post_parse_hash:
@@ -135,7 +135,6 @@ class RecursiveLoader:
                     source_uri="",
                     parent_doc_id=doc.doc_id,
                     root_doc_id=doc.root_doc_id or doc.doc_id,
-                    ingest_job_id=doc.ingest_job_id,
                     metadata={
                         "embed_path": [doc.doc_id, el.embedded_doc_id],
                         "depth": depth + 1,

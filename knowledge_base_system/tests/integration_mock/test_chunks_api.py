@@ -21,9 +21,7 @@ from tests.integration.test_chunks_api import (
     TestChunksUpdate as _OrigUpdate,
     TestChunksDelete as _OrigDelete,
     TestChunksRestore as _OrigRestore,
-    TestChunksReindex as _OrigReindex,
     TestChunksBatch as _OrigBatch,
-    TestChunksBatchReindex as _OrigBatchReindex,
     TestChunksEndToEnd as _OrigEndToEnd,
 )
 
@@ -56,15 +54,7 @@ class TestChunksRestore(_OrigRestore):
     pass
 
 
-class TestChunksReindex(_OrigReindex):
-    pass
-
-
 class TestChunksBatch(_OrigBatch):
-    pass
-
-
-class TestChunksBatchReindex(_OrigBatchReindex):
     pass
 
 

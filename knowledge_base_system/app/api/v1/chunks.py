@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Query, status
@@ -21,15 +20,15 @@ from app.api.v1.schemas import (
     SearchParams,
     error_json,
 )
-from app.api.v1.services import reindex_chunk, reindex_chunks_batch, sync_index_metadata
+from app.api.v1.services import reindex_chunk, sync_index_metadata
 from app.core.deps import (
     bm25_index,
     chunk_store,
     document_repo,
+    ingestion_pipeline,
     vector_index,
 )
 from app.core.models import (
-    ChunkIndexStatus,
     ChunkStatus,
     KnowledgeChunk,
     KnowledgeType,
@@ -59,18 +58,13 @@ def _chunk_to_list_item(chunk: KnowledgeChunk) -> dict[str, Any]:
         "chunk_id": chunk.chunk_id,
         "doc_id": chunk.doc_id,
         "doc_title": _get_doc_title(chunk.doc_id),
-        "doc_version": chunk.doc_version,
         "title": chunk.title,
         "content_preview": preview,
         "knowledge_type": chunk.knowledge_type.value if hasattr(chunk.knowledge_type, "value") else chunk.knowledge_type,
         "category": chunk.category,
         "status": chunk.status.value if hasattr(chunk.status, "value") else chunk.status,
-        "index_status": chunk.index_status.value if hasattr(chunk.index_status, "value") else chunk.index_status,
-        "indexed_at": chunk.indexed_at.isoformat() if chunk.indexed_at else None,
-        "index_error": chunk.index_error,
         "asset_count": len(chunk.asset_refs) if chunk.asset_refs else 0,
         "source_count": len(chunk.source_refs) if chunk.source_refs else 0,
-        "ingest_job_id": chunk.ingest_job_id,
         "metadata": chunk.metadata if hasattr(chunk, "metadata") else {},
     }
 
@@ -81,19 +75,14 @@ def _chunk_to_detail(chunk: KnowledgeChunk) -> dict[str, Any]:
         "chunk_id": chunk.chunk_id,
         "doc_id": chunk.doc_id,
         "doc_title": _get_doc_title(chunk.doc_id),
-        "doc_version": chunk.doc_version,
         "title": chunk.title,
         "content": chunk.content,
         "content_hash": chunk.content_hash,
         "knowledge_type": chunk.knowledge_type.value if hasattr(chunk.knowledge_type, "value") else chunk.knowledge_type,
         "category": chunk.category,
         "status": chunk.status.value if hasattr(chunk.status, "value") else chunk.status,
-        "index_status": chunk.index_status.value if hasattr(chunk.index_status, "value") else chunk.index_status,
-        "indexed_at": chunk.indexed_at.isoformat() if chunk.indexed_at else None,
-        "index_error": chunk.index_error,
         "asset_refs": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in (chunk.asset_refs or [])],
         "source_refs": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in (chunk.source_refs or [])],
-        "ingest_job_id": chunk.ingest_job_id,
         "metadata": chunk.metadata if hasattr(chunk, "metadata") else {},
     }
 
@@ -112,12 +101,9 @@ async def list_chunks(
     pagination: PaginationParams = Depends(),
     search: SearchParams = Depends(),
     doc_id: str | None = Query(default=None),
-    doc_version: int | None = Query(default=None),
     category: str | None = Query(default=None),
     knowledge_type: str | None = Query(default=None),
     status: str | None = Query(default=None),
-    index_status: str | None = Query(default=None),
-    ingest_job_id: str | None = Query(default=None),
     has_assets: bool | None = Query(default=None),
     has_sources: bool | None = Query(default=None),
 ):
@@ -128,12 +114,9 @@ async def list_chunks(
             page_size=pagination.page_size,
             keyword=search.keyword,
             doc_id=doc_id,
-            doc_version=doc_version,
             category=category,
             knowledge_type=knowledge_type,
             status=status,
-            index_status=index_status,
-            ingest_job_id=ingest_job_id,
             has_assets=has_assets,
             has_sources=has_sources,
             sort_by=pagination.sort_by or "chunk_id",
@@ -164,9 +147,8 @@ async def create_chunk(
     knowledge_type: str = Query(default="declarative"),
     category: str = Query(default="通用"),
     metadata: str | None = Query(default=None),
-    index_after_create: bool = Query(default=False),
 ):
-    """创建人工知识块，计算 content_hash，可选创建后索引。"""
+    """创建人工知识块，计算 content_hash。"""
     # 校验文档存在性
     if document_repo is not None:
         doc = document_repo.get(doc_id)
@@ -203,23 +185,6 @@ async def create_chunk(
         except Exception:
             logger.exception("刷新知识块归属文档更新时间失败")
 
-    # 创建后索引
-    if index_after_create:
-        try:
-            chunk.index_status = ChunkIndexStatus.indexing
-            if hasattr(chunk_store, "put"):
-                chunk_store.put(chunk)
-            reindex_chunk(chunk, vector_index, bm25_index, embedding_client)
-            chunk.index_status = ChunkIndexStatus.indexed
-            if hasattr(chunk_store, "put"):
-                chunk_store.put(chunk)
-        except Exception as e:
-            logger.exception("知识块索引失败")
-            chunk.index_status = ChunkIndexStatus.failed
-            chunk.index_error = str(e)
-            if hasattr(chunk_store, "put"):
-                chunk_store.put(chunk)
-
     return APIResponse(data=_chunk_to_detail(chunk)).model_dump(mode="json")
 
 
@@ -227,7 +192,7 @@ async def create_chunk(
 
 @router.get("/{chunk_id}")
 async def get_chunk(chunk_id: str):
-    """获取知识块详情，含完整内容、来源引用、资源引用和索引状态。"""
+    """获取知识块详情，含完整内容、来源引用、资源引用。"""
     chunk = _resolve_chunk(chunk_id)
     if chunk is None:
         return error_json(
@@ -311,27 +276,8 @@ async def update_chunk(
         chunk_store.put(chunk)
 
     # 内容变化 → 重建索引
-    if content_changed:
-        if reindex:
-            try:
-                chunk.index_status = ChunkIndexStatus.indexing
-                if hasattr(chunk_store, "put"):
-                    chunk_store.put(chunk)
-                reindex_chunk(chunk, vector_index, bm25_index, embedding_client)
-                chunk.index_status = ChunkIndexStatus.indexed
-                if hasattr(chunk_store, "put"):
-                    chunk_store.put(chunk)
-            except Exception as e:
-                logger.exception("重建索引失败")
-                chunk.index_status = ChunkIndexStatus.failed
-                chunk.index_error = str(e)
-                if hasattr(chunk_store, "put"):
-                    chunk_store.put(chunk)
-        else:
-            # 内容变化但 skip reindex → 标为 pending
-            chunk.index_status = ChunkIndexStatus.pending
-            if hasattr(chunk_store, "put"):
-                chunk_store.put(chunk)
+    if content_changed and reindex:
+        reindex_chunk(chunk, vector_index, bm25_index, embedding_client)
 
     # 状态变化 → 同步索引元数据
     if status_changed and not content_changed:
@@ -365,7 +311,7 @@ async def delete_chunk(chunk_id: str):
 
 @router.post("/{chunk_id}/restore")
 async def restore_chunk(chunk_id: str):
-    """恢复软删除的知识块。如果索引缺失则标记为 pending。"""
+    """恢复软删除的知识块。"""
     chunk = _resolve_chunk(chunk_id)
     if chunk is None:
         return error_json(
@@ -376,86 +322,12 @@ async def restore_chunk(chunk_id: str):
 
     chunk.status = ChunkStatus.active
 
-    # 如果索引状态不是 indexed，标记为 pending
-    if hasattr(chunk.index_status, "value") and chunk.index_status.value != "indexed":
-        chunk.index_status = ChunkIndexStatus.pending
-    elif chunk.index_status not in (ChunkIndexStatus.indexed, ChunkIndexStatus.pending):
-        chunk.index_status = ChunkIndexStatus.pending
-
     if hasattr(chunk_store, "put"):
         chunk_store.put(chunk)
 
-    sync_index_metadata(chunk, vector_index, bm25_index)
+    ingestion_pipeline.index_existing_chunks([chunk])
 
     return APIResponse(data=_chunk_to_detail(chunk)).model_dump(mode="json")
-
-
-# ── 5.7 重建索引 ──────────────────────────────────────────────────
-
-@router.post("/batch/reindex")
-async def reindex_batch(body: dict[str, list[str]] = Body(...)):
-    """批量重建知识块索引。"""
-    from app.api.v1.services import reindex_chunks_batch
-
-    chunk_ids = body.get("chunk_ids", [])
-    chunks = []
-    for cid in chunk_ids:
-        chunk = _resolve_chunk(cid)
-        if chunk is not None:
-            chunks.append(chunk)
-
-    if not chunks:
-        return APIResponse(
-            data={"succeeded": [], "failed": []},
-            meta={"total_submitted": len(chunk_ids)},
-        ).model_dump(mode="json")
-
-    result = reindex_chunks_batch(
-        chunks, vector_index, bm25_index, embedding_client, chunk_store
-    )
-
-    return APIResponse(
-        data=result,
-        meta={"total_submitted": len(chunk_ids), "total_processed": len(chunks)},
-    ).model_dump(mode="json")
-
-
-@router.post("/{chunk_id}/reindex")
-async def reindex_single(chunk_id: str):
-    """重建单个知识块的向量索引和 BM25 索引。"""
-    chunk = _resolve_chunk(chunk_id)
-    if chunk is None:
-        return error_json(
-            ErrorCode.CHUNK_NOT_FOUND,
-            f"知识块 {chunk_id} 不存在",
-            status.HTTP_404_NOT_FOUND,
-        )
-
-    try:
-        chunk.index_status = ChunkIndexStatus.indexing
-        if hasattr(chunk_store, "put"):
-            chunk_store.put(chunk)
-
-        reindex_chunk(chunk, vector_index, bm25_index, embedding_client)
-
-        chunk.index_status = ChunkIndexStatus.indexed
-        chunk.indexed_at = datetime.now(timezone.utc)
-        chunk.index_error = None
-        if hasattr(chunk_store, "put"):
-            chunk_store.put(chunk)
-
-        return APIResponse(data=_chunk_to_detail(chunk)).model_dump(mode="json")
-    except Exception as e:
-        logger.exception("重建索引失败")
-        chunk.index_status = ChunkIndexStatus.failed
-        chunk.index_error = str(e)
-        if hasattr(chunk_store, "put"):
-            chunk_store.put(chunk)
-        return error_json(
-            ErrorCode.INTERNAL_ERROR,
-            f"重建索引失败: {e}",
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
 
 
 # ── 5.8 批量状态操作 ───────────────────────────────────────────────
@@ -488,9 +360,13 @@ async def batch_chunk_operation(body: dict[str, Any] = Body(...)):
                         chunk_store.put(chunk)
                     updated += 1
 
-        # 同步索引
-        vector_index.update_status_batch(chunk_ids, "deleted")
-        bm25_index.update_status_batch(chunk_ids, "deleted")
+        # 从索引中移除
+        for cid in chunk_ids:
+            try:
+                vector_index.delete(cid)
+                bm25_index.delete(cid)
+            except Exception:
+                pass
 
         return APIResponse(
             data={"action": action, "updated": updated},
@@ -510,8 +386,13 @@ async def batch_chunk_operation(body: dict[str, Any] = Body(...)):
                         chunk_store.put(chunk)
                     updated += 1
 
-        vector_index.update_status_batch(chunk_ids, "active")
-        bm25_index.update_status_batch(chunk_ids, "active")
+        # 重新索引恢复的知识块
+        try:
+            chunks_to_reindex = [c for c in (chunk_store.get_batch(chunk_ids) if hasattr(chunk_store, "get_batch") else []) if c]
+            if chunks_to_reindex:
+                ingestion_pipeline.index_existing_chunks(chunks_to_reindex)
+        except Exception:
+            pass
 
         return APIResponse(
             data={"action": action, "updated": updated},
@@ -541,8 +422,21 @@ async def batch_chunk_operation(body: dict[str, Any] = Body(...)):
                         chunk_store.put(chunk)
                     updated += 1
 
-        vector_index.update_status_batch(chunk_ids, new_status)
-        bm25_index.update_status_batch(chunk_ids, new_status)
+        # 同步索引：deleted → 移除，active → 重新索引
+        if new_status == "deleted":
+            for cid in chunk_ids:
+                try:
+                    vector_index.delete(cid)
+                    bm25_index.delete(cid)
+                except Exception:
+                    pass
+        elif new_status == "active":
+            try:
+                chunks_to_reindex = [c for c in (chunk_store.get_batch(chunk_ids) if hasattr(chunk_store, "get_batch") else []) if c]
+                if chunks_to_reindex:
+                    ingestion_pipeline.index_existing_chunks(chunks_to_reindex)
+            except Exception:
+                pass
 
         return APIResponse(
             data={"action": action, "new_status": new_status, "updated": updated},

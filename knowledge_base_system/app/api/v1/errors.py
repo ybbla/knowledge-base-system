@@ -14,7 +14,6 @@ from app.core.errors import (
     DocumentNotFoundError,
     DuplicateDocumentError,
     KnowledgeBaseError,
-    VersionConflictError,
 )
 
 
@@ -63,10 +62,6 @@ async def duplicate_document_handler(request: Request, exc: DuplicateDocumentErr
     return _build_response(409, ErrorCode.DOCUMENT_DUPLICATE, str(exc))
 
 
-async def version_conflict_handler(request: Request, exc: VersionConflictError) -> JSONResponse:
-    return _build_response(409, ErrorCode.DOCUMENT_VERSION_CONFLICT, str(exc))
-
-
 async def chunk_not_found_handler(request: Request, exc: ChunkNotFoundError) -> JSONResponse:
     return _build_response(404, ErrorCode.CHUNK_NOT_FOUND, str(exc))
 
@@ -81,7 +76,6 @@ async def knowledge_base_error_handler(request: Request, exc: KnowledgeBaseError
 EXCEPTION_HANDLERS = {
     DocumentNotFoundError: document_not_found_handler,
     DuplicateDocumentError: duplicate_document_handler,
-    VersionConflictError: version_conflict_handler,
     ChunkNotFoundError: chunk_not_found_handler,
     KnowledgeBaseError: knowledge_base_error_handler,
 }

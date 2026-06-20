@@ -1,5 +1,4 @@
 import io
-import time
 
 from pptx import Presentation
 from pptx.util import Inches
@@ -25,7 +24,7 @@ class _FakeExtractor:
     def __init__(self) -> None:
         self.seen_elements = []
 
-    def extract(self, elements, assets, ingest_job_id, category):
+    def extract(self, elements, assets, doc_id, category):
         self.seen_elements = list(elements)
         source = elements[0]
         return [
@@ -35,7 +34,6 @@ class _FakeExtractor:
                 title="PPTX 演示文稿",
                 content="PPTX 文档解析后进入语义抽取流程。",
                 category=category,
-                ingest_job_id=ingest_job_id,
             )
         ]
 
@@ -60,14 +58,9 @@ class _RecordingIndex:
 class _RecordingChunkStore:
     def __init__(self) -> None:
         self.chunks = {}
-        self.index_statuses = {}
 
     def put(self, chunk):
         self.chunks[chunk.chunk_id] = chunk
-
-    def update_index_status(self, chunk_ids, status, error=None):
-        for chunk_id in chunk_ids:
-            self.index_statuses[chunk_id] = status
 
 
 class _RecordingAssetStore:
@@ -119,17 +112,9 @@ def test_ingestion_pipeline_dispatches_pptx_parser(monkeypatch):
         category="验收",
         metadata={"raw_content": _pptx_bytes()},
     )
-    doc.ingest_job_id = doc.doc_id
+    doc = pipeline.ingest(doc)
 
-    job = pipeline.submit(doc)
-    for _ in range(50):
-        if job.status in {"completed", "failed"}:
-            break
-        time.sleep(0.02)
-
-    assert job.status == "completed", job.error
-    assert job.doc_ids == [doc.doc_id]
-    assert job.chunk_count == 1
+    assert doc.status.value == "active", doc.error_message
     assert [el.element_type for el in extractor.seen_elements] == [
         ElementType.title,
         ElementType.paragraph,
@@ -159,13 +144,7 @@ def test_ingestion_pipeline_marks_invalid_pptx_failed(monkeypatch):
         source_uri="memory://bad.pptx",
         metadata={"raw_content": b"not a pptx"},
     )
-    doc.ingest_job_id = doc.doc_id
+    doc = pipeline.ingest(doc)
 
-    job = pipeline.submit(doc)
-    for _ in range(50):
-        if job.status in {"completed", "failed"}:
-            break
-        time.sleep(0.02)
-
-    assert job.status == "failed"
-    assert "PPTX 解析失败" in job.error
+    assert doc.status.value == "failed"
+    assert "PPTX 解析失败" in doc.error_message

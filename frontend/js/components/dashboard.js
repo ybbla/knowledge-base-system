@@ -23,19 +23,12 @@ const Dashboard = (() => {
     // 使用 v1 健康检查和依赖状态
     let healthOk = false;
     let depStatuses = {};
-    let activeJobCount = 0;
-    let failedJobCount = 0;
     let failedDocCount = 0;
-    let failedIndexChunkCount = 0;
-    let pendingIndexChunkCount = 0;
 
     try {
-      const [readyRes, depsRes] = await Promise.all([
-        API.healthReady(),
-        API.healthDependencies(),
-      ]);
-      healthOk = readyRes?.data?.status === 'ok';
-      depStatuses = depsRes?.data?.dependencies || {};
+      const res = await API.health();
+      healthOk = res?.data?.status === 'ok';
+      depStatuses = res?.data?.dependencies || {};
     } catch (e) { /* offline */ }
 
     // 获取文档统计
@@ -52,25 +45,17 @@ const Dashboard = (() => {
     } catch (e) { /* ignore */ }
 
     try {
-      const [acceptedRes, pendingRes, processingRes, failedRes] = await Promise.all([
-        API.listIngestJobs({ page: 1, page_size: 1, status: 'accepted' }),
-        API.listIngestJobs({ page: 1, page_size: 1, status: 'pending' }),
-        API.listIngestJobs({ page: 1, page_size: 1, status: 'processing' }),
-        API.listIngestJobs({ page: 1, page_size: 1, status: 'failed' }),
-      ]);
-      activeJobCount = (acceptedRes?.meta?.total || 0) + (pendingRes?.meta?.total || 0) + (processingRes?.meta?.total || 0);
-      failedJobCount = failedRes?.meta?.total || 0;
-    } catch (e) { /* ignore */ }
-
-    try {
-      const [failedDocsRes, failedIndexRes, pendingIndexRes] = await Promise.all([
+      const [failedDocsRes] = await Promise.all([
         API.listDocuments({ page: 1, page_size: 1, status: 'failed' }),
-        API.listChunks({ page: 1, page_size: 1, index_status: 'failed' }),
-        API.listChunks({ page: 1, page_size: 1, index_status: 'pending' }),
       ]);
       failedDocCount = failedDocsRes?.meta?.total || 0;
-      failedIndexChunkCount = failedIndexRes?.meta?.total || 0;
-      pendingIndexChunkCount = pendingIndexRes?.meta?.total || 0;
+    } catch (e) { /* ignore */ }
+
+    // 获取处理中文档统计
+    let processingDocCount = 0;
+    try {
+      const processingRes = await API.listDocuments({ page: 1, page_size: 1, status: 'processing' });
+      processingDocCount = processingRes?.meta?.total || 0;
     } catch (e) { /* ignore */ }
 
     // 只显示外部服务
@@ -92,19 +77,17 @@ const Dashboard = (() => {
           <div class="stat-icon">▦</div>
           <div class="stat-label">文档总数</div>
           <div class="stat-value">${UI.formatNumber(docCount)}</div>
-          <div class="stat-detail"><span>支持 7 种格式</span></div>
         </div>
         <div class="stat-card">
           <div class="stat-icon">⊞</div>
-          <div class="stat-label">知识块</div>
+          <div class="stat-label">知识块总数</div>
           <div class="stat-value">${UI.formatNumber(chunkCount)}</div>
-          <div class="stat-detail"><span>语义抽取 + 向量索引</span></div>
         </div>
         <div class="stat-card">
           <div class="stat-icon">⌕</div>
-          <div class="stat-label">进行中任务</div>
-          <div class="stat-value stat-value-sm">${activeJobCount}</div>
-          <div class="stat-detail"><span>${failedJobCount ? `${failedJobCount} 个失败任务待处理` : '暂无失败任务'}</span></div>
+          <div class="stat-label">处理中的文档数</div>
+          <div class="stat-value stat-value-sm">${processingDocCount}</div>
+          <div class="stat-detail"><span>${failedDocCount ? `${failedDocCount} 个失败文档待处理` : '暂无失败文档'}</span></div>
         </div>
       </div>
 
@@ -115,26 +98,32 @@ const Dashboard = (() => {
               <h3 class="card-title">系统状态</h3>
               <p class="card-subtitle">外部服务连接状态</p>
             </div>
-            <span class="badge badge-${healthOk ? 'success' : 'error'}">${healthOk ? '在线' : '异常'}</span>
+            <span class="badge badge-${healthOk ? 'success' : 'error'}">${healthOk ? '正常' : '异常'}</span>
           </div>
           <div class="status-panel">
-            <div class="status-item">
-              <span class="status-item-label">API 服务</span>
-              <span class="status-item-value ${healthOk ? 'is-ok' : 'is-error'}">
-                ${healthOk ? '在线' : '离线'}
-              </span>
+            <div class="status-section">
+              <div class="status-item status-item-main">
+                <span class="status-item-label">API 服务</span>
+                <span class="status-item-value ${healthOk ? 'is-ok' : 'is-error'}">
+                  ${healthOk ? '在线' : '离线'}
+                </span>
+              </div>
             </div>
 
             ${externalDeps.length ? `
-              <div class="status-group-header">外部服务</div>
-              ${externalDeps.map(dep => `
-                <div class="status-item">
-                  <span class="status-item-label">${dep.name}</span>
-                  <span class="status-item-value ${_getStatusClass(dep.status)}">
-                    ${_formatStatus(dep.status)}
-                  </span>
+              <div class="status-section">
+                <div class="status-group-header">外部服务</div>
+                <div class="status-grid">
+                  ${externalDeps.map(dep => `
+                    <div class="status-item">
+                      <span class="status-item-label">${dep.name}</span>
+                      <span class="status-item-value ${_getStatusClass(dep.status)}">
+                        ${_formatStatus(dep.status)}
+                      </span>
+                    </div>
+                  `).join('')}
                 </div>
-              `).join('')}
+              </div>
             ` : ''}
           </div>
         </div>
@@ -158,21 +147,13 @@ const Dashboard = (() => {
           </div>
         </div>
         <div class="action-list">
-          <button class="action-row" onclick="App.router.navigate('/ingestion')">
-            <span>失败入库任务</span>
-            <strong>${failedJobCount}</strong>
-          </button>
           <button class="action-row" onclick="App.router.navigate('/documents')">
             <span>失败文档</span>
             <strong>${failedDocCount}</strong>
           </button>
-          <button class="action-row" onclick="App.router.navigate('/chunks')">
-            <span>索引失败知识块</span>
-            <strong>${failedIndexChunkCount}</strong>
-          </button>
-          <button class="action-row" onclick="App.router.navigate('/chunks')">
-            <span>待索引知识块</span>
-            <strong>${pendingIndexChunkCount}</strong>
+          <button class="action-row" onclick="App.router.navigate('/documents')">
+            <span>处理中文档</span>
+            <strong>${processingDocCount}</strong>
           </button>
         </div>
       </div>

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from app.core.models import ChunkIndexStatus, KnowledgeChunk
+from app.core.models import KnowledgeChunk
 
 if TYPE_CHECKING:
     from app.db.repositories.chunks import PgChunkStore
@@ -51,7 +51,10 @@ def sync_index_metadata_batch(
     vector_index: "VectorIndex",
     bm25_index: "BM25Index",
 ) -> int:
-    """批量同步知识块元数据到检索索引。
+    """批量同步知识块状态到检索索引。
+
+    对 deleted 状态的 chunk 执行索引删除，其他状态暂不处理
+    （索引元数据在创建/恢复时已正确设置）。
 
     返回:
         同步的知识块数量
@@ -59,44 +62,34 @@ def sync_index_metadata_batch(
     if not chunks:
         return 0
 
-    # 批量更新索引中的 status 字段
     chunk_ids = [c.chunk_id for c in chunks]
     status_value = chunks[0].status.value if hasattr(chunks[0].status, "value") else str(chunks[0].status)
 
-    vector_index.update_status_batch(chunk_ids, status_value)
-    bm25_index.update_status_batch(chunk_ids, status_value)
+    if status_value == "deleted":
+        for cid in chunk_ids:
+            try:
+                vector_index.delete(cid)
+                bm25_index.delete(cid)
+            except Exception:
+                pass
 
     return len(chunks)
 
 
 def _sync_vector_metadata(chunk_id: str, metadata: dict, vector_index: "VectorIndex") -> None:
-    """在向量索引中更新 chunk 的元数据。"""
-    # 内存索引：直接更新 _metadata 字典
+    """在内存向量索引中更新 chunk 的元数据（Milvus 索引暂不支持原地更新）。"""
     if hasattr(vector_index, "_metadata") and isinstance(getattr(vector_index, "_metadata"), dict):
         meta_dict = getattr(vector_index, "_metadata")
         if chunk_id in meta_dict:
             meta_dict[chunk_id].update(metadata)
-            return
-
-    # Milvus 索引：使用 update_status_batch
-    status = metadata.get("status", "active")
-    if hasattr(vector_index, "update_status_batch"):
-        vector_index.update_status_batch([chunk_id], status)
 
 
 def _sync_bm25_metadata(chunk_id: str, metadata: dict, bm25_index: "BM25Index") -> None:
-    """在 BM25 索引中更新 chunk 的元数据。"""
-    # 内存索引
+    """在内存 BM25 索引中更新 chunk 的元数据（Milvus 索引暂不支持原地更新）。"""
     if hasattr(bm25_index, "_metadata") and isinstance(getattr(bm25_index, "_metadata"), dict):
         meta_dict = getattr(bm25_index, "_metadata")
         if chunk_id in meta_dict:
             meta_dict[chunk_id].update(metadata)
-            return
-
-    # Milvus 索引
-    status = metadata.get("status", "active")
-    if hasattr(bm25_index, "update_status_batch"):
-        bm25_index.update_status_batch([chunk_id], status)
 
 
 # ── 2.6 知识块重建索引服务 ─────────────────────────────────────
@@ -183,31 +176,11 @@ def reindex_chunks_batch(
 
     for chunk in chunks:
         try:
-            # 更新状态为 indexing
-            if chunk_store is not None and hasattr(chunk_store, "update_index_status"):
-                chunk_store.update_index_status(
-                    [chunk.chunk_id],
-                    ChunkIndexStatus.indexing,
-                )
-
             reindex_chunk(chunk, vector_index, bm25_index, embedding_client)
-
-            # 更新状态为 indexed
-            if chunk_store is not None and hasattr(chunk_store, "update_index_status"):
-                chunk_store.update_index_status(
-                    [chunk.chunk_id],
-                    ChunkIndexStatus.indexed,
-                )
 
             succeeded.append(chunk.chunk_id)
         except Exception as exc:
             logger.exception("知识块 %s 重建索引失败", chunk.chunk_id)
-            if chunk_store is not None and hasattr(chunk_store, "update_index_status"):
-                chunk_store.update_index_status(
-                    [chunk.chunk_id],
-                    ChunkIndexStatus.failed,
-                    error=str(exc),
-                )
             failed.append(chunk.chunk_id)
 
     return {"succeeded": succeeded, "failed": failed}

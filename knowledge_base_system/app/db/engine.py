@@ -39,6 +39,7 @@ def ensure_runtime_schema() -> None:
     dialect = engine.dialect.name
     indexed_at_type = "TIMESTAMP WITH TIME ZONE" if dialect == "postgresql" else "DATETIME"
     ddl_by_column = {
+        # 以下列已废弃 — 仅用于向后兼容的 DDL，代码层不再读写
         "index_status": "ALTER TABLE knowledge_chunks ADD COLUMN index_status VARCHAR(32) DEFAULT 'pending'",
         "indexed_at": f"ALTER TABLE knowledge_chunks ADD COLUMN indexed_at {indexed_at_type}",
         "index_error": "ALTER TABLE knowledge_chunks ADD COLUMN index_error TEXT",

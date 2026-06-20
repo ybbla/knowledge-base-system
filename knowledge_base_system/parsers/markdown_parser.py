@@ -234,7 +234,7 @@ class MarkdownParser(DocumentParser):
             asset_type=asset_type,
             original_uri=src,
             mime_type=self._guess_mime(src),
-            status=AssetStatus.pending,
+            status=AssetStatus.ready,
             metadata={"alt": alt},
         )
 
@@ -261,7 +261,7 @@ class MarkdownParser(DocumentParser):
                 original_uri=src,
                 storage_uri=None,
                 mime_type=self._guess_mime(src),
-                status=AssetStatus.pending,
+                status=AssetStatus.ready,
                 extracted_text=None,
                 metadata={"alt": label},
             )

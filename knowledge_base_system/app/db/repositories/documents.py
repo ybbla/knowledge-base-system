@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from app.core.errors import DocumentNotFoundError, DuplicateDocumentError, VersionConflictError
+from app.core.errors import DocumentNotFoundError, DuplicateDocumentError
 from app.core.models import Document
 from app.db.models import DbDocument
 from app.db.repositories.base import BaseRepository
@@ -26,7 +26,8 @@ class DocumentRepository(BaseRepository):
             category=doc.category,
             parent_doc_id=doc.parent_doc_id,
             root_doc_id=doc.root_doc_id,
-            ingest_job_id=doc.ingest_job_id,
+            previous_doc_id=doc.previous_doc_id,
+            error_message=doc.error_message,
             created_at=doc.created_at,
             updated_at=doc.updated_at,
             meta=doc.metadata,
@@ -44,16 +45,17 @@ class DocumentRepository(BaseRepository):
             category=db_doc.category,
             parent_doc_id=db_doc.parent_doc_id,
             root_doc_id=db_doc.root_doc_id,
-            ingest_job_id=db_doc.ingest_job_id,
+            previous_doc_id=db_doc.previous_doc_id,
+            error_message=db_doc.error_message,
             created_at=db_doc.created_at,
             updated_at=db_doc.updated_at,
             metadata=db_doc.meta or {},
         )
 
     def find_by_hash(self, source_hash: str) -> Document | None:
-        """按 source_hash 查找非删除文档，用于去重检查。
+        """按 source_hash 查找活跃或处理中文档，用于去重检查。
 
-        排除 status='deleted' 的文档，active/pending/processing/failed 均视为冲突。
+        只对 active 和 processing 判重，failed/deleted 不阻止重新上传。
         """
         if not source_hash:
             return None
@@ -61,7 +63,7 @@ class DocumentRepository(BaseRepository):
             db_doc = (
                 session.query(DbDocument)
                 .filter(DbDocument.source_hash == source_hash)
-                .filter(DbDocument.status != "deleted")
+                .filter(DbDocument.status.in_(["active", "processing"]))
                 .first()
             )
             if db_doc is None:
@@ -103,32 +105,23 @@ class DocumentRepository(BaseRepository):
             return self._from_db(db_doc)
 
     def update(self, doc: Document) -> Document:
-        """更新文档，使用乐观锁防止并发覆盖。
-
-        只在 version 匹配时才执行更新并递增 version，
-        影响行数为 0 则抛出 VersionConflictError。
-        """
-        expected_version = doc.version
+        """更新文档字段。"""
         doc.updated_at = datetime.now(timezone.utc)
         with self._session() as session:
             db_doc = session.get(DbDocument, doc.doc_id)
             if db_doc is None:
                 raise DocumentNotFoundError(f"Document {doc.doc_id} not found")
-            if db_doc.version != expected_version:
-                raise VersionConflictError(
-                    f"Document {doc.doc_id} version mismatch: "
-                    f"expected {expected_version}, got {db_doc.version}"
-                )
             db_doc.title = doc.title
             db_doc.source_type = doc.source_type
             db_doc.source_uri = doc.source_uri
             db_doc.source_hash = doc.source_hash
-            db_doc.version = doc.version + 1
+            db_doc.version = doc.version
             db_doc.status = doc.status.value
             db_doc.category = doc.category
             db_doc.parent_doc_id = doc.parent_doc_id
             db_doc.root_doc_id = doc.root_doc_id
-            db_doc.ingest_job_id = doc.ingest_job_id
+            db_doc.previous_doc_id = doc.previous_doc_id
+            db_doc.error_message = doc.error_message
             db_doc.updated_at = doc.updated_at
             db_doc.meta = doc.metadata
             session.commit()
@@ -151,7 +144,6 @@ class DocumentRepository(BaseRepository):
         *,
         category: str | None = None,
         status: str | None = None,
-        ingest_job_id: str | None = None,
         root_doc_id: str | None = None,
     ) -> list[Document]:
         with self._session() as session:
@@ -160,8 +152,6 @@ class DocumentRepository(BaseRepository):
                 query = query.filter_by(category=category)
             if status is not None:
                 query = query.filter_by(status=status)
-            if ingest_job_id is not None:
-                query = query.filter_by(ingest_job_id=ingest_job_id)
             if root_doc_id is not None:
                 query = query.filter_by(root_doc_id=root_doc_id)
             return [self._from_db(db_doc) for db_doc in query.all()]
@@ -179,7 +169,6 @@ class DocumentRepository(BaseRepository):
         category: str | None = None,
         parent_doc_id: str | None = None,
         root_doc_id: str | None = None,
-        ingest_job_id: str | None = None,
         sort_by: str = "updated_at",
         sort_order: str = "desc",
     ) -> tuple[list[Document], int]:
@@ -213,8 +202,6 @@ class DocumentRepository(BaseRepository):
                 query = query.filter_by(parent_doc_id=parent_doc_id)
             if root_doc_id is not None:
                 query = query.filter_by(root_doc_id=root_doc_id)
-            if ingest_job_id is not None:
-                query = query.filter_by(ingest_job_id=ingest_job_id)
 
             # ── 总数 ──
             total = query.count()
@@ -311,3 +298,58 @@ class DocumentRepository(BaseRepository):
             )
 
         return stats
+
+    def find_similar_by_filename(self, filename: str) -> list[Document]:
+        """查找同名的活跃文档。
+
+        从 source_uri 中提取文件名进行匹配，返回状态为 active 的文档。
+        """
+        if not filename:
+            return []
+
+        from pathlib import Path
+        target_name = Path(filename).name.lower()
+
+        with self._session() as session:
+            # 查询所有活跃文档，在内存中匹配文件名
+            db_docs = (
+                session.query(DbDocument)
+                .filter(DbDocument.status == "active")
+                .all()
+            )
+
+            matched = []
+            for db_doc in db_docs:
+                # 从 source_uri 中提取文件名
+                doc_name = Path(db_doc.source_uri).name.lower()
+                if doc_name == target_name:
+                    matched.append(self._from_db(db_doc))
+
+            return matched
+
+    def get_version_history(self, doc_id: str) -> list[Document]:
+        """获取文档的版本历史。
+
+        通过 previous_doc_id 向前追溯，返回按时间倒序排列的版本列表。
+        """
+        # 首先获取当前文档
+        current = self.get(doc_id)
+        if not current:
+            raise DocumentNotFoundError(f"文档 {doc_id} 不存在")
+
+        history = [current]
+        visited = {doc_id}
+
+        # 向前追溯历史版本
+        next_doc_id = current.previous_doc_id
+        while next_doc_id and next_doc_id not in visited:
+            prev_doc = self.get(next_doc_id)
+            if not prev_doc:
+                break
+            history.append(prev_doc)
+            visited.add(next_doc_id)
+            next_doc_id = prev_doc.previous_doc_id
+
+        # 按时间倒序排列（最新的在前）
+        history.sort(key=lambda d: d.created_at, reverse=True)
+        return history

@@ -2,33 +2,25 @@
 
 ## Purpose
 
-将向量索引和 BM25 索引从进程内存迁移至可选的 Milvus 后端，实现索引数据持久化。Milvus Collection 同时存储 dense vector（火山 Embedding 1024d）和 sparse vector（jieba + TF-IDF 编码），通过 Hybrid Search API 完成双路融合检索。Collection 包含 `status` 字段用于知识块生命周期管理，检索自动过滤非 `active` 块。
+将向量索引和 BM25 索引从进程内存迁移至可选的 Milvus 后端，实现索引数据持久化。Milvus Collection 同时存储 dense vector（火山 Embedding 1024d）和 sparse vector（jieba + TF-IDF 编码），通过 Hybrid Search API 完成双路融合检索。Collection 包含 `status` 字段用于知识块生命周期管理，检索自动过滤非 `active` 块。ChunkIndexStatus 已移除，索引状态由知识块在 Milvus 中的存在性隐式表达。
 
-> 新建自 change `phase-3-milvus-minio`，日期 2026-06-12；更新自 change `document-dedup-incremental-update`，日期 2026-06-15。
+> 新建自 change `phase-3-milvus-minio`，日期 2026-06-12；更新自 change `document-dedup-incremental-update`，日期 2026-06-15；更新自 change `simplify-status-model`，日期 2026-06-19。
 
 ## Requirements
 
 ### Requirement: Milvus Collection 自动创建与管理
 
-系统 SHALL 在首次启动时自动创建 Milvus Collection，schema 包含 `chunk_id`（VarChar 主键）、`doc_id`（VarChar）、`content`（VarChar）、`dense_vector`（FloatVector 1024d）、`sparse_vector`（SparseFloatVector）、`category`（VarChar）、`knowledge_type`（VarChar）、`status`（VarChar，默认 `"active"`，用于过滤已淘汰知识块）、`title_path`（JSON 字符串 VARCHAR）、`source_refs`（JSON 字符串 VARCHAR）、`asset_refs`（JSON 字符串 VARCHAR）、`metadata`（JSON 字符串 VARCHAR）、`created_at`（Int64）等字段。
+系统 SHALL 在首次启动时自动创建 Milvus Collection，schema 包含 `chunk_id`（VarChar 主键）、`doc_id`（VarChar）、`content`（VarChar）、`dense_vector`（FloatVector 1024d）、`sparse_vector`（SparseFloatVector）、`category`（VarChar）、`knowledge_type`（VarChar）、`status`（VarChar，默认 `"active"`，用于过滤已淘汰知识块）、`title_path`（JSON 字符串 VARCHAR）、`source_refs`（JSON 字符串 VARCHAR）、`asset_refs`（JSON 字符串 VARCHAR）、`metadata`（JSON 字符串 VARCHAR）、`created_at`（Int64）等字段。Collection schema SHALL NOT 包含 `index_status` 字段。
 
 #### Scenario: 首次启动自动建 Collection
-
 - **WHEN** Milvus 连接可用且目标 Collection 不存在
 - **THEN** 系统按预定义 schema 创建 Collection，为 `dense_vector` 创建 IVF_FLAT 索引（nlist 可配置，默认 128），为 `sparse_vector` 创建 SPARSE_INVERTED_INDEX
 
-#### Scenario: Collection 已存在但缺少 status 字段时自动重建
-
-- **WHEN** Milvus 连接可用且目标 Collection 已存在，但 schema 中缺少 `status` 字段
-- **THEN** 系统记录 WARNING 日志，删除旧 Collection 并重建（开发阶段策略，满足 Milvus 不支持 ALTER TABLE 的限制）
-
 #### Scenario: Collection 已存在且 schema 完整时跳过创建
-
 - **WHEN** Milvus 连接可用且目标 Collection 已存在且包含 `status` 字段
 - **THEN** 系统加载已有 Collection 到内存，不修改 schema
 
 #### Scenario: Milvus 不可用时回退
-
 - **WHEN** `MILVUS_ENABLED=true` 但 Milvus 连接失败
 - **THEN** 系统记录 ERROR 日志，回退到内存索引实现（MemoryVectorIndex / MemoryBM25Index）
 
@@ -37,17 +29,14 @@
 系统 SHALL 将火山 Embedding 模型生成的 1024 维浮点向量存入 Milvus `dense_vector` 字段，支持按相似度检索和按 `category` 过滤。
 
 #### Scenario: 添加 dense 向量到 Milvus
-
 - **WHEN** 为知识块生成嵌入向量后
 - **THEN** 向量和元数据（chunk_id、doc_id、content、category、knowledge_type、title_path、source_refs、asset_refs、metadata）同时写入 Milvus Collection
 
 #### Scenario: Dense 向量相似度检索
-
 - **WHEN** 以 `top_k=50` 提交查询嵌入到 `MilvusVectorIndex.search()`
 - **THEN** 返回按 IP 距离或余弦相似度排序的前 50 个 chunk_id 及分数
 
 #### Scenario: 按 category 过滤 dense 检索
-
 - **WHEN** 提交查询时附带 `category` 过滤条件
 - **THEN** Milvus 查询中携带 `category == "value"` 的 filter expression，仅返回匹配结果
 
@@ -56,17 +45,14 @@
 系统 SHALL 使用 jieba 对 `content` 分词后生成 TF-IDF 稀疏向量，存入 Milvus `sparse_vector` 字段，支持关键词检索。
 
 #### Scenario: 添加 BM25 稀疏向量到 Milvus
-
 - **WHEN** 创建了一个 KnowledgeChunk
 - **THEN** 系统用 jieba 对 `content` 分词，计算 TF-IDF 权重，生成 `{token_id: weight}` 稀疏向量写入 Milvus
 
 #### Scenario: BM25 关键词检索
-
 - **WHEN** 以 `top_k=50` 对查询文本分词后生成稀疏向量提交到 `MilvusSparseIndex.search()`
 - **THEN** 返回按 IP 距离排序的前 50 个 chunk_id 及分数
 
 #### Scenario: 全局 IDF 持久化
-
 - **WHEN** 新知识块入库更新 IDF 值
 - **THEN** 更新后的 IDF 字典持久化到 PostgreSQL `idf_stats` 表或 Milvus 单独 collection，重启后无需重新计算
 
@@ -75,50 +61,38 @@
 系统 SHALL 使用 Milvus `hybrid_search()` API 同时查询 dense 和 sparse 向量，使用 `RRFRanker`（默认 k=60）融合两路分数，返回单一排序结果。
 
 #### Scenario: Hybrid Search 正常路径
-
 - **WHEN** 检索请求进入且 Milvus 可用
 - **THEN** 系统调用 `hybrid_search(dense_req + sparse_req, RRFRanker(k))` 获取融合后的 top_k 结果
 
 #### Scenario: Hybrid Search 返回分数明细
-
 - **WHEN** Hybrid Search 返回结果
 - **THEN** 每个结果的 `score_components` 包含 `vector`（dense 分数）和 `bm25`（sparse 分数），`score` 为融合或重排后的最终分数
 
 #### Scenario: Hybrid Search 不可用时 fallback
-
 - **WHEN** Milvus Hybrid Search 失败或不可用
 - **THEN** 系统分别调用 `search(dense)` 和 `search(sparse)`，在应用层执行 RRF 融合
 
 ### Requirement: Milvus 索引 CRUD 操作
 
-系统 SHALL 支持向 Milvus 索引添加、删除和更新知识块索引实体。
+系统 SHALL 支持向 Milvus 索引添加和删除知识块索引实体。
 
 #### Scenario: 删除知识块索引
-
-- **WHEN** 一个 chunk 被标记为 deleted 或 superseded
+- **WHEN** 一个 chunk 被标记为 `deleted`
 - **THEN** 其在 Milvus Collection 中的对应 entity 被删除
 
 #### Scenario: 更新知识块元数据
-
 - **WHEN** 知识块的 category 或 metadata 发生变更
 - **THEN** 系统 upsert Milvus entity，更新对应字段
-
-#### Scenario: 批量更新知识块状态
-
-- **WHEN** 文档更新后旧知识块需要批量淘汰
-- **THEN** 系统通过 `update_status_batch(chunk_ids, "superseded")` 查询现有 entity 并 upsert 修改 `status` 字段，保留向量和元数据不变
 
 ### Requirement: Milvus 索引实现适配抽象接口
 
 系统 SHALL 实现 `MilvusVectorIndex(VectorIndex)` 和 `MilvusSparseIndex(BM25Index)` 类，匹配已有接口契约，使 `RetrievalPipeline` 和 `IngestionPipeline` 无需了解具体索引后端。
 
 #### Scenario: MilvusVectorIndex 满足 VectorIndex 接口
-
 - **WHEN** 实例化 `MilvusVectorIndex`
 - **THEN** 其 `add()`、`delete()`、`search()` 方法签名与 `VectorIndex` ABC 完全一致
 
 #### Scenario: MilvusSparseIndex 满足 BM25Index 接口
-
 - **WHEN** 实例化 `MilvusSparseIndex`
 - **THEN** 其 `add()`、`delete()`、`search()` 方法签名与 `BM25Index` ABC 完全一致
 

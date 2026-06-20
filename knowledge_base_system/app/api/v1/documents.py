@@ -15,7 +15,6 @@ from fastapi import status as http_status
 
 from app.api import upload as upload_api
 from app.api.v1.errors import ErrorCode
-from app.api.v1.ingest import job_to_dict
 from app.api.v1.schemas import (
     APIResponse,
     PaginatedResponse,
@@ -37,7 +36,6 @@ from app.core.deps import (
 from app.core.errors import (
     DocumentNotFoundError,
     DuplicateDocumentError,
-    VersionConflictError,
 )
 from app.core.models import DocStatus, Document, compute_hash, new_id
 
@@ -48,19 +46,14 @@ logger = logging.getLogger(__name__)
 # ── 辅助函数 ──────────────────────────────────────────────────────
 
 def _build_index_summary(doc_id: str) -> dict[str, int]:
-    """构建文档的索引摘要（chunk 按 index_status 的分布）。"""
-    if not hasattr(chunk_store, "list_paginated"):
-        return {"indexed": 0, "pending": 0, "failed": 0}
-    try:
-        summary = {"indexed": 0, "pending": 0, "failed": 0, "indexing": 0}
-        for idx_status in ["indexed", "pending", "failed", "indexing"]:
-            chunks, count = chunk_store.list_paginated(
-                doc_id=doc_id, index_status=idx_status, page_size=1
-            )
-            summary[idx_status] = count
-        return summary
-    except Exception:
-        return {"indexed": 0, "pending": 0, "failed": 0}
+    """构建文档的知识块统计摘要。"""
+    if hasattr(chunk_store, "count_by_doc_id"):
+        try:
+            total = chunk_store.count_by_doc_id(doc_id)
+            return {"total": total}
+        except Exception:
+            pass
+    return {"total": 0}
 
 
 def _build_doc_stats(doc_id: str) -> dict[str, int | dict]:
@@ -95,7 +88,8 @@ def _doc_to_item(doc: Document) -> dict[str, Any]:
         "status": doc.status.value if hasattr(doc.status, "value") else doc.status,
         "parent_doc_id": doc.parent_doc_id,
         "root_doc_id": doc.root_doc_id,
-        "ingest_job_id": doc.ingest_job_id,
+        "previous_doc_id": doc.previous_doc_id,
+        "error_message": doc.error_message,
         "created_at": doc.created_at.isoformat() if doc.created_at else None,
         "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
         "metadata": doc.metadata if hasattr(doc, "metadata") else {},
@@ -147,6 +141,33 @@ def _source_type_from_filename(filename: str) -> str:
 
 # ── 4.1 文档列表 ──────────────────────────────────────────────────
 
+@router.get("/ids")
+async def list_document_ids(
+    status: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    keyword: str | None = Query(default=None),
+):
+    """只返回符合条件的 doc_id 列表，供全选等批量操作使用。"""
+    if document_repo is None or not hasattr(document_repo, "list_paginated"):
+        return error_json(ErrorCode.SERVICE_UNAVAILABLE, "不可用", http_status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    all_ids = []
+    page = 1
+    while True:
+        docs, total = document_repo.list_paginated(
+            page=page, page_size=1000,
+            keyword=keyword, status=status, category=category,
+            sort_by="created_at", sort_order="desc",
+        )
+        for d in docs:
+            all_ids.append(d.doc_id)
+        if page * 1000 >= total:
+            break
+        page += 1
+
+    return APIResponse(data=all_ids).model_dump(mode="json")
+
+
 @router.get("")
 async def list_documents(
     pagination: PaginationParams = Depends(),
@@ -156,7 +177,6 @@ async def list_documents(
     category: str | None = Query(default=None, description="按分类过滤"),
     parent_doc_id: str | None = Query(default=None, description="按父文档过滤"),
     root_doc_id: str | None = Query(default=None, description="按根文档过滤"),
-    ingest_job_id: str | None = Query(default=None, description="按入库任务过滤"),
 ):
     """获取文档分页列表，支持多条件筛选和排序。
 
@@ -173,7 +193,6 @@ async def list_documents(
             category=category,
             parent_doc_id=parent_doc_id,
             root_doc_id=root_doc_id,
-            ingest_job_id=ingest_job_id,
             sort_by=pagination.sort_by or "updated_at",
             sort_order=pagination.sort_order,
         )
@@ -254,13 +273,8 @@ async def create_document(
         # 创建后入库
         if ingest_after_create:
             try:
-                job = ingestion_pipeline.submit(
-                    created,
-                    options={},
-                    is_update=False,
-                )
-                response_data["ingest_job_id"] = job.job_id
-                response_data["ingest_job"] = job_to_dict(job)
+                created = ingestion_pipeline.ingest(created)
+                response_data = _doc_to_item(created)
             except Exception as e:
                 logger.exception("入库触发失败")
                 response_data["ingest_error"] = str(e)
@@ -280,9 +294,14 @@ async def upload_document(
     title: str | None = Form(default=None),
     category: str = Form(default=upload_api.DEFAULT_CATEGORY),
     ingest_after_create: bool = Query(default=True),
-    mode: str = Query(default="incremental", description="incremental 或 force"),
+    replace_doc_id: str | None = Query(default=None, description="要替换的文档 ID"),
+    confirm_replace: bool = Query(default=False, description="确认替换同名文档"),
 ):
-    """上传文件，创建文档，并可立即提交 v1 入库任务。
+    """上传文件，创建文档，并立即提交入库任务。
+
+    支持同名文件检测和更新：
+    - 如果检测到同名文档且没有确认替换，返回 suggested_replace 提示
+    - 如果提供 replace_doc_id 且 confirm_replace=True，则执行更新流程
 
     流程：先创建 Document 预占位（利用数据库唯一索引防竞态），
     再写文件；文件写入失败时回滚已创建的 Document 记录，
@@ -293,6 +312,7 @@ async def upload_document(
     resolved_title = title or Path(original_name).stem
     resolved_category = category or upload_api.DEFAULT_CATEGORY
 
+    # 检查重复内容
     if document_repo is not None:
         existing = document_repo.find_by_hash(source_hash)
         if existing is not None:
@@ -311,6 +331,55 @@ async def upload_document(
                 meta={"duplicate": True},
             ).model_dump(mode="json")
 
+    # 检查同名文档
+    similar_docs = []
+    if document_repo is not None and not replace_doc_id:
+        similar_docs = document_repo.find_similar_by_filename(original_name)
+        # 如果只有一个同名文档且没有确认替换，返回提示
+        if len(similar_docs) == 1 and not confirm_replace:
+            suggested_doc = similar_docs[0]
+            return APIResponse(
+                data={
+                    "suggested_replace": True,
+                    "suggested_doc_id": suggested_doc.doc_id,
+                    "suggested_doc_title": suggested_doc.title,
+                    "source_hash": source_hash,
+                    "file_name": original_name,
+                    "size": size,
+                    "title": resolved_title,
+                    "category": resolved_category,
+                },
+                meta={"suggested_replace": True},
+            ).model_dump(mode="json")
+
+    # ── 处理替换流程 ──
+    old_doc = None
+    if replace_doc_id and confirm_replace and document_repo is not None:
+        old_doc = document_repo.get(replace_doc_id)
+        if old_doc is None:
+            return error_json(
+                ErrorCode.DOCUMENT_NOT_FOUND,
+                f"要替换的文档 {replace_doc_id} 不存在",
+                http_status.HTTP_404_NOT_FOUND,
+            )
+        # 软删除旧文档及其知识块
+        try:
+            document_repo.soft_delete(replace_doc_id)
+            # 同时软删除知识块并同步索引
+            if hasattr(chunk_store, "bulk_update_status_by_doc_id"):
+                chunk_store.bulk_update_status_by_doc_id(replace_doc_id, "deleted")
+            if hasattr(chunk_store, "list_by_doc_id"):
+                chunks_to_sync = chunk_store.list_by_doc_id(replace_doc_id)
+                if chunks_to_sync:
+                    for c in chunks_to_sync:
+                        try:
+                            vector_index.upsert_fields(c.chunk_id, {"status": "deleted"})
+                            bm25_index.upsert_fields(c.chunk_id, {"status": "deleted"})
+                        except Exception:
+                            pass
+        except Exception:
+            logger.exception("软删除旧文档失败")
+
     # ── 先创建 Document 预占位，再写文件 ──
     pre_doc_id = new_id("doc")
     doc = Document(
@@ -320,6 +389,7 @@ async def upload_document(
         source_uri="",  # 文件写入后更新
         source_hash=source_hash,
         category=resolved_category,
+        previous_doc_id=replace_doc_id if old_doc else None,
     )
 
     if document_repo is not None:
@@ -366,18 +436,16 @@ async def upload_document(
     response_data = _doc_to_item(doc)
     response_data.update({
         "duplicate": False,
+        "suggested_replace": False,
+        "replaced": old_doc is not None,
+        "replaced_doc_id": replace_doc_id if old_doc else None,
         "file_name": original_name,
         "size": upload_data["size"],
     })
 
     if ingest_after_create:
-        job = ingestion_pipeline.submit(
-            doc,
-            options={"force": mode == "force", "mode": mode},
-            is_update=False,
-        )
-        response_data["ingest_job_id"] = job.job_id
-        response_data["ingest_job"] = job_to_dict(job)
+        doc = ingestion_pipeline.ingest(doc)
+        response_data = _doc_to_item(doc)
 
     return APIResponse(data=response_data).model_dump(mode="json")
 
@@ -408,6 +476,47 @@ async def get_document(doc_id: str):
         "PostgreSQL 文档仓储不可用",
         http_status.HTTP_503_SERVICE_UNAVAILABLE,
     )
+
+
+# ── 4.3.1 更新文档元数据 ───────────────────────────────────────────
+
+@router.patch("/{doc_id}")
+async def update_document(
+    doc_id: str,
+    title: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+):
+    """更新文档的标题和分类等元数据。"""
+    if document_repo is None:
+        return error_json(
+            ErrorCode.SERVICE_UNAVAILABLE,
+            "PostgreSQL 文档仓储不可用",
+            http_status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    doc = document_repo.get(doc_id)
+    if doc is None:
+        return error_json(
+            ErrorCode.DOCUMENT_NOT_FOUND,
+            f"文档 {doc_id} 不存在",
+            http_status.HTTP_404_NOT_FOUND,
+        )
+
+    if title is not None:
+        doc.title = title
+    if category is not None:
+        doc.category = category
+
+    try:
+        updated = document_repo.update(doc)
+    except DocumentNotFoundError as e:
+        return error_json(
+            ErrorCode.DOCUMENT_NOT_FOUND,
+            str(e),
+            http_status.HTTP_404_NOT_FOUND,
+        )
+
+    return APIResponse(data=_doc_to_item(updated)).model_dump(mode="json")
 
 
 @router.get("/{doc_id}/elements")
@@ -450,94 +559,7 @@ async def list_document_elements(
     ).model_dump(mode="json")
 
 
-# ── 4.4 更新文档 ──────────────────────────────────────────────────
-
-@router.patch("/{doc_id}")
-async def update_document(
-    doc_id: str,
-    title: str | None = Query(default=None),
-    category: str | None = Query(default=None),
-    status: str | None = Query(default=None),
-    source_uri: str | None = Query(default=None),
-    source_hash: str | None = Query(default=None),
-    expected_version: int | None = Query(default=None, description="乐观锁版本号"),
-    metadata: str | None = Query(default=None),
-):
-    """更新文档字段，支持 expected_version 乐观锁。
-
-    如果更新来源字段（source_uri / source_hash），响应提示需要重新入库。
-    """
-    if document_repo is None:
-        return error_json(
-            ErrorCode.DOCUMENT_NOT_FOUND,
-            "后端未启用文档仓储",
-http_status.HTTP_400_BAD_REQUEST,
-        )
-
-    doc = document_repo.get(doc_id)
-    if doc is None:
-        return error_json(
-            ErrorCode.DOCUMENT_NOT_FOUND,
-            f"文档 {doc_id} 不存在",
-http_status.HTTP_404_NOT_FOUND,
-        )
-
-    # 乐观锁检查
-    if expected_version is not None and doc.version != expected_version:
-        return error_json(
-            ErrorCode.DOCUMENT_VERSION_CONFLICT,
-            f"版本冲突: 期望 {expected_version}，实际 {doc.version}",
-http_status.HTTP_409_CONFLICT,
-            details={"expected": expected_version, "actual": doc.version},
-        )
-
-    # 更新字段
-    import json
-    needs_reingest = False
-    if title is not None:
-        doc.title = title
-    if category is not None:
-        doc.category = category
-    if status is not None:
-        try:
-            doc.status = DocStatus(status)
-        except ValueError:
-            return error_json(
-                ErrorCode.VALIDATION_ERROR,
-                f"无效的文档状态: {status}，有效值为 {[s.value for s in DocStatus]}",
-                http_status.HTTP_422_UNPROCESSABLE_ENTITY,
-            )
-    if source_uri is not None and source_uri != doc.source_uri:
-        doc.source_uri = source_uri
-        needs_reingest = True
-    if source_hash is not None and source_hash != doc.source_hash:
-        doc.source_hash = source_hash
-        needs_reingest = True
-    if metadata is not None:
-        try:
-            doc.metadata = json.loads(metadata)
-        except json.JSONDecodeError:
-            pass
-
-    try:
-        updated = document_repo.update(doc)
-    except VersionConflictError as e:
-        return error_json(
-            ErrorCode.DOCUMENT_VERSION_CONFLICT,
-            str(e),
-http_status.HTTP_409_CONFLICT,
-        )
-    except DocumentNotFoundError as e:
-        return error_json(
-            ErrorCode.DOCUMENT_NOT_FOUND,
-            str(e),
-http_status.HTTP_404_NOT_FOUND,
-        )
-
-    item = _doc_to_item(updated)
-    if needs_reingest:
-        item["needs_reingest"] = True
-    return APIResponse(data=item).model_dump(mode="json")
+# ── 4.4 软删除文档 ────────────────────────────────────────────────
 
 
 # ── 4.5 软删除文档 ────────────────────────────────────────────────
@@ -566,11 +588,14 @@ async def delete_document(doc_id: str):
         if hasattr(chunk_store, "bulk_update_status_by_doc_id"):
             chunk_store.bulk_update_status_by_doc_id(doc_id, "deleted")
 
-        # 同步索引状态
+        # 在索引中标记知识块为已删除
         if chunks_to_sync:
-            chunk_ids = [c.chunk_id for c in chunks_to_sync]
-            vector_index.update_status_batch(chunk_ids, "deleted")
-            bm25_index.update_status_batch(chunk_ids, "deleted")
+            for c in chunks_to_sync:
+                try:
+                    vector_index.upsert_fields(c.chunk_id, {"status": "deleted"})
+                    bm25_index.upsert_fields(c.chunk_id, {"status": "deleted"})
+                except Exception:
+                    pass
 
         return APIResponse(data=_doc_to_item(doc)).model_dump(mode="json")
 
@@ -596,14 +621,21 @@ async def restore_document(doc_id: str):
     http_status.HTTP_404_NOT_FOUND,
             )
 
-        # 恢复关联知识块
+        # 恢复关联知识块状态
         if hasattr(chunk_store, "bulk_update_status_by_doc_id"):
             chunk_store.bulk_update_status_by_doc_id(doc_id, "active")
 
+        # 在索引中将知识块状态恢复为 active
         restored_chunks_count = 0
         if hasattr(chunk_store, "list_by_doc_id"):
             chunks = chunk_store.list_by_doc_id(doc_id)
             restored_chunks_count = len(chunks)
+            for c in chunks:
+                try:
+                    vector_index.upsert_fields(c.chunk_id, {"status": "active"})
+                    bm25_index.upsert_fields(c.chunk_id, {"status": "active"})
+                except Exception:
+                    pass
 
         return APIResponse(
             data=_doc_to_item(doc),
@@ -617,46 +649,97 @@ async def restore_document(doc_id: str):
     )
 
 
-# ── 4.7 触发入库 ──────────────────────────────────────────────────
+# ── 4.6.1 重试失败文档 ─────────────────────────────────────────────
 
-@router.post("/{doc_id}/ingest")
-async def ingest_document(
-    doc_id: str,
-    mode: str = Query(default="incremental", description="incremental 或 force"),
-):
-    """对文档触发入库、增量更新或强制重建。"""
+@router.post("/{doc_id}/retry")
+async def retry_document(doc_id: str):
+    """重新触发失败文档的入库流水线。"""
+    if document_repo is None:
+        return error_json(
+            ErrorCode.SERVICE_UNAVAILABLE,
+            "PostgreSQL 文档仓储不可用",
+            http_status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    doc = document_repo.get(doc_id)
+    if doc is None:
+        return error_json(
+            ErrorCode.DOCUMENT_NOT_FOUND,
+            f"文档 {doc_id} 不存在",
+            http_status.HTTP_404_NOT_FOUND,
+        )
+    if doc.status != DocStatus.failed:
+        return error_json(
+            ErrorCode.VALIDATION_ERROR,
+            "只能重试失败状态的文档",
+            http_status.HTTP_400_BAD_REQUEST,
+        )
+
+    # 检查是否已有同名活跃文档
+    if doc.source_hash:
+        active_dup = document_repo.find_by_hash(doc.source_hash)
+        if active_dup is not None and active_dup.doc_id != doc_id:
+            return error_json(
+                ErrorCode.DOCUMENT_DUPLICATE,
+                f"已存在内容相同的活跃文档「{active_dup.title}」，无法重试",
+                http_status.HTTP_409_CONFLICT,
+                details={"existing_doc_id": active_dup.doc_id},
+            )
+
+    # 清理旧知识块和索引，避免重试重复
+    if hasattr(chunk_store, "list_by_doc_id"):
+        old_chunks = chunk_store.list_by_doc_id(doc_id)
+        for c in old_chunks:
+            try:
+                chunk_store.soft_delete(c.chunk_id)
+                vector_index.delete(c.chunk_id)
+                bm25_index.delete(c.chunk_id)
+            except Exception:
+                pass
+
+    # 重新入库（同步）
+    try:
+        doc = ingestion_pipeline.ingest(doc)
+    except Exception:
+        logger.exception("重试入库失败")
+        return error_json(
+            ErrorCode.INTERNAL_ERROR,
+            "重试入库失败",
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    return APIResponse(data=_doc_to_item(doc)).model_dump(mode="json")
+
+
+# ── 4.7 版本历史 ──────────────────────────────────────────────────
+
+@router.get("/{doc_id}/history")
+async def get_document_history(doc_id: str):
+    """获取文档的版本历史。"""
     # ── PostgreSQL 后端 ──
     if document_repo is not None:
-        doc = document_repo.get(doc_id)
-        if doc is None:
+        try:
+            history = document_repo.get_version_history(doc_id)
+        except DocumentNotFoundError:
             return error_json(
                 ErrorCode.DOCUMENT_NOT_FOUND,
                 f"文档 {doc_id} 不存在",
-    http_status.HTTP_404_NOT_FOUND,
+                http_status.HTTP_404_NOT_FOUND,
             )
 
-        try:
-            job = ingestion_pipeline.submit(
-                doc,
-                options={"force": mode == "force", "mode": mode},
-                is_update=(mode == "incremental"),
-            )
-            return APIResponse(
-                data={
-                    "job_id": job.job_id,
-                    "doc_id": doc_id,
-                    "mode": mode,
-                    "job": job_to_dict(job),
-                },
-                meta={"status": "accepted"},
-            ).model_dump(mode="json")
-        except Exception as e:
-            logger.exception("触发入库失败")
-            return error_json(
-                ErrorCode.INTERNAL_ERROR,
-                f"入库触发失败: {e}",
-    http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+        # 返回简化的版本信息
+        history_items = []
+        for doc in history:
+            history_items.append({
+                "doc_id": doc.doc_id,
+                "title": doc.title,
+                "version": doc.version,
+                "status": doc.status.value if hasattr(doc.status, "value") else doc.status,
+                "created_at": doc.created_at.isoformat() if doc.created_at else None,
+                "previous_doc_id": doc.previous_doc_id,
+            })
+
+        return APIResponse(data=history_items).model_dump(mode="json")
 
     return error_json(
         ErrorCode.SERVICE_UNAVAILABLE,

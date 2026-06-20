@@ -21,35 +21,24 @@ def compute_hash(content: str | bytes) -> str:
 
 # ── enums ──────────────────────────────────────────────────────────
 
-# 文档生命周期：pending → processing → active | failed
+# 文档生命周期：processing → active | failed
 class DocStatus(str, Enum):
     active = "active"
-    deleted = "deleted"          # 预留 — 软删除功能待实现
+    deleted = "deleted"          # 软删除状态，可通过 restore 恢复为 active
     failed = "failed"
-    pending = "pending"
     processing = "processing"
 
 
-# 资源处理状态：pending → ready | failed | skipped
+# 资源处理状态：ready | failed
 class AssetStatus(str, Enum):
-    pending = "pending"
     ready = "ready"
     failed = "failed"
-    skipped = "skipped"
 
 
-# 知识块状态：active ↔ superseded（增量更新时旧块被取代）
+# 知识块状态：active / deleted
 class ChunkStatus(str, Enum):
     active = "active"
-    superseded = "superseded"
-    deleted = "deleted"          # 预留 — 知识块删除功能待实现
-
-
-class ChunkIndexStatus(str, Enum):
-    pending = "pending"
-    indexing = "indexing"
-    indexed = "indexed"
-    failed = "failed"
+    deleted = "deleted"
 
 
 class KnowledgeType(str, Enum):
@@ -133,10 +122,11 @@ class Document(BaseModel):
     source_hash: str = ""
     category: str = "\u901a\u7528"
     version: int = 1
-    status: DocStatus = DocStatus.pending
+    status: DocStatus = DocStatus.processing
     parent_doc_id: str | None = None
     root_doc_id: str | None = None
-    ingest_job_id: str = ""
+    previous_doc_id: str | None = None
+    error_message: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -168,7 +158,7 @@ class Asset(BaseModel):
     content_hash: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    status: AssetStatus = AssetStatus.pending
+    status: AssetStatus = AssetStatus.ready
     extracted_text: str | None = None
     error_message: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -177,19 +167,14 @@ class Asset(BaseModel):
 class KnowledgeChunk(BaseModel):
     chunk_id: str = Field(default_factory=lambda: new_id("chunk"))
     doc_id: str
-    doc_version: int = 1
     title: str = ""
     content: str
     content_hash: str = ""
     knowledge_type: KnowledgeType = KnowledgeType.declarative
     category: str = "\u901a\u7528"
     status: ChunkStatus = ChunkStatus.active
-    index_status: ChunkIndexStatus = ChunkIndexStatus.pending
-    indexed_at: datetime | None = None
-    index_error: str | None = None
     asset_refs: list[AssetRef] = Field(default_factory=list)
     source_refs: list[SourceRef] = Field(default_factory=list)
-    ingest_job_id: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")

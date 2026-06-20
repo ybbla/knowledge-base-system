@@ -33,7 +33,6 @@ class SearchFilters(BaseModel):
     categories: list[str] | None = Field(default=None, description="分类过滤")
     knowledge_types: list[str] | None = Field(default=None, description="知识类型过滤")
     chunk_status: list[str] | None = Field(default=None, description="知识块状态过滤")
-    index_status: list[str] | None = Field(default=None, description="索引状态过滤")
     source_types: list[str] | None = Field(default=None, description="来源类型过滤")
     doc_status: list[str] | None = Field(default=None, description="文档状态过滤")
     created_after: str | None = Field(default=None, description="创建时间起 (ISO 8601)")
@@ -139,9 +138,6 @@ def _matches_filters(chunk, doc, filters: SearchFilters) -> bool:
         return False
     if filters.chunk_status and _value(chunk.status) not in filters.chunk_status:
         return False
-    if filters.index_status and _value(chunk.index_status) not in filters.index_status:
-        return False
-
     if filters.source_types:
         source_type = getattr(doc, "source_type", None)
         if source_type not in filters.source_types:
@@ -193,7 +189,7 @@ def _filter_and_enrich_result(result_dict: dict, request: SearchRequest) -> dict
 
         item["doc_id"] = chunk.doc_id
         item["doc_title"] = getattr(doc, "title", None) or chunk.metadata.get("title", chunk.doc_id)
-        item["doc_version"] = chunk.doc_version
+        item["doc_version"] = getattr(doc, "version", 1)
         if request.options.highlight:
             item["highlight"] = _make_highlight(item.get("content", ""), request.query)
         filtered_items.append(item)
@@ -362,17 +358,15 @@ async def search_filters():
         "knowledge_types": [],
         "doc_statuses": [],
         "chunk_statuses": [],
-        "index_statuses": [],
     }
 
-    # 从知识块存储收集枚举值（knowledge_types, chunk_statuses, index_statuses 仅从 chunk_store 获取）
+    # 从知识块存储收集枚举值（knowledge_types, chunk_statuses 仅从 chunk_store 获取）
     cats: dict[str, int] = {}
     if hasattr(chunk_store, "list_all"):
         try:
             chunks = chunk_store.list_all()
             kts: dict[str, int] = {}
             ch_stats: dict[str, int] = {}
-            idx_stats: dict[str, int] = {}
             for c in chunks:
                 cat = c.category or "通用"
                 cats[cat] = cats.get(cat, 0) + 1
@@ -380,12 +374,9 @@ async def search_filters():
                 kts[kt] = kts.get(kt, 0) + 1
                 st = c.status.value if hasattr(c.status, "value") else str(c.status)
                 ch_stats[st] = ch_stats.get(st, 0) + 1
-                ist = c.index_status.value if hasattr(c.index_status, "value") else str(c.index_status)
-                idx_stats[ist] = idx_stats.get(ist, 0) + 1
 
             filter_options["knowledge_types"] = [{"value": k, "count": v} for k, v in kts.items()]
             filter_options["chunk_statuses"] = [{"value": k, "count": v} for k, v in ch_stats.items()]
-            filter_options["index_statuses"] = [{"value": k, "count": v} for k, v in idx_stats.items()]
         except Exception:
             pass
 

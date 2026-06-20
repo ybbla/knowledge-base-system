@@ -1,5 +1,3 @@
-import time
-
 from app.core.models import (
     AssetType,
     Document,
@@ -17,7 +15,7 @@ class _FakeExtractor:
         self.seen_elements = []
         self.seen_assets = []
 
-    def extract(self, elements, assets, ingest_job_id, category):
+    def extract(self, elements, assets, doc_id, category):
         self.seen_elements = list(elements)
         self.seen_assets = list(assets)
         source = next(
@@ -31,7 +29,6 @@ class _FakeExtractor:
                 title="HTML 入库",
                 content="HTML 文档解析后进入语义抽取流程。",
                 category=category,
-                ingest_job_id=ingest_job_id,
             )
         ]
 
@@ -56,14 +53,9 @@ class _RecordingIndex:
 class _RecordingChunkStore:
     def __init__(self) -> None:
         self.chunks = {}
-        self.index_statuses = {}
 
     def put(self, chunk):
         self.chunks[chunk.chunk_id] = chunk
-
-    def update_index_status(self, chunk_ids, status, error=None):
-        for chunk_id in chunk_ids:
-            self.index_statuses[chunk_id] = status
 
 
 class _RecordingAssetStore:
@@ -113,13 +105,6 @@ def _pipeline(monkeypatch, *, max_assets_per_doc=None):
     return pipeline, extractor, embedder, vector_index, bm25_index, chunk_store, asset_store
 
 
-def _wait(job):
-    for _ in range(50):
-        if job.status in {"completed", "failed"}:
-            break
-        time.sleep(0.02)
-
-
 def test_ingestion_pipeline_dispatches_html_parser(monkeypatch):
     pipeline, extractor, embedder, vector_index, bm25_index, chunk_store, _asset_store = _pipeline(monkeypatch)
     doc = Document(
@@ -138,14 +123,9 @@ def test_ingestion_pipeline_dispatches_html_parser(monkeypatch):
             """
         },
     )
-    doc.ingest_job_id = doc.doc_id
+    doc = pipeline.ingest(doc)
 
-    job = pipeline.submit(doc)
-    _wait(job)
-
-    assert job.status == "completed", job.error
-    assert job.doc_ids == [doc.doc_id]
-    assert job.chunk_count == 1
+    assert doc.status.value == "active", doc.error_message
     assert {el.element_type for el in extractor.seen_elements} >= {
         ElementType.title,
         ElementType.paragraph,
@@ -167,13 +147,10 @@ def test_ingestion_pipeline_marks_invalid_html_failed(monkeypatch):
         source_uri="memory://empty.html",
         metadata={"raw_content": ""},
     )
-    doc.ingest_job_id = doc.doc_id
+    doc = pipeline.ingest(doc)
 
-    job = pipeline.submit(doc)
-    _wait(job)
-
-    assert job.status == "failed"
-    assert "HTML 解析失败" in job.error
+    assert doc.status.value == "failed"
+    assert "HTML 解析失败" in doc.error_message
 
 
 def test_html_assets_respect_max_assets_per_doc(monkeypatch):
@@ -192,14 +169,11 @@ def test_html_assets_respect_max_assets_per_doc(monkeypatch):
             """
         },
     )
-    doc.ingest_job_id = doc.doc_id
+    doc = pipeline.ingest(doc)
 
-    job = pipeline.submit(doc)
-    _wait(job)
-
-    assert job.status == "completed", job.error
-    stored = list(asset_store._store.values())
+    assert doc.status.value == "active", doc.error_message
+    stored = list(asset_store.assets.values())
     assert len(stored) == 2
-    assert stored[0].status.value == "pending"
-    assert stored[1].status.value == "skipped"
+    assert stored[0].status.value == "ready"
+    assert stored[1].status.value == "failed"
     assert stored[1].error_message == "max_assets_per_doc_exceeded"

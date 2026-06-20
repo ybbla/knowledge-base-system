@@ -1,4 +1,4 @@
-"""Milvus status 过滤测试：schema 字段、search expr、update_status_batch。"""
+"""Milvus status 过滤测试：schema 字段、search expr、status 过滤。"""
 
 import pytest
 
@@ -23,9 +23,9 @@ class TestMilvusSchemaStatus:
 
     def test_build_fields_respects_status_in_metadata(self):
         vector = [0.1] * DENSE_DIM
-        metadata = {"doc_id": "doc_x", "content": "test", "status": "superseded"}
+        metadata = {"doc_id": "doc_x", "content": "test", "status": "deleted"}
         fields = MilvusVectorIndex._build_fields(vector, metadata)
-        assert fields["status"] == "superseded"
+        assert fields["status"] == "deleted"
 
 
 class TestSearchExprStatusFilter:
@@ -44,6 +44,7 @@ class TestSearchExprStatusFilter:
 
         _fake_mgr = MilvusCollectionManager.__new__(MilvusCollectionManager)
         _fake_mgr.collection = _FakeCollection()
+        _fake_mgr.ensure_collection = lambda: None  # 跳过 connect 调用
 
         monkeypatch.setattr(mv, "_escape_expr_value", lambda v: v)
 
@@ -51,7 +52,7 @@ class TestSearchExprStatusFilter:
         index.search([0.1] * DENSE_DIM, top_k=5)
 
         assert len(captured) >= 1
-        assert "active" in captured[0]
+        assert captured[0] == 'status == "active"'
 
     def test_vector_search_expr_with_category(self, monkeypatch):
         from indexing import milvus_vector as mv
@@ -65,6 +66,7 @@ class TestSearchExprStatusFilter:
 
         _fake_mgr = MilvusCollectionManager.__new__(MilvusCollectionManager)
         _fake_mgr.collection = _FakeCollection()
+        _fake_mgr.ensure_collection = lambda: None  # 跳过 connect 调用
 
         monkeypatch.setattr(mv, "_escape_expr_value", lambda v: v)
 
@@ -73,16 +75,4 @@ class TestSearchExprStatusFilter:
 
         assert len(captured) >= 1
         expr = captured[0]
-        assert "active" in expr
-        assert "产品使用" in expr
-        assert "&&" in expr
-
-
-class TestUpdateStatusBatch:
-    def test_empty_list_noop(self):
-        """空列表不报错"""
-        mgr = MilvusCollectionManager.__new__(MilvusCollectionManager)
-        mgr.collection = None
-        # 应该直接返回，不抛异常
-        mgr.update_status_batch([], "superseded")
-        # 空列表情况下不会进入 query 逻辑
+        assert expr == '(category == "产品使用") && (status == "active")'

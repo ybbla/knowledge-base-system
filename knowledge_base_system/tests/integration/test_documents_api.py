@@ -144,7 +144,7 @@ class TestDocumentsSearchFilters:
 
         required_keys = [
             "categories", "source_types", "knowledge_types",
-            "doc_statuses", "chunk_statuses", "index_statuses",
+            "doc_statuses", "chunk_statuses",
         ]
         for key in required_keys:
             assert key in data, f"缺少筛选项: {key}"

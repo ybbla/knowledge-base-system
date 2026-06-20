@@ -1,3 +1,11 @@
+"""旧版入库 API — 保留仅为向后兼容，将于后续版本移除。
+
+请使用以下 v1 接口替代：
+- 上传并入库：POST /api/v1/documents/upload
+- 文档更新：POST /api/v1/documents/upload（带上 replace_doc_id + confirm_replace=true）
+- 文档详情：GET /api/v1/documents/{doc_id}
+"""
+
 import logging
 from typing import Any
 
@@ -8,7 +16,7 @@ from app.core.deps import document_repo, ingestion_pipeline
 from app.core.errors import DocumentNotFoundError
 from app.core.models import Document
 
-router = APIRouter(prefix="/ingest", tags=["ingest"])
+router = APIRouter(prefix="/ingest", tags=["ingest (deprecated)"])
 logger = logging.getLogger(__name__)
 
 
@@ -66,11 +74,9 @@ async def ingest(request: IngestRequest, response: Response):
                 root_doc_id=existing.root_doc_id,
                 metadata=existing.metadata,
             )
-            doc.ingest_job_id = doc.doc_id
-            job = ingestion_pipeline.submit(
+            doc = ingestion_pipeline.ingest(
                 doc,
                 options=request.options,
-                is_update=True,
             )
         else:
             # ── 新建分支：doc_id 为空 → 去重检查后创建新文档 ──
@@ -94,14 +100,12 @@ async def ingest(request: IngestRequest, response: Response):
                 source_hash=item.source_hash,
                 category=item.category,
             )
-            doc.ingest_job_id = doc.doc_id
-            job = ingestion_pipeline.submit(
+            doc = ingestion_pipeline.ingest(
                 doc,
                 options=request.options,
-                is_update=False,
             )
 
-        job_ids.append(job.job_id)
+        job_ids.append(doc.doc_id)
         doc_ids.append(doc.doc_id)
 
     return {
@@ -114,21 +118,17 @@ async def ingest(request: IngestRequest, response: Response):
 
 @router.get("/{job_id}", deprecated=True)
 async def get_ingest_status(job_id: str, response: Response):
-    """Query ingestion job progress."""
-    response.headers["X-Deprecated"] = "Use GET /api/v1/ingest/jobs/{job_id}"
+    """Query ingestion job progress. Deprecated: use GET /api/v1/documents/{doc_id} instead."""
+    response.headers["X-Deprecated"] = "Use GET /api/v1/documents/{doc_id}"
     logger.warning("Deprecated endpoint GET /ingest/%s called", job_id)
-    job = ingestion_pipeline.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-
+    doc = document_repo.get(job_id) if document_repo else None
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    # Return simplified response based on document status
     return {
-        "job_id": job.job_id,
-        "status": job.status,
-        "doc_ids": job.doc_ids,
-        "chunk_count": job.chunk_count,
-        "asset_count": job.asset_count,
-        "error": job.error,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
-        "completed_at": job.finished_at.isoformat() if job.finished_at else None,
+        "job_id": doc.doc_id,
+        "status": "completed" if doc.status.value == "active" else doc.status.value,
+        "doc_ids": [doc.doc_id],
+        "chunk_count": 0,
+        "error": doc.error_message,
     }

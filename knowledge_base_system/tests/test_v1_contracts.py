@@ -22,7 +22,6 @@ from app.core.errors import (
     DocumentNotFoundError,
     DuplicateDocumentError,
     KnowledgeBaseError,
-    VersionConflictError,
 )
 
 
@@ -101,13 +100,11 @@ class TestExceptionHandlers:
         from app.api.v1.errors import (
             document_not_found_handler,
             duplicate_document_handler,
-            version_conflict_handler,
             chunk_not_found_handler,
             knowledge_base_error_handler,
         )
         assert document_not_found_handler is not None
         assert duplicate_document_handler is not None
-        assert version_conflict_handler is not None
         assert chunk_not_found_handler is not None
         assert knowledge_base_error_handler is not None
 
@@ -118,7 +115,6 @@ class TestExceptionHandlers:
         # 明确的映射
         assert DocumentNotFoundError in EXCEPTION_HANDLERS
         assert DuplicateDocumentError in EXCEPTION_HANDLERS
-        assert VersionConflictError in EXCEPTION_HANDLERS
         assert ChunkNotFoundError in EXCEPTION_HANDLERS
         assert KnowledgeBaseError in EXCEPTION_HANDLERS
 

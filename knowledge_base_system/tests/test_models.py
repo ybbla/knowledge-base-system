@@ -17,7 +17,6 @@ from app.core.models import (
     AssetRelation,
     AssetStatus,
     AssetType,
-    ChunkIndexStatus,
     ChunkStatus,
     compute_hash,
     Document,
@@ -214,12 +213,12 @@ class TestDocument:
         doc = Document(title="Test", source_type="markdown", source_uri="file:///test.md")
         assert doc.doc_id.startswith("doc_")
         assert doc.version == 1
-        assert doc.status == DocStatus.pending
+        assert doc.status == DocStatus.processing
         assert doc.category == "通用"
         assert doc.source_hash == ""
         assert doc.parent_doc_id is None
         assert doc.root_doc_id is None
-        assert doc.ingest_job_id == ""
+        assert doc.previous_doc_id is None
         assert isinstance(doc.created_at, datetime)
         assert isinstance(doc.updated_at, datetime)
         assert doc.metadata == {}
@@ -236,7 +235,6 @@ class TestDocument:
             category="产品使用",
             parent_doc_id=None,
             root_doc_id="doc_001",
-            ingest_job_id="job_001",
             metadata={"owner": "product-team", "tags": ["manual"]},
         )
         data = doc.model_dump(mode="json")
@@ -250,7 +248,6 @@ class TestDocument:
         assert doc2.category == "产品使用"
         assert doc2.parent_doc_id is None
         assert doc2.root_doc_id == "doc_001"
-        assert doc2.ingest_job_id == "job_001"
         assert doc2.metadata["owner"] == "product-team"
         # created_at / updated_at 在序列化后应能还原
         assert isinstance(doc2.created_at, datetime)
@@ -451,7 +448,7 @@ class TestAsset:
         assert asset.content_hash == ""
         assert isinstance(asset.created_at, datetime)
         assert isinstance(asset.updated_at, datetime)
-        assert asset.status == AssetStatus.pending
+        assert asset.status == AssetStatus.ready
         assert asset.extracted_text is None
         assert asset.error_message is None
         assert asset.metadata == {}
@@ -516,17 +513,6 @@ class TestAsset:
         assert asset.status == AssetStatus.failed
         assert asset.error_message == "invalid_image_type"
 
-    def test_skipped_asset(self):
-        """skipped 状态：策略跳过（如超限）。"""
-        asset = Asset(
-            doc_id="doc_001", asset_type=AssetType.image,
-            original_uri="https://x.com/a.png",
-            status=AssetStatus.skipped,
-            error_message="max_asset_size_exceeded",
-        )
-        assert asset.status == AssetStatus.skipped
-        assert asset.error_message == "max_asset_size_exceeded"
-
     def test_json_round_trip_full(self):
         asset = Asset(
             doc_id="doc_001",
@@ -565,17 +551,12 @@ class TestKnowledgeChunk:
     def test_defaults(self):
         chunk = KnowledgeChunk(doc_id="doc_001", content="内容")
         assert chunk.chunk_id.startswith("chunk_")
-        assert chunk.doc_version == 1
         assert chunk.title == ""
         assert chunk.knowledge_type == KnowledgeType.declarative
         assert chunk.category == "通用"
         assert chunk.status == ChunkStatus.active
-        assert chunk.index_status == ChunkIndexStatus.pending
-        assert chunk.indexed_at is None
-        assert chunk.index_error is None
         assert chunk.asset_refs == []
         assert chunk.source_refs == []
-        assert chunk.ingest_job_id == ""
         assert chunk.metadata == {}
 
     def test_content_hash_auto_computed(self):
@@ -666,51 +647,6 @@ class TestKnowledgeChunk:
                                    status=status)
             assert chunk.status == status
 
-    def test_all_index_status_values(self):
-        for istatus in ChunkIndexStatus:
-            chunk = KnowledgeChunk(doc_id="doc_001", content="X",
-                                   index_status=istatus)
-            assert chunk.index_status == istatus
-
-    def test_index_status_lifecycle(self):
-        """模拟索引生命周期：pending → indexing → indexed。"""
-        chunk = KnowledgeChunk(doc_id="doc_001", content="X")
-        assert chunk.index_status == ChunkIndexStatus.pending
-        assert chunk.indexed_at is None
-
-        chunk.index_status = ChunkIndexStatus.indexing
-        assert chunk.index_status == ChunkIndexStatus.indexing
-
-        now = datetime.now(timezone.utc)
-        chunk.index_status = ChunkIndexStatus.indexed
-        chunk.indexed_at = now
-        assert chunk.index_status == ChunkIndexStatus.indexed
-        assert chunk.indexed_at == now
-
-    def test_index_failed_with_error(self):
-        chunk = KnowledgeChunk(
-            doc_id="doc_001", content="X",
-            index_status=ChunkIndexStatus.failed,
-            index_error="embedding timeout",
-        )
-        assert chunk.index_status == ChunkIndexStatus.failed
-        assert chunk.index_error == "embedding timeout"
-
-    def test_metadata_title_path(self):
-        chunk = KnowledgeChunk(
-            doc_id="doc_001", content="X",
-            metadata={"title_path": ["产品使用手册", "上传文档"],
-                      "language": "zh-CN"},
-        )
-        assert chunk.metadata["title_path"] == ["产品使用手册", "上传文档"]
-        assert chunk.metadata["language"] == "zh-CN"
-
-    def test_chunk_status_superseded(self):
-        """增量更新时旧 chunk 被标记为 superseded。"""
-        chunk = KnowledgeChunk(doc_id="doc_001", content="X",
-                               status=ChunkStatus.superseded)
-        assert chunk.status == ChunkStatus.superseded
-
     def test_chunk_status_deleted(self):
         chunk = KnowledgeChunk(doc_id="doc_001", content="X",
                                status=ChunkStatus.deleted)
@@ -720,14 +656,11 @@ class TestKnowledgeChunk:
         """全字段 JSON 序列化往返。"""
         chunk = KnowledgeChunk(
             doc_id="doc_001",
-            doc_version=1,
             title="上传文档解析状态判断",
             content="系统支持通过网页端上传知识文档...",
             knowledge_type=KnowledgeType.declarative,
             category="产品使用",
             status=ChunkStatus.active,
-            index_status=ChunkIndexStatus.indexed,
-            indexed_at=datetime(2026, 6, 8, 10, 0, 0, tzinfo=timezone.utc),
             asset_refs=[
                 AssetRef(asset_id="asset_001", relation=AssetRelation.evidence,
                          caption="截图"),
@@ -736,18 +669,14 @@ class TestKnowledgeChunk:
                 SourceRef(doc_id="doc_001", element_id="el_002",
                           source_location=SourceLocation(page=3)),
             ],
-            ingest_job_id="job_001",
             metadata={"title_path": ["手册", "上传"], "language": "zh-CN"},
         )
         data = chunk.model_dump(mode="json")
         restored = KnowledgeChunk.model_validate(data)
         assert restored.title == "上传文档解析状态判断"
         assert restored.status == ChunkStatus.active
-        assert restored.index_status == ChunkIndexStatus.indexed
-        assert restored.indexed_at is not None
         assert len(restored.asset_refs) == 1
         assert len(restored.source_refs) == 1
-        assert restored.ingest_job_id == "job_001"
         assert restored.metadata["language"] == "zh-CN"
 
 
@@ -901,7 +830,7 @@ class TestSearchResult:
 
 class TestEnums:
     def test_doc_status_values(self):
-        assert {s.value for s in DocStatus} == {"pending", "processing", "active", "failed", "deleted"}
+        assert {s.value for s in DocStatus} == {"processing", "active", "failed", "deleted"}
 
     def test_element_type_values(self):
         values = {t.value for t in ElementType}
@@ -913,7 +842,7 @@ class TestEnums:
         assert {t.value for t in AssetType} == {"image", "video", "audio", "attachment"}
 
     def test_asset_status_values(self):
-        assert {s.value for s in AssetStatus} == {"pending", "ready", "failed", "skipped"}
+        assert {s.value for s in AssetStatus} == {"ready", "failed"}
 
     def test_asset_relation_values(self):
         assert {r.value for r in AssetRelation} == {"evidence", "illustration", "demonstration", "source", "attachment"}
@@ -925,10 +854,7 @@ class TestEnums:
         assert "procedural" in values
 
     def test_chunk_status_values(self):
-        assert {s.value for s in ChunkStatus} == {"active", "superseded", "deleted"}
-
-    def test_chunk_index_status_values(self):
-        assert {s.value for s in ChunkIndexStatus} == {"pending", "indexing", "indexed", "failed"}
+        assert {s.value for s in ChunkStatus} == {"active", "deleted"}
 
     def test_doc_status_is_string_enum(self):
         """确保 DocStatus 可当字符串比较（继承 str, Enum）。"""

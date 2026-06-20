@@ -94,6 +94,17 @@ class MilvusSparseIndex(BM25Index):
         self._manager.upsert_fields_batch(fields_items)
         self._persist_idf_stats()
 
+    def upsert_fields(self, chunk_id: str, fields: dict[str, Any]) -> None:
+        """更新 Milvus 中知识块的标量字段（如 status），不重建稀疏向量。"""
+        self.upsert_fields_batch([(chunk_id, fields)])
+
+    def upsert_fields_batch(self, items: list[tuple[str, dict[str, Any]]]) -> None:
+        """批量更新标量字段。"""
+        if not items:
+            return
+        self.ensure_sparse_index()
+        self._manager.upsert_fields_batch(items)
+
     def delete(self, chunk_id: str) -> None:
         self._load_idf_stats()
         old_tokens = self._chunk_tokens.pop(chunk_id, set())
@@ -104,10 +115,6 @@ class MilvusSparseIndex(BM25Index):
             self._rebuild_vocab()
             self._persist_idf_stats()
         self._manager.delete(chunk_id)
-
-    def update_status_batch(self, chunk_ids: list[str], status: str) -> None:
-        """将一批知识块的 status 更新为指定值（保留原有向量和元数据）。"""
-        self._manager.update_status_batch(chunk_ids, status)
 
     def search(
         self,

@@ -2,14 +2,15 @@
 
 ## Purpose
 
-通过 `/api/v1/documents` 提供文档（Document）的完整 CRUD、状态治理、入库触发和聚合统计能力，面向前端管理台和运维工具。
+通过 `/api/v1/documents` 提供文档（Document）的完整 CRUD、状态治理、上传触发入库和聚合统计能力，面向前端管理台和运维工具。更新流程已改为"软删除旧文档 + 创建新文档"的全量替换模式，PATCH 端点和乐观锁机制已移除。
 
-> 同步自 change `implement-api-improvement-plan`，日期 2026-06-17。
+> 同步自 change `implement-api-improvement-plan`，日期 2026-06-17；更新自 change `simplify-doc-upload-flow`，日期 2026-06-19；更新自 change `simplify-status-model`，日期 2026-06-19。
 
 ## Requirements
 
 ### Requirement: 文档列表支持分页、筛选和展示统计
-系统 SHALL 通过 `GET /api/v1/documents` 返回分页文档列表，并支持按关键词、分类、状态、来源类型、父文档、根文档、入库任务和时间范围筛选。当后端为内存模式且无法支持某些高级筛选参数时，系统 SHALL 在响应 `meta` 中标注未应用的筛选参数。
+
+系统 SHALL 通过 `GET /api/v1/documents` 返回分页文档列表，并支持按关键词、分类、状态、来源类型、父文档、根文档和时间范围筛选。当后端为内存模式且无法支持某些高级筛选参数时，系统 SHALL 在响应 `meta` 中标注未应用的筛选参数。
 
 #### Scenario: 按分类和状态查询文档
 - **GIVEN** 系统中存在多个分类和状态的文档
@@ -31,27 +32,20 @@
 
 #### Scenario: 内存模式下不支持的筛选参数被标注
 - **GIVEN** 后端为内存模式
-- **WHEN** 客户端请求包含 `source_type`、`parent_doc_id`、`root_doc_id`、`ingest_job_id`、`sort_by` 等内存后端不支持的参数
+- **WHEN** 客户端请求包含 `source_type`、`parent_doc_id`、`root_doc_id`、`sort_by` 等内存后端不支持的参数
 - **THEN** 系统 SHALL 仍返回匹配基础筛选（关键词、分类、状态）的结果
 - **AND** 响应 `meta` SHALL 包含 `unsupported_filters` 字段列出未应用的参数名
 
 ### Requirement: 文档文件可通过 v1 上传并创建
 
-系统 SHALL 通过 `POST /api/v1/documents/upload` 接收 multipart 文件上传，计算 `source_hash`，保存文件到配置的输入存储，创建 Document 记录，并允许客户端通过 `ingest_after_create` 选择是否立即提交入库任务。
+系统 SHALL 通过 `POST /api/v1/documents/upload` 接收 multipart 文件上传，计算 `source_hash`，保存文件到配置的输入存储，创建 Document 记录，并立即提交入库任务。上传时 SHALL 检测同名文件并提示是否更新。
 
 #### Scenario: 上传文件并立即入库
 - **GIVEN** 客户端选择一个尚未入库的文件
-- **WHEN** 客户端请求 `POST /api/v1/documents/upload?ingest_after_create=true&mode=incremental` 并提交 `file`、`title` 和 `category`
+- **WHEN** 客户端请求 `POST /api/v1/documents/upload` 并提交 `file`、`title` 和 `category`
 - **THEN** 系统 SHALL 保存文件并创建 Document
 - **AND** 系统 SHALL 提交入库任务
-- **AND** 响应 `data` SHALL 包含 `doc_id`、`source_uri`、`source_hash` 和 `ingest_job_id`
-
-#### Scenario: 上传文件但不立即入库
-- **GIVEN** 客户端选择一个尚未入库的文件
-- **WHEN** 客户端请求 `POST /api/v1/documents/upload?ingest_after_create=false`
-- **THEN** 系统 SHALL 保存文件并创建 Document
-- **AND** 系统 SHALL NOT 提交入库任务
-- **AND** 响应 `data.ingest_job_id` SHALL 为空或不存在
+- **AND** 响应 `data` SHALL 包含 `doc_id`、`source_uri` 和 `source_hash`
 
 #### Scenario: 上传重复文件
 - **GIVEN** 已存在相同 `source_hash` 且状态为 `active` 的文档
@@ -60,24 +54,35 @@
 - **AND** 响应 `data.duplicate` SHALL 为 `true`
 - **AND** 响应 `data.existing_doc_id` SHALL 指向已有文档
 
+#### Scenario: 上传同名但不同内容的文件（单个匹配）
+- **GIVEN** 已存在一个同名的活跃文档
+- **GIVEN** 文件内容不重复（`source_hash` 不同）
+- **WHEN** 客户端上传文件
+- **THEN** 系统返回 `suggested_replace=true`
+- **AND** 返回 `suggested_doc_id` 和 `suggested_doc_title`
+
+#### Scenario: 确认更新同名文件
+- **GIVEN** 已存在同名的活跃文档
+- **WHEN** 客户端上传文件并指定 `replace_doc_id` 和 `confirm_replace=true`
+- **THEN** 系统软删除旧文档
+- **AND** 系统软删除旧文档的知识块并从索引移除
+- **AND** 系统创建新文档，`previous_doc_id` 指向旧文档，`version` 递增
+
 ### Requirement: 文档记录可被创建
 
-系统 SHALL 通过 `POST /api/v1/documents` 创建 Document 记录，并允许客户端选择是否创建后立即触发入库。该接口用于后端可访问的 `source_uri`，文件上传 SHALL 使用 `POST /api/v1/documents/upload`。当后端为内存模式（`document_repo` 不可用）且 `ingest_after_create=False` 时，系统 SHALL 在响应 `meta` 中返回 `warning` 提示文档仅在入库后可见。
+系统 SHALL 通过 `POST /api/v1/documents` 创建 Document 记录，并允许客户端选择是否创建后立即触发入库。该接口用于后端可访问的 `source_uri`，文件上传 SHALL 使用 `POST /api/v1/documents/upload`。
 
 #### Scenario: 创建文档但不立即入库
 - **GIVEN** 客户端已有后端可访问的 `source_uri`
 - **WHEN** 客户端提交 `title`、`source_type`、`source_uri`、`source_hash`、`category` 和 `metadata`
 - **THEN** 系统 SHALL 创建 Document
 - **AND** 响应 SHALL 返回新文档的 `doc_id`、`status` 和 `version`
-- **AND** 响应 SHALL NOT 包含新的入库任务 ID
 
 #### Scenario: 创建后立即入库
 - **GIVEN** 客户端已有后端可访问的 `source_uri`
 - **WHEN** 客户端提交文档创建请求且 `ingest_after_create=true`
 - **THEN** 系统 SHALL 创建 Document
 - **AND** 系统 SHALL 提交入库任务
-- **AND** 响应 SHALL 包含 `ingest_job_id`
-- **AND** 响应 SHALL 包含可展示的任务提交状态
 
 #### Scenario: 创建重复来源文档
 - **GIVEN** 已存在相同 `source_hash` 的活跃文档
@@ -85,13 +90,8 @@
 - **THEN** 系统 SHALL 返回冲突错误
 - **AND** 错误 `code` SHALL 为 `DOCUMENT_DUPLICATE`
 
-#### Scenario: 内存模式下创建文档但不入库
-- **GIVEN** 后端为内存模式（`document_repo` 不可用）
-- **WHEN** 客户端创建文档且 `ingest_after_create=false`
-- **THEN** 系统 SHALL 返回成功响应
-- **AND** 响应 `meta` SHALL 包含 `warning` 提示该文档在入库前不可通过列表或详情接口查询
-
 ### Requirement: 文档详情返回聚合信息
+
 系统 SHALL 通过 `GET /api/v1/documents/{doc_id}` 返回文档基础字段、入库状态、统计信息、子文档信息和元数据。
 
 #### Scenario: 查询存在的文档详情
@@ -99,6 +99,7 @@
 - **WHEN** 客户端请求 `GET /api/v1/documents/doc_xxx`
 - **THEN** 响应 SHALL 包含 Document 的基础字段
 - **AND** 响应 SHALL 包含 `chunk_count`、`element_count`、`asset_count` 和 `index_summary`
+- **AND** 响应 SHALL 包含 `previous_doc_id` 和 `error_message`
 
 #### Scenario: 查询不存在的文档详情
 - **GIVEN** 文档 `doc_missing` 不存在
@@ -106,67 +107,36 @@
 - **THEN** 系统返回 404
 - **AND** 错误 `code` 为 `DOCUMENT_NOT_FOUND`
 
-### Requirement: 文档可被更新并使用乐观锁
-系统 SHALL 通过 `PATCH /api/v1/documents/{doc_id}` 更新文档标题、分类、状态和元数据，并使用 `expected_version` 防止并发覆盖。
-
-#### Scenario: 使用正确版本更新文档
-- **GIVEN** 文档当前 `version=2`
-- **WHEN** 客户端提交 `expected_version=2` 并更新标题或分类
-- **THEN** 系统保存更新
-- **AND** 文档版本递增
-
-#### Scenario: 使用过期版本更新文档
-- **GIVEN** 文档当前 `version=3`
-- **WHEN** 客户端提交 `expected_version=2`
-- **THEN** 系统返回 409
-- **AND** 错误 `code` 为 `DOCUMENT_VERSION_CONFLICT`
-
-#### Scenario: 更新来源字段提示需要重新入库
-- **WHEN** 客户端更新 `source_uri` 或 `source_hash`
-- **THEN** 系统保存来源变更
-- **AND** 响应 SHALL 表明该文档需要重新入库或重新索引
-
 ### Requirement: 文档删除和恢复使用软删除
+
 系统 SHALL 通过 `DELETE /api/v1/documents/{doc_id}` 将文档软删除，并通过 `POST /api/v1/documents/{doc_id}/restore` 恢复文档。
 
 #### Scenario: 删除文档
-- **GIVEN** 文档状态为 `active`
+- **GIVEN** 文档状态为 `active` 或 `failed`
 - **WHEN** 客户端请求删除文档
 - **THEN** 系统将 Document 状态设置为 `deleted`
 - **AND** 系统将该文档下活跃 KnowledgeChunk 状态设置为 `deleted`
-- **AND** 系统同步检索索引中的知识块状态
+- **AND** 系统从检索索引中移除这些知识块
 
 #### Scenario: 恢复文档
 - **GIVEN** 文档状态为 `deleted`
 - **WHEN** 客户端请求恢复文档
 - **THEN** 系统将 Document 状态恢复为 `active`
-- **AND** 系统按恢复策略恢复或提示恢复该文档下的 KnowledgeChunk
+- **AND** 系统将该文档下 `deleted` 的 KnowledgeChunk 恢复为 `active`
+- **AND** 系统将这些知识块重新写入检索索引
 
-### Requirement: 文档可触发入库动作
+### Requirement: 文档版本历史查看
 
-系统 SHALL 通过 `POST /api/v1/documents/{doc_id}/ingest` 对指定文档触发入库、增量更新或强制重建，并返回可被入库任务页面展示和轮询的任务信息。当后端为内存模式时，系统 SHALL 从 chunk_store 中获取已有文档信息来补全 Document 对象的关键字段。
+系统 SHALL 通过 `GET /api/v1/documents/{doc_id}/history` 提供文档版本历史查看功能。
 
-#### Scenario: 对已有文档触发增量入库
+#### Scenario: 查询文档版本历史
 - **GIVEN** 文档 `doc_xxx` 存在
-- **WHEN** 客户端提交 `mode=incremental`
-- **THEN** 系统 SHALL 提交入库任务
-- **AND** 响应 `data` SHALL 包含 `job_id`、`doc_id`、`mode` 和任务状态
+- **WHEN** 客户端请求 `GET /api/v1/documents/doc_xxx/history`
+- **THEN** 系统返回版本历史列表
+- **AND** 列表按时间倒序排列
+- **AND** 每个条目包含 `doc_id`、`title`、`version`、`status` 和 `created_at`
 
-#### Scenario: 对已有文档触发强制重建
-- **GIVEN** 文档 `doc_xxx` 存在
-- **WHEN** 客户端提交 `mode=force`
-- **THEN** 系统 SHALL 提交强制重建任务
-- **AND** 响应 `data.mode` SHALL 为 `force`
-- **AND** 新任务 SHALL 重新解析并覆盖该文档的索引结果
-
-#### Scenario: 对不存在文档触发入库
+#### Scenario: 查询不存在文档的版本历史
 - **GIVEN** 文档不存在
-- **WHEN** 客户端请求文档入库
-- **THEN** 系统 SHALL 返回 404
-- **AND** 错误 `code` SHALL 为 `DOCUMENT_NOT_FOUND`
-
-#### Scenario: 内存模式下对已有文档触发入库
-- **GIVEN** 后端为内存模式，文档已有 chunk 在 chunk_store 中
-- **WHEN** 客户端请求 `POST /api/v1/documents/{doc_id}/ingest`
-- **THEN** 系统 SHALL 从 chunk_store 中获取该文档的 title、source_type、source_hash、category 信息
-- **AND** 系统 SHALL 用补全后的 Document 对象提交入库任务
+- **WHEN** 客户端请求版本历史
+- **THEN** 系统返回 404 错误

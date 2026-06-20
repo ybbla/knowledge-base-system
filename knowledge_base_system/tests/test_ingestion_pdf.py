@@ -3,8 +3,6 @@
 验证 PdfParser 通过 IngestionPipeline 端到端流程：解析 → 语义抽取 → 索引。
 """
 
-import time
-
 import fitz
 
 from app.core.models import Document, ElementType, KnowledgeChunk
@@ -42,7 +40,7 @@ class _FakeExtractor:
     def __init__(self) -> None:
         self.seen_elements: list = []
 
-    def extract(self, elements, assets, ingest_job_id, category):
+    def extract(self, elements, assets, doc_id, category):
         self.seen_elements = list(elements)
         source = elements[0] if elements else None
         return [
@@ -52,7 +50,6 @@ class _FakeExtractor:
                 title="PDF Knowledge Chunk",
                 content="The knowledge base system supports multi-format document ingestion.",
                 category=category,
-                ingest_job_id=ingest_job_id,
             )
         ]
 
@@ -77,14 +74,9 @@ class _RecordingIndex:
 class _RecordingChunkStore:
     def __init__(self) -> None:
         self.chunks: dict = {}
-        self.index_statuses: dict = {}
 
     def put(self, chunk):
         self.chunks[chunk.chunk_id] = chunk
-
-    def update_index_status(self, chunk_ids, status, error=None):
-        for chunk_id in chunk_ids:
-            self.index_statuses[chunk_id] = status
 
 
 class _RecordingAssetStore:
@@ -139,17 +131,9 @@ def test_ingestion_pipeline_dispatches_pdf_parser(monkeypatch):
         category="技术文档",
         metadata={"raw_content": _simple_pdf_bytes()},
     )
-    doc.ingest_job_id = doc.doc_id
+    doc = pipeline.ingest(doc)
 
-    job = pipeline.submit(doc)
-    for _ in range(50):
-        if job.status in {"completed", "failed"}:
-            break
-        time.sleep(0.02)
-
-    assert job.status == "completed", job.error
-    assert job.doc_ids == [doc.doc_id]
-    assert job.chunk_count == 1
+    assert doc.status.value == "active", doc.error_message
     # 验证解析出了标题和段落
     element_types = [el.element_type for el in extractor.seen_elements]
     assert ElementType.title in element_types
@@ -180,13 +164,7 @@ def test_ingestion_pipeline_marks_invalid_pdf_failed(monkeypatch):
         source_uri="memory://bad.pdf",
         metadata={"raw_content": b"not a valid pdf file"},
     )
-    doc.ingest_job_id = doc.doc_id
+    doc = pipeline.ingest(doc)
 
-    job = pipeline.submit(doc)
-    for _ in range(50):
-        if job.status in {"completed", "failed"}:
-            break
-        time.sleep(0.02)
-
-    assert job.status == "failed"
-    assert "PDF 解析失败" in job.error
+    assert doc.status.value == "failed"
+    assert "PDF 解析失败" in doc.error_message

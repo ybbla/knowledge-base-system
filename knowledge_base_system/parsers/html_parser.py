@@ -517,7 +517,7 @@ class HtmlParser(DocumentParser):
             original_uri=url,
             storage_uri=None,
             mime_type=self._guess_mime(url, asset_type),
-            status=AssetStatus.pending,
+            status=AssetStatus.ready,
             extracted_text=None,
             metadata=metadata,
         )

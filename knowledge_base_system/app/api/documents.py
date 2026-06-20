@@ -33,7 +33,6 @@ def _doc_to_dict(doc) -> dict:
         "status": doc.status.value if hasattr(doc.status, "value") else doc.status,
         "parent_doc_id": doc.parent_doc_id,
         "root_doc_id": doc.root_doc_id,
-        "ingest_job_id": doc.ingest_job_id,
         "created_at": doc.created_at.isoformat() if doc.created_at else None,
         "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
         "metadata": doc.metadata if hasattr(doc, "metadata") else {},
@@ -63,19 +62,14 @@ def _chunk_to_dict(chunk) -> dict:
     return {
         "chunk_id": chunk.chunk_id,
         "doc_id": chunk.doc_id,
-        "doc_version": chunk.doc_version,
         "title": chunk.title,
         "content": chunk.content,
         "content_hash": chunk.content_hash,
         "knowledge_type": chunk.knowledge_type.value if hasattr(chunk.knowledge_type, "value") else chunk.knowledge_type,
         "category": chunk.category,
         "status": chunk.status.value if hasattr(chunk.status, "value") else chunk.status,
-        "index_status": chunk.index_status.value if hasattr(chunk.index_status, "value") else chunk.index_status,
-        "indexed_at": chunk.indexed_at.isoformat() if chunk.indexed_at else None,
-        "index_error": chunk.index_error,
         "asset_refs": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in (chunk.asset_refs or [])],
         "source_refs": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in (chunk.source_refs or [])],
-        "ingest_job_id": chunk.ingest_job_id,
         "metadata": chunk.metadata if hasattr(chunk, "metadata") else {},
     }
 

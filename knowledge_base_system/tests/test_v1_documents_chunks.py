@@ -73,14 +73,14 @@ class TestDocumentCreateResponse:
         resp = APIResponse(data={
             "doc_id": "doc_new",
             "title": "新建文档",
-            "status": "pending",
+            "status": "processing",
             "version": 1,
             "chunk_count": 0,
             "element_count": 0,
             "asset_count": 0,
         })
         result = resp.model_dump(mode="json")
-        assert result["data"]["status"] == "pending"
+        assert result["data"]["status"] == "processing"
         assert result["data"]["version"] == 1
 
     def test_create_with_ingest(self):
@@ -88,7 +88,7 @@ class TestDocumentCreateResponse:
         resp = APIResponse(data={
             "doc_id": "doc_new",
             "title": "新建文档",
-            "status": "pending",
+            "status": "processing",
             "ingest_job_id": "job_xxx",
         })
         result = resp.model_dump(mode="json")
@@ -214,7 +214,6 @@ class TestChunkListResponse:
             "knowledge_type": "declarative",
             "category": "通用",
             "status": "active",
-            "index_status": "indexed",
             "asset_count": 2,
             "source_count": 1,
         }
@@ -240,7 +239,6 @@ class TestChunkCreateResponse:
             "knowledge_type": "declarative",
             "category": "通用",
             "status": "active",
-            "index_status": "pending",
             "metadata": {"manual": True},
             "asset_refs": [],
             "source_refs": [],
@@ -260,29 +258,24 @@ class TestChunkDetailResponse:
             "content": "这是完整的知识块内容，可能非常长，包含详细的技术说明和示例代码...",
             "asset_refs": [{"asset_id": "asset_1", "relation": "evidence"}],
             "source_refs": [{"doc_id": "doc_1", "element_id": "el_1"}],
-            "index_status": "indexed",
-            "indexed_at": "2025-01-01T00:00:00+00:00",
         })
         result = resp.model_dump(mode="json")
         assert len(result["data"]["content"]) > 20
         assert len(result["data"]["asset_refs"]) == 1
-        assert result["data"]["index_status"] == "indexed"
 
 
 class TestChunkUpdateResponse:
     """5.4 & 5.5 更新知识块。"""
 
     def test_content_update_triggers_reindex(self):
-        """内容变化后 index_status 变为 pending/indexing。"""
+        """内容变化后触发重新入库。"""
         resp = APIResponse(data={
             "chunk_id": "chunk_1",
             "content": "更新后的内容",
             "content_hash": "sha256:newhash",
-            "index_status": "indexed",
-            "indexed_at": "2025-01-02T00:00:00+00:00",
         })
         result = resp.model_dump(mode="json")
-        assert result["data"]["content_hash"] != result["data"].get("old_hash", "")
+        assert result["data"]["content_hash"] == "sha256:newhash"
 
 
 class TestChunkDeleteRestore:
@@ -303,13 +296,9 @@ class TestChunkReindex:
     def test_reindex_success(self):
         resp = APIResponse(data={
             "chunk_id": "chunk_1",
-            "index_status": "indexed",
-            "indexed_at": "2025-01-01T00:00:00+00:00",
-            "index_error": None,
         })
         result = resp.model_dump(mode="json")
-        assert result["data"]["index_status"] == "indexed"
-        assert result["data"]["index_error"] is None
+        assert result["data"]["chunk_id"] == "chunk_1"
 
     def test_reindex_failure(self):
         err = APIErrorResponse(
@@ -341,7 +330,7 @@ class TestChunkBatch:
         err = APIErrorResponse(
             error=ErrorDetail(
                 code="VALIDATION_ERROR",
-                message="无效的知识块状态: archived，有效值为 ['active', 'superseded', 'deleted']",
+                message="无效的知识块状态: archived，有效值为 ['active', 'deleted']",
             ),
         )
         assert err.error.code == "VALIDATION_ERROR"
@@ -356,7 +345,7 @@ class TestInvalidEnumHandling:
         err = APIErrorResponse(
             error=ErrorDetail(
                 code="VALIDATION_ERROR",
-                message="无效的文档状态: archived，有效值为 ['active', 'deleted', 'failed', 'pending', 'processing']",
+                message="无效的文档状态: archived，有效值为 ['active', 'deleted', 'failed', 'processing']",
             ),
         )
         assert err.error.code == "VALIDATION_ERROR"
@@ -367,7 +356,7 @@ class TestInvalidEnumHandling:
         err = APIErrorResponse(
             error=ErrorDetail(
                 code="VALIDATION_ERROR",
-                message="无效的知识块状态: archived，有效值为 ['active', 'superseded', 'deleted']",
+                message="无效的知识块状态: archived，有效值为 ['active', 'deleted']",
             ),
         )
         assert err.error.code == "VALIDATION_ERROR"

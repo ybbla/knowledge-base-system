@@ -62,7 +62,6 @@ const DocumentDetail = (() => {
           </div>
           <div class="page-actions">
             <button class="btn btn-secondary btn-sm" onclick="Documents.showEditDialog('${doc.doc_id}')">编辑</button>
-            <button class="btn btn-secondary btn-sm" onclick="Documents.ingestDocument('${doc.doc_id}')">↻ 重新处理</button>
             ${doc.status === 'deleted'
               ? `<button class="btn btn-success btn-sm" onclick="Documents.restoreDoc('${doc.doc_id}')">恢复文档</button>`
               : `<button class="btn btn-danger btn-sm" onclick="Documents.deleteDoc('${doc.doc_id}')">删除文档</button>`}
@@ -109,11 +108,10 @@ const DocumentDetail = (() => {
         <div class="detail-grid detail-grid-compact">
           <div class="detail-field"><label>来源</label><span class="mono-wrap">${UI.escapeHtml(doc.source_uri || '—')}</span></div>
           <div class="detail-field"><label>分类</label><span>${UI.escapeHtml(doc.category || '通用')}</span></div>
-          <div class="detail-field"><label>入库任务</label><span class="mono-wrap">${UI.escapeHtml(doc.ingest_job_id || '—')}</span></div>
-          <div class="detail-field"><label>索引结果</label><span>${stats.indexed || 0} 已索引 / ${stats.failed || 0} 失败 / ${stats.pending || 0} 待处理</span></div>
+          <div class="detail-field"><label>版本</label><span>v${doc.version || 1}</span></div>
+          <div class="detail-field"><label>前置版本</label><span class="mono-wrap">${UI.escapeHtml(doc.previous_doc_id || '—')}</span></div>
         </div>
         <div class="detail-actions">
-          ${doc.ingest_job_id ? `<button class="btn btn-secondary btn-sm" onclick="App.router.navigate('/ingestion')">查看入库任务</button>` : ''}
           <button class="btn btn-secondary btn-sm" onclick="DocumentDetail.switchTab('chunks')">查看知识块</button>
           <button class="btn btn-secondary btn-sm" onclick="DocumentDetail.switchTab('elements')">查看解析元素</button>
         </div>
@@ -134,7 +132,7 @@ const DocumentDetail = (() => {
             </div>
             <div class="chunk-card-content">${UI.escapeHtml((chunk.content_preview || chunk.content || '').substring(0, 300))}</div>
             <div class="chunk-card-footer">
-              ${UI.statusBadge(chunk.index_status || 'pending')}
+              ${UI.statusBadge(chunk.status || 'active')}
               <span class="tag">${UI.escapeHtml(chunk.category || '未分类')}</span>
               ${(chunk.asset_count || 0) > 0 ? `<span class="tag">📎 ${chunk.asset_count} 个资源</span>` : ''}
               ${(chunk.source_count || 0) > 0 ? `<span class="tag">📄 ${chunk.source_count} 个来源</span>` : ''}

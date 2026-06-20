@@ -35,12 +35,6 @@ class MemoryVectorIndex(VectorIndex):
     def get_metadata(self, chunk_id: str) -> dict:
         return self._metadata.get(chunk_id, {})
 
-    def update_status_batch(self, chunk_ids: list[str], status: str) -> None:
-        """批量更新知识块的 status 字段（保留向量和其余元数据）。"""
-        for chunk_id in chunk_ids:
-            if chunk_id in self._metadata:
-                self._metadata[chunk_id]["status"] = status
-
     def search(
         self,
         query_vector: list[float],

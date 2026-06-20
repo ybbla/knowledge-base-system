@@ -7,7 +7,6 @@ from app.core.models import (
     AssetRef,
     AssetRelation,
     AssetType,
-    ChunkIndexStatus,
     Document,
     ElementType,
     KnowledgeChunk,
@@ -130,7 +129,6 @@ class TestPgChunkStore:
         assert fetched is not None
         assert fetched.content == "Sample content for retrieval."
         assert fetched.knowledge_type == KnowledgeType.declarative
-        assert fetched.index_status == ChunkIndexStatus.pending
         assert len(fetched.asset_refs) == 1
         assert fetched.asset_refs[0].relation == AssetRelation.evidence
         assert len(fetched.source_refs) == 1
@@ -139,30 +137,6 @@ class TestPgChunkStore:
         # get_batch
         batch = store.get_batch([chunk.chunk_id, "nonexistent"])
         assert len(batch) == 1
-
-    def test_list_and_update_index_status(self, session_factory):
-        doc_repo = DocumentRepository(session_factory)
-        doc = Document(
-            title="Test", source_type="markdown", source_uri="file:///test.md"
-        )
-        doc_repo.create(doc)
-
-        store = PgChunkStore(session_factory)
-        chunk = KnowledgeChunk(
-            doc_id=doc.doc_id,
-            title="C1",
-            content="First chunk.",
-        )
-        store.put(chunk)
-
-        pending = store.list_by_index_status([ChunkIndexStatus.pending])
-        assert [item.chunk_id for item in pending] == [chunk.chunk_id]
-
-        store.update_index_status([chunk.chunk_id], ChunkIndexStatus.indexed)
-        fetched = store.get(chunk.chunk_id)
-        assert fetched.index_status == ChunkIndexStatus.indexed
-        assert fetched.indexed_at is not None
-        assert fetched.index_error is None
 
     def test_count(self, session_factory):
         doc_repo = DocumentRepository(session_factory)

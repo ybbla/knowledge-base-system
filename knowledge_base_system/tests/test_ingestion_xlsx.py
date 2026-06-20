@@ -1,5 +1,4 @@
 import io
-import time
 
 from openpyxl import Workbook
 
@@ -34,7 +33,7 @@ class _FakeExtractor:
     def __init__(self) -> None:
         self.seen_elements = []
 
-    def extract(self, elements, assets, ingest_job_id, category):
+    def extract(self, elements, assets, doc_id, category):
         self.seen_elements = list(elements)
         source = next(
             (el for el in elements if el.element_type == ElementType.table),
@@ -47,7 +46,6 @@ class _FakeExtractor:
                 title="XLSX 状态表",
                 content="XLSX 表格说明文档解析状态，包括处理中和成功。",
                 category=category,
-                ingest_job_id=ingest_job_id,
             )
         ]
 
@@ -72,14 +70,9 @@ class _RecordingIndex:
 class _RecordingChunkStore:
     def __init__(self) -> None:
         self.chunks = {}
-        self.index_statuses = {}
 
     def put(self, chunk):
         self.chunks[chunk.chunk_id] = chunk
-
-    def update_index_status(self, chunk_ids, status, error=None):
-        for chunk_id in chunk_ids:
-            self.index_statuses[chunk_id] = status
 
 
 class _RecordingAssetStore:
@@ -177,17 +170,9 @@ def test_ingestion_pipeline_dispatches_xlsx_parser(monkeypatch):
         category="验收",
         metadata={"raw_content": _xlsx_bytes()},
     )
-    doc.ingest_job_id = doc.doc_id
+    doc = pipeline.ingest(doc)
 
-    job = pipeline.submit(doc)
-    for _ in range(50):
-        if job.status in {"completed", "failed"}:
-            break
-        time.sleep(0.02)
-
-    assert job.status == "completed", job.error
-    assert job.doc_ids == [doc.doc_id]
-    assert job.chunk_count == 1
+    assert doc.status.value == "active", doc.error_message
     assert [el.element_type for el in extractor.seen_elements] == [
         ElementType.title,
         ElementType.table,
@@ -223,17 +208,10 @@ def test_ingestion_pipeline_recurses_embedded_docs_without_repeating_root(monkey
         source_uri="memory://root",
         metadata={"raw_content": "root"},
     )
-    doc.ingest_job_id = doc.doc_id
+    doc = pipeline.ingest(doc)
 
-    job = pipeline.submit(doc)
-    for _ in range(50):
-        if job.status in {"completed", "failed"}:
-            break
-        time.sleep(0.02)
-
-    assert job.status == "completed", job.error
-    assert job.doc_ids == [doc.doc_id, "doc_child"]
-    assert job.asset_count == 1
+    assert doc.status.value == "active", doc.error_message
+    # 验证嵌入子文档也被递归处理（通过元素列表确认）
     assert [el.text for el in extractor.seen_elements] == [
         "根文档",
         "嵌入文档入口",

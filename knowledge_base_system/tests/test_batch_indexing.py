@@ -1,6 +1,6 @@
 from indexing.milvus_sparse import MilvusSparseIndex
 from indexing.milvus_vector import DENSE_DIM, MilvusCollectionManager, MilvusVectorIndex
-from app.core.models import ChunkIndexStatus, KnowledgeChunk
+from app.core.models import KnowledgeChunk
 from ingestion.pipeline import IngestionPipeline
 import ingestion.pipeline as ingestion_module
 
@@ -57,14 +57,10 @@ class _RecordingIndex:
 
 class _RecordingChunkStore:
     def __init__(self) -> None:
-        self.statuses = {}
+        self.stored_chunks = {}
 
     def put(self, chunk):
-        self.statuses[chunk.chunk_id] = chunk.index_status
-
-    def update_index_status(self, chunk_ids, status, error=None):
-        for chunk_id in chunk_ids:
-            self.statuses[chunk_id] = status
+        self.stored_chunks[chunk.chunk_id] = chunk
 
 
 class _RecordingEmbedder:
@@ -156,4 +152,4 @@ def test_ingestion_indexes_chunks_in_limited_batches(monkeypatch):
     assert [len(call) for call in embedder.calls] == [2, 1]
     assert [len(batch) for batch in vector_index.batches] == [1, 1, 1]
     assert [len(batch) for batch in bm25_index.batches] == [1, 1, 1]
-    assert set(chunk_store.statuses.values()) == {ChunkIndexStatus.indexed}
+    assert len(chunk_store.stored_chunks) == 3

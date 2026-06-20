@@ -80,7 +80,6 @@ const SearchPage = (() => {
       if (category) filters.categories = [category];
       if (knowledgeType) filters.knowledge_types = [knowledgeType];
       filters.chunk_status = ['active'];
-      filters.index_status = ['indexed'];
 
       const res = await API.search(query, topK, filters, {
         hybrid: true,
@@ -101,7 +100,7 @@ const SearchPage = (() => {
   }
 
   function buildSearchFilters({ category, knowledgeType }) {
-    const filters = { chunk_status: ['active'], index_status: ['indexed'] };
+    const filters = { chunk_status: ['active'] };
     if (category) filters.categories = [category];
     if (knowledgeType) filters.knowledge_types = [knowledgeType];
     return filters;

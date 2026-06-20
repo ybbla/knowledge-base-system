@@ -374,7 +374,7 @@ class PptxParser(DocumentParser):
                 storage_uri=None,
                 mime_type=image.content_type or self._guess_mime(filename, AssetType.image),
                 content_hash=content_hash,
-                status=AssetStatus.pending,
+                status=AssetStatus.ready,
                 extracted_text=None,
                 metadata={
                     **self._slide_metadata(slide_index),
@@ -525,7 +525,7 @@ class PptxParser(DocumentParser):
             original_uri=url,
             storage_uri=None,
             mime_type=self._guess_mime(url, asset_type),
-            status=AssetStatus.pending,
+            status=AssetStatus.ready,
             extracted_text=None,
             metadata=metadata,
         )

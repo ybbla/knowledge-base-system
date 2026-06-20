@@ -72,7 +72,6 @@ const UI = (() => {
       { path: '/chunks',       icon: '⊞', label: '知识块管理' },
       { path: '/search',       icon: '⌕', label: '知识搜索' },
       { path: '/search-debug', icon: '⚙', label: '检索调试' },
-      { path: '/ingestion',    icon: '↻', label: '入库任务' },
     ];
 
     nav.innerHTML = items.map(item => `
@@ -201,14 +200,8 @@ const UI = (() => {
       active:    ['success', '活跃'],
       deleted:   ['error', '已删除'],
       failed:    ['error', '失败'],
-      pending:   ['warning', '等待中'],
-      accepted:  ['warning', '已接收'],
       processing:['info', '处理中'],
-      completed: ['success', '已完成'],
-      canceled:  ['neutral', '已取消'],
-      indexed:   ['success', '已索引'],
       ready:     ['success', '就绪'],
-      superseded:['neutral', '已替代'],
     };
     const [cls, label] = map[status] || ['neutral', status || '未知'];
     return `<span class="badge badge-${cls}">${label}</span>`;
@@ -261,8 +254,63 @@ const UI = (() => {
     },
   };
 
+  /* -----------------------------------------------------------------------
+     抽屉面板
+     ----------------------------------------------------------------------- */
+  function showDrawer(title, bodyHtml) {
+    const container = document.getElementById('modalContainer');
+    const el = document.createElement('div');
+    el.className = 'drawer';
+    el.innerHTML = `
+      <div class="drawer-overlay"></div>
+      <div class="drawer-content">
+        <div class="drawer-header">
+          <h2>${escapeHtml(title)}</h2>
+          <button class="btn-close" id="drawerCloseBtn">&times;</button>
+        </div>
+        <div class="drawer-body">${bodyHtml}</div>
+      </div>
+    `;
+    const close = () => {
+      el.querySelector('.drawer-content').style.transform = 'translateX(100%)';
+      el.querySelector('.drawer-overlay').style.opacity = '0';
+      setTimeout(() => el.remove(), 300);
+    };
+    el.querySelector('#drawerCloseBtn').addEventListener('click', close);
+    el.querySelector('.drawer-overlay').addEventListener('click', close);
+    container.appendChild(el);
+    return { close, el };
+  }
+
+  /* -----------------------------------------------------------------------
+     确认对话框
+     ----------------------------------------------------------------------- */
+  function showConfirm(title, message, confirmLabel = '确认', cancelLabel = '取消') {
+    return new Promise((resolve) => {
+      showModal(
+        title,
+        `<p style="color:var(--ink-soft);line-height:1.6">${escapeHtml(message)}</p>`,
+        `
+          <button class="btn btn-secondary" id="confirmCancelBtn">${escapeHtml(cancelLabel)}</button>
+          <button class="btn btn-primary" id="confirmOkBtn">${escapeHtml(confirmLabel)}</button>
+        `
+      );
+      // 绑定事件（需要在DOM渲染后）
+      setTimeout(() => {
+        document.getElementById('confirmCancelBtn')?.addEventListener('click', () => {
+          document.querySelector('.modal-backdrop:last-child')?.remove();
+          resolve(false);
+        });
+        document.getElementById('confirmOkBtn')?.addEventListener('click', () => {
+          document.querySelector('.modal-backdrop:last-child')?.remove();
+          resolve(true);
+        });
+      }, 50);
+    });
+  }
+
   return {
-    toast, showModal, renderSidebar, setBreadcrumb,
+    toast, showModal, showDrawer, showConfirm, renderSidebar, setBreadcrumb,
     escapeHtml, formatTime, formatSize, formatNumber,
     fmtBadge, sourceTypeLabel, ktypeBadge, ktypeLabel, statusBadge, render,
     ServiceStatus,

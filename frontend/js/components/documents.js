@@ -6,16 +6,21 @@ const Documents = (() => {
 
   let currentPage = 1;
   let currentKeyword = '';
-  let currentStatus = '';
+  let currentStatus = 'active';
   let currentCategory = '';
   let currentSort = 'updated_at:desc';
+  let currentTab = 'active';  // 当前标签页: active | failed | processing | deleted
+  let _forceFullRender = true; // 标签切换时强制完整渲染
+  let _selectAllAbort = 0;     // 取消异步全选
   let selectedIds = new Set();
   let categoryOptions = [];  // 从后端动态加载的分类列表
   let pageSize = 15;  // 每页显示数量
 
   async function renderList() {
     UI.setBreadcrumb([{ label: '仪表盘', path: '#/' }, { label: '文档管理' }]);
-    UI.render(`<div class="loading-overlay"><div class="loading-spinner"></div><span>加载文档列表…</span></div>`);
+
+    // 先渲染骨架结构，避免抖动
+    renderSkeleton();
 
     // 动态加载分类选项
     try {
@@ -26,8 +31,55 @@ const Documents = (() => {
     await loadPage(1);
   }
 
+  function renderSkeleton() {
+    UI.render(`
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1 class="page-title">文档管理</h1>
+            <p class="page-subtitle">管理已入库的文档，查看解析结果和知识块</p>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-outline btn-sm" disabled>批量操作</button>
+            <button class="btn btn-primary" disabled>↑ 上传文档</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 标签页 -->
+      <div class="doc-tabs">
+        <button class="doc-tab active" disabled data-tab="active">活跃</button>
+        <button class="doc-tab" disabled data-tab="failed">失败</button>
+        <button class="doc-tab" disabled data-tab="processing">处理中</button>
+        <button class="doc-tab" disabled data-tab="deleted">回收站</button>
+      </div>
+
+      <!-- 搜索过滤 -->
+      <div class="doc-toolbar kb-filter-bar document-filter-bar">
+        <input class="input kb-toolbar-search" type="text" placeholder="搜索文档标题…" disabled>
+        <select class="select select-sm" disabled>
+          <option value="">全部分类</option>
+        </select>
+        <select class="select select-sm" disabled>
+          <option value="updated_at:desc">更新时间</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" disabled>清空筛选</button>
+        <span class="doc-count"></span>
+      </div>
+
+      <!-- 文档表格 -->
+      <div class="table-wrap">
+        <div class="loading-overlay"><div class="loading-spinner"></div><span>加载文档列表…</span></div>
+      </div>
+    `);
+  }
+
   async function loadPage(page) {
     currentPage = page;
+
+    // 只在首次加载时显示loading
+    const isFirstLoad = page === 1 && currentKeyword === '' && currentCategory === '' && currentStatus === '';
+
     try {
       const [sortBy, sortOrder] = currentSort.split(':');
       const params = {
@@ -48,8 +100,26 @@ const Documents = (() => {
     }
   }
 
+  function showLoadingIndicator() {
+    const tableWrap = document.querySelector('.table-wrap');
+    if (tableWrap && !tableWrap.querySelector('.table-loading')) {
+      const loadingDiv = document.createElement('div');
+      loadingDiv.className = 'table-loading';
+      loadingDiv.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(255,255,255,0.8);display:flex;align-items:center;justify-content:center;z-index:10;';
+      loadingDiv.innerHTML = '<div class="loading-spinner"></div>';
+      tableWrap.style.position = 'relative';
+      tableWrap.appendChild(loadingDiv);
+    }
+  }
+
+  function hideLoadingIndicator() {
+    const loadingDiv = document.querySelector('.table-loading');
+    if (loadingDiv) {
+      loadingDiv.remove();
+    }
+  }
+
   function renderDocListHtml(res, state = {}) {
-    selectedIds.clear();
     const items = res?.data || [];
     const meta = res?.meta || {};
     const total = meta.total || 0;
@@ -88,51 +158,172 @@ const Documents = (() => {
     } else {
       rowsHtml = items.map(doc => `
         <tr>
-          <td><input type="checkbox" value="${doc.doc_id}" class="doc-checkbox" onclick="Documents.toggleSelect(event)" /></td>
+          <td><input type="checkbox" value="${doc.doc_id}" class="doc-checkbox" onclick="Documents.toggleSelect(event)" ${selectedIds.has(doc.doc_id) ? 'checked' : ''} /></td>
           <td>
             <div class="doc-title-cell">
               ${UI.fmtBadge(doc.source_type)}
-              <span class="doc-title-link" onclick="App.router.navigate('/documents/${UI.escapeHtml(doc.doc_id)}')">
-                ${UI.escapeHtml(doc.title || '未命名文档')}
-              </span>
+              <span class="doc-title-text">${UI.escapeHtml(doc.title || '未命名文档')}</span>
             </div>
           </td>
           <td>${UI.escapeHtml(doc.category || '通用')}</td>
           <td>${UI.statusBadge(doc.status || 'active')}</td>
-          <td>
-            <div class="doc-metrics">
-              <span class="metric-item" title="知识块数量"><strong class="metric-num">${doc.chunk_count ?? 0}</strong>块</span>
-              <span class="metric-separator">·</span>
-              <span class="metric-item" title="解析元素数量"><strong class="metric-num">${doc.element_count ?? 0}</strong>元素</span>
-              <span class="metric-separator">·</span>
-              <span class="metric-item" title="资源文件数量"><strong class="metric-num">${doc.asset_count ?? 0}</strong>资源</span>
-            </div>
-          </td>
+          <td>${UI.formatTime(doc.created_at)}</td>
           <td>${UI.formatTime(doc.updated_at) || UI.formatTime(doc.created_at)}</td>
           <td class="actions-cell">
-            <button class="btn btn-sm btn-ghost doc-action-btn" onclick="App.router.navigate('/documents/${UI.escapeHtml(doc.doc_id)}')" title="查看详情">
+            <button class="btn btn-sm btn-ghost doc-action-btn" onclick="Documents.showDocDetail('${doc.doc_id}')" title="查看详情">
               <span class="action-icon">👁</span>详情
             </button>
-            ${doc.status === 'deleted'
+            ${currentTab === 'deleted'
               ? `<button class="btn btn-sm btn-success doc-action-btn" onclick="Documents.restoreDoc('${doc.doc_id}')" title="恢复文档">
                    <span class="action-icon">↶</span>恢复
                  </button>`
-              : `
-                <button class="btn btn-sm btn-ghost doc-action-btn" onclick="Documents.showEditDialog('${doc.doc_id}')" title="编辑文档">
+              : currentTab === 'failed'
+              ? `
+                <button class="btn btn-sm btn-outline doc-action-btn" onclick="Documents.showEditDialog('${doc.doc_id}')" title="编辑文档">
                   <span class="action-icon">✎</span>编辑
                 </button>
-                <button class="btn btn-sm btn-ghost doc-action-btn" onclick="Documents.ingestDocument('${doc.doc_id}')" title="重新处理">
-                  <span class="action-icon">↻</span>重处理
+                <button class="btn btn-sm btn-warning doc-action-btn" onclick="Documents.retryDoc('${doc.doc_id}','${UI.escapeHtml(doc.title || '')}')" title="重新处理">
+                  <span class="action-icon">↻</span>重试
                 </button>
                 <button class="btn btn-sm btn-danger doc-action-btn" onclick="Documents.deleteDoc('${doc.doc_id}')" title="删除文档">
                   <span class="action-icon">🗑</span>删除
+                </button>`
+              : currentTab === 'processing'
+              ? `
+                <button class="btn btn-sm btn-outline doc-action-btn" onclick="Documents.showEditDialog('${doc.doc_id}')" title="编辑文档">
+                  <span class="action-icon">✎</span>编辑
+                </button>`
+              : `
+                <button class="btn btn-sm btn-outline doc-action-btn" onclick="Documents.showEditDialog('${doc.doc_id}')" title="编辑文档">
+                  <span class="action-icon">✎</span>编辑
                 </button>
-              `}
+                <button class="btn btn-sm btn-primary doc-action-btn" onclick="Documents.showUpdateModal('${doc.doc_id}', '${UI.escapeHtml(doc.title)}')" title="更新文档">
+                  <span class="action-icon">↑</span>更新
+                </button>
+                <button class="btn btn-sm btn-danger doc-action-btn" onclick="Documents.deleteDoc('${doc.doc_id}')" title="删除文档">
+                  <span class="action-icon">🗑</span>删除
+                </button>`}
           </td>
         </tr>
       `).join('');
     }
 
+    // 尝试增量更新，避免完整重新渲染导致的抖动
+    const contentEl = document.getElementById('content');
+    const tableWrap = contentEl?.querySelector('.table-wrap');
+    const docSearchInput = contentEl?.querySelector('#docSearchInput');
+    const docCategoryFilter = contentEl?.querySelector('#docCategoryFilter');
+    const docStatusFilter = contentEl?.querySelector('#docStatusFilter');
+    const docSortFilter = contentEl?.querySelector('#docSortFilter');
+
+    // 只有关键元素齐全且非强制重渲染时才做增量更新
+    if (!_forceFullRender && tableWrap && docSearchInput && docSortFilter) {
+      const tableBody = tableWrap.querySelector('tbody');
+      const docCount = contentEl?.querySelector('.doc-count');
+      const pagination = contentEl?.querySelector('.pagination');
+      const docSelectAll = contentEl?.querySelector('#docSelectAll');
+      const clearFiltersBtn = contentEl?.querySelector('button[onclick="Documents.resetFilters()"]');
+      // 更新搜索输入框值
+      if (docSearchInput && docSearchInput.value !== currentKeyword) {
+        docSearchInput.value = currentKeyword;
+      }
+
+      // 更新分类筛选框（重建选项以确保正确）
+      if (docCategoryFilter) {
+        const categoryHtml = `<option value="">全部分类</option>${categoryOptions.map(c => `<option value="${UI.escapeHtml(c)}" ${currentCategory === c ? 'selected' : ''}>${UI.escapeHtml(c)}</option>`).join('')}`;
+        if (docCategoryFilter.innerHTML !== categoryHtml) {
+          docCategoryFilter.innerHTML = categoryHtml;
+        }
+      }
+
+      // 更新状态筛选框
+      if (docStatusFilter) {
+        docStatusFilter.querySelectorAll('option').forEach(opt => {
+          opt.selected = opt.value === currentStatus;
+        });
+      }
+
+      // 更新排序选择框
+      if (docSortFilter) {
+        docSortFilter.querySelectorAll('option').forEach(opt => {
+          opt.selected = opt.value === currentSort;
+        });
+      }
+
+      // 更新表格内容
+      if (tableBody) {
+        tableBody.innerHTML = rowsHtml;
+      }
+
+      // 更新全选按钮状态
+      if (docSelectAll) {
+        docSelectAll.disabled = items.length === 0;
+        docSelectAll.checked = selectedIds.size > 0;
+      }
+
+      // 更新文档计数
+      docCount.textContent = errorMessage ? '' : `共 ${total} 篇文档`;
+
+      // 更新标签页激活状态
+      const docTabs = contentEl?.querySelectorAll('.doc-tab');
+      if (docTabs) {
+        docTabs.forEach(tab => {
+          tab.classList.toggle('active', tab.getAttribute('data-tab') === currentTab);
+        });
+      }
+
+      // 失败标签页有两个批量按钮，需要单独处理
+      if (currentTab === 'failed') {
+        const retryBtn = contentEl?.querySelector('#batchRetryBtn');
+        const deleteBtn = contentEl?.querySelector('#batchDeleteDocBtn');
+        if (retryBtn && !retryBtn.hasAttribute('onclick')) {
+          retryBtn.setAttribute('onclick', 'Documents.batchRetry()');
+        }
+        if (deleteBtn && deleteBtn.getAttribute('onclick') !== 'Documents.batchDelete()') {
+          deleteBtn.setAttribute('onclick', 'Documents.batchDelete()');
+        }
+      } else {
+        const batchBtn = contentEl?.querySelector('#batchDeleteDocBtn');
+        if (batchBtn) {
+          if (currentTab === 'deleted') {
+            batchBtn.textContent = '批量恢复';
+            batchBtn.setAttribute('onclick', 'Documents.batchRestore()');
+          } else {
+            batchBtn.textContent = '批量删除';
+            batchBtn.setAttribute('onclick', 'Documents.batchDelete()');
+          }
+        }
+      }
+
+      // 更新清空筛选按钮状态
+      if (clearFiltersBtn) {
+        clearFiltersBtn.disabled = !hasFilters;
+      }
+
+      // 更新或重建分页
+      if (totalPages > 1) {
+        const paginationHtml = `
+          <button class="btn btn-sm btn-secondary" onclick="Documents.loadPage(${currentPage - 1})" ${currentPage <= 1 ? 'disabled' : ''}>‹ 上一页</button>
+          <span class="pagination-info">${currentPage} / ${totalPages}（共 ${total} 篇）</span>
+          <button class="btn btn-sm btn-secondary" onclick="Documents.loadPage(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>下一页 ›</button>
+        `;
+        if (pagination) {
+          pagination.innerHTML = paginationHtml;
+        } else {
+          const newPagination = document.createElement('div');
+          newPagination.className = 'pagination';
+          newPagination.innerHTML = paginationHtml;
+          tableWrap.parentNode.insertBefore(newPagination, tableWrap.nextSibling);
+        }
+      } else if (pagination) {
+        pagination.remove();
+      }
+
+      return;  // 增量更新完成，不需要完整渲染
+    }
+
+    // 完整渲染
+    _forceFullRender = false;
     UI.render(`
       <div class="page-header">
         <div class="page-header-row">
@@ -141,10 +332,25 @@ const Documents = (() => {
             <p class="page-subtitle">管理已入库的文档，查看解析结果和知识块</p>
           </div>
           <div class="page-actions">
-            <button class="btn btn-outline btn-sm" onclick="Documents.batchDelete()" id="batchDeleteDocBtn" disabled>批量删除</button>
+            ${currentTab === 'failed' ? `
+              <button class="btn btn-outline btn-sm" onclick="Documents.batchRetry()" id="batchRetryBtn" disabled>批量重试</button>
+              <button class="btn btn-outline btn-sm" onclick="Documents.batchDelete()" id="batchDeleteDocBtn" disabled>批量删除</button>
+            ` : currentTab === 'deleted' ? `
+              <button class="btn btn-outline btn-sm" onclick="Documents.batchRestore()" id="batchDeleteDocBtn" disabled>批量恢复</button>
+            ` : currentTab === 'active' ? `
+              <button class="btn btn-outline btn-sm" onclick="Documents.batchDelete()" id="batchDeleteDocBtn" disabled>批量删除</button>
+            ` : ''}
             <button class="btn btn-primary" onclick="Documents.showUploadModal()">↑ 上传文档</button>
           </div>
         </div>
+      </div>
+
+      <!-- 标签页 -->
+      <div class="doc-tabs">
+        <button class="doc-tab${currentTab === 'active' ? ' active' : ''}" data-tab="active" onclick="Documents.switchTab('active')">活跃 <span class="tab-count" id="tabCountActive"></span></button>
+        <button class="doc-tab${currentTab === 'failed' ? ' active' : ''}" data-tab="failed" onclick="Documents.switchTab('failed')">失败 <span class="tab-count" id="tabCountFailed"></span></button>
+        <button class="doc-tab${currentTab === 'processing' ? ' active' : ''}" data-tab="processing" onclick="Documents.switchTab('processing')">处理中 <span class="tab-count" id="tabCountProcessing"></span></button>
+        <button class="doc-tab${currentTab === 'deleted' ? ' active' : ''}" data-tab="deleted" onclick="Documents.switchTab('deleted')">回收站 <span class="tab-count" id="tabCountDeleted"></span></button>
       </div>
 
       <!-- 搜索过滤 -->
@@ -155,15 +361,10 @@ const Documents = (() => {
           <option value="">全部分类</option>
           ${categoryOptions.map(c => `<option value="${UI.escapeHtml(c)}" ${currentCategory === c ? 'selected' : ''}>${UI.escapeHtml(c)}</option>`).join('')}
         </select>
-        <select class="select select-sm" id="docStatusFilter" onchange="Documents.doSearch()">
-          <option value="">全部状态</option>
-          <option value="active" ${currentStatus === 'active' ? 'selected' : ''}>活跃</option>
-          <option value="failed" ${currentStatus === 'failed' ? 'selected' : ''}>失败</option>
-          <option value="deleted" ${currentStatus === 'deleted' ? 'selected' : ''}>已删除</option>
-        </select>
         <select class="select select-sm" id="docSortFilter" onchange="Documents.doSearch()">
           <option value="updated_at:desc" ${currentSort === 'updated_at:desc' ? 'selected' : ''}>更新时间</option>
           <option value="title:asc" ${currentSort === 'title:asc' ? 'selected' : ''}>标题 A-Z</option>
+          <option value="created_at:desc" ${currentSort === 'created_at:desc' ? 'selected' : ''}>创建时间</option>
         </select>
         <button class="btn btn-ghost btn-sm" onclick="Documents.resetFilters()" ${hasFilters ? '' : 'disabled'}>清空筛选</button>
         <span class="doc-count">${errorMessage ? '' : `共 ${total} 篇文档`}</span>
@@ -174,13 +375,13 @@ const Documents = (() => {
         <table class="doc-table">
           <thead>
             <tr>
-              <th style="width: 4%;"><input type="checkbox" id="docSelectAll" onclick="Documents.toggleSelectAll()" ${items.length === 0 ? 'disabled' : ''} /></th>
-              <th style="width: 32%;">文档名称</th>
-              <th style="width: 9%;">分类</th>
-              <th style="width: 9%;">状态</th>
-              <th style="width: 12%;">解析结果</th>
-              <th style="width: 14%;">更新时间</th>
-              <th style="width: 20%;">操作</th>
+              <th style="width: 4%;"><input type="checkbox" id="docSelectAll" onclick="Documents.toggleSelectAll()" ${items.length === 0 ? 'disabled' : ''} ${selectedIds.size > 0 ? 'checked' : ''} /></th>
+              <th style="width: 30%;">文档名称</th>
+              <th style="width: 8%;">分类</th>
+              <th style="width: 8%;">状态</th>
+              <th style="width: 13%;">创建时间</th>
+              <th style="width: 13%;">更新时间</th>
+              <th style="width: 24%;">操作</th>
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
@@ -203,15 +404,25 @@ const Documents = (() => {
   function doSearch() {
     currentKeyword = document.getElementById('docSearchInput')?.value?.trim() || '';
     currentCategory = document.getElementById('docCategoryFilter')?.value || '';
-    currentStatus = document.getElementById('docStatusFilter')?.value || '';
     currentSort = document.getElementById('docSortFilter')?.value || 'updated_at:desc';
+    loadPage(1);
+  }
+
+  function switchTab(tab) {
+    currentTab = tab;
+    currentStatus = tab;
+    currentKeyword = '';
+    currentCategory = '';
+    currentPage = 1;
+    selectedIds.clear();
+    _selectAllAbort++; // 取消进行中的异步全选
+    _forceFullRender = true;
     loadPage(1);
   }
 
   function resetFilters() {
     currentKeyword = '';
     currentCategory = '';
-    currentStatus = '';
     currentSort = 'updated_at:desc';
     loadPage(1);
   }
@@ -225,10 +436,165 @@ const Documents = (() => {
   }
 
   /* -----------------------------------------------------------------------
+     文档详情抽屉
+     ----------------------------------------------------------------------- */
+  async function showDocDetail(docId) {
+    UI.showDrawer('文档详情', '<div class="loading-overlay" style="min-height:200px"><div class="loading-spinner"></div><span>加载中…</span></div>');
+    try {
+      const res = await API.getDocument(docId);
+      const doc = res?.data || {};
+      const status = doc.status || 'active';
+      const chunkCount = doc.chunk_count ?? 0;
+      const elementCount = doc.element_count ?? 0;
+      const assetCount = doc.asset_count ?? 0;
+
+      const bodyHtml = `
+        <div class="detail-grid">
+          <div class="detail-field">
+            <label>文档标题</label>
+            <span>${UI.escapeHtml(doc.title || '未命名文档')}</span>
+          </div>
+          <div class="detail-field">
+            <label>来源类型</label>
+            <span>${UI.sourceTypeLabel(doc.source_type)}</span>
+          </div>
+          <div class="detail-field">
+            <label>分类</label>
+            <span>${UI.escapeHtml(doc.category || '通用')}</span>
+          </div>
+          <div class="detail-field">
+            <label>状态</label>
+            <span>${UI.statusBadge(status)}</span>
+          </div>
+          <div class="detail-field">
+            <label>创建时间</label>
+            <span>${UI.formatTime(doc.created_at)}</span>
+          </div>
+          <div class="detail-field">
+            <label>更新时间</label>
+            <span>${UI.formatTime(doc.updated_at)}</span>
+          </div>
+          <div class="detail-field">
+            <label>知识块数量</label>
+            <span>${chunkCount}</span>
+          </div>
+          <div class="detail-field">
+            <label>解析元素数量</label>
+            <span>${elementCount}</span>
+          </div>
+          <div class="detail-field">
+            <label>资源文件数量</label>
+            <span>${assetCount}</span>
+          </div>
+          <div class="detail-field">
+            <label>文档版本</label>
+            <span>V${doc.version || 1}</span>
+          </div>
+        </div>
+
+        ${status === 'failed' && doc.error_message ? `
+        <div style="margin-top:var(--space-4);padding:var(--space-3) var(--space-4);background:var(--cinnabar-pale);border:1px solid rgba(185,77,63,0.2);border-radius:var(--radius-md);">
+          <div style="font-size:var(--text-xs);color:var(--cinnabar);font-weight:600;margin-bottom:var(--space-1)">处理错误</div>
+          <div style="font-size:var(--text-sm);color:var(--cinnabar)">${UI.escapeHtml(doc.error_message)}</div>
+        </div>` : ''}
+
+      `;
+
+      // 更新抽屉内容
+      const drawerBody = document.querySelector('.drawer-body');
+      if (drawerBody) drawerBody.innerHTML = bodyHtml;
+    } catch (e) {
+      const drawerBody = document.querySelector('.drawer-body');
+      if (drawerBody) {
+        drawerBody.innerHTML = `
+          <div class="empty-state empty-state-error">
+            <div class="empty-state-icon">!</div>
+            <div class="empty-state-title">加载失败</div>
+            <div class="empty-state-desc">${UI.escapeHtml(e.message)}</div>
+          </div>`;
+      }
+    }
+  }
+
+  /* -----------------------------------------------------------------------
+     处理中通知条
+     ----------------------------------------------------------------------- */
+  function showProcessingToast(items) {
+    // items: [{title, docId?}]
+    if (!items || !items.length) return;
+
+    let container = document.querySelector('.processing-toast-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.className = 'processing-toast-container';
+      document.body.appendChild(container);
+    }
+
+    items.forEach((item) => {
+      // 如果已有同 title 弹条且本次带了 docId，更新它
+      if (item.docId) {
+        const existing = [...container.querySelectorAll('.processing-toast-item')];
+        const match = existing.find(
+          el => el.querySelector('span')?.textContent === (item.title || '未命名')
+        );
+        if (match && !match.dataset.docId) {
+          match.dataset.docId = item.docId;
+          startPolling(match, item.docId);
+          return; // 更新已有条目，不新增
+        }
+      }
+
+      // 新增弹条
+      const el = document.createElement('div');
+      el.className = 'processing-toast-item';
+      el.innerHTML = `<div class="loading-spinner" style="width:14px;height:14px;border-width:2px"></div><span>${UI.escapeHtml(item.title || '未命名')}</span>`;
+
+      // 限制最多3条
+      const all = container.querySelectorAll('.processing-toast-item');
+      while (all.length >= 3) { all[0].remove(); }
+
+      container.appendChild(el);
+
+      // 如果已有 docId，开始轮询
+      if (item.docId) {
+        el.dataset.docId = item.docId;
+        startPolling(el, item.docId);
+      }
+
+      // 10 秒兜底关闭
+      const forceClose = setTimeout(() => {
+        el.classList.add('fading');
+        setTimeout(() => el.remove(), 400);
+      }, 10000);
+      el._forceClose = forceClose;
+    });
+  }
+
+  function startPolling(el, docId) {
+    let count = 0;
+    const poll = setInterval(async () => {
+      count++;
+      try {
+        const res = await API.getDocument(docId);
+        const status = res?.data?.status;
+        if (status === 'active' || status === 'failed') {
+          clearInterval(poll);
+          if (el._forceClose) clearTimeout(el._forceClose);
+          el.querySelector('.loading-spinner')?.remove();
+          el.innerHTML += status === 'active' ? ' ✓' : ' ✗';
+          setTimeout(() => { el.classList.add('fading'); setTimeout(() => el.remove(), 400); }, 2000);
+        }
+      } catch (e) { /* ignore */ }
+      if (count >= 20) clearInterval(poll);
+    }, 2000);
+  }
+
+  /* -----------------------------------------------------------------------
      CRUD 操作（v1）
      ----------------------------------------------------------------------- */
   async function deleteDoc(docId) {
-    if (!confirm('确认软删除该文档？关联知识块将同步标记为删除。')) return;
+    const ok = await UI.showConfirm('删除确认', '确认删除该文档？（注意：如果有关联的知识块，将同步删除。）', '确认删除');
+    if (!ok) return;
     try {
       await API.deleteDocument(docId);
       UI.toast('文档已删除', 'success');
@@ -248,27 +614,75 @@ const Documents = (() => {
     }
   }
 
-  async function ingestDocument(docId) {
+  async function retryDoc(docId, docTitle) {
+    // fire-and-forget：立即显示弹条，后台重试
+    showProcessingToast([{ title: docTitle || '文档' }]);
+    currentTab = 'failed';
+    currentStatus = 'failed';
+    loadPage(currentPage);
     try {
-      await API.ingestDocument(docId, 'incremental');
-      UI.toast('已触发重新处理', 'success');
+      await API.retryDocument(docId);
+      UI.toast('已重新入库', 'success');
+      loadPage(currentPage);
+      showProcessingToast([{ title: docTitle || '文档', docId }]);
     } catch (e) {
-      UI.toast(`重新处理失败: ${e.message}`, 'error');
+      UI.toast(`重试失败: ${e.message}`, 'error');
     }
   }
+
+  async function batchRetry() {
+    if (!selectedIds.size) return;
+    const ok = await UI.showConfirm('批量重试确认', `确认重新入库 ${selectedIds.size} 篇失败文档？`, '确认重试');
+    if (!ok) return;
+    let done = 0, fail = 0;
+    for (const id of selectedIds) {
+      try { await API.retryDocument(id); done++; } catch (e) { fail++; }
+    }
+    UI.toast(`重试完成: 成功 ${done}${fail ? `, 失败 ${fail}` : ''}`, fail ? 'error' : 'success');
+    selectedIds.clear();
+    loadPage(currentPage);
+  }
+
+  async function batchRestore() {
+    if (!selectedIds.size) return;
+    const ok = await UI.showConfirm('批量恢复确认', `确认恢复 ${selectedIds.size} 篇已删除文档？`, '确认恢复');
+    if (!ok) return;
+    let done = 0, fail = 0;
+    for (const id of selectedIds) {
+      try { await API.restoreDocument(id); done++; } catch (e) { fail++; }
+    }
+    UI.toast(`恢复完成: 成功 ${done}${fail ? `, 失败 ${fail}` : ''}`, fail ? 'error' : 'success');
+    selectedIds.clear();
+    loadPage(currentPage);
+  }
+
 
   /* -----------------------------------------------------------------------
      批量操作
      ----------------------------------------------------------------------- */
-  function toggleSelectAll() {
-    const checkboxes = document.querySelectorAll('.doc-checkbox');
+  async function toggleSelectAll() {
     const selectAll = document.getElementById('docSelectAll');
-    checkboxes.forEach(cb => {
-      cb.checked = selectAll.checked;
-      if (selectAll.checked) selectedIds.add(cb.value);
-      else selectedIds.delete(cb.value);
-    });
-    updateBatchBtn();
+    const checkboxes = document.querySelectorAll('.doc-checkbox');
+    if (selectAll.checked) {
+      // 先勾选当前页，等异步拉满后再启用按钮
+      checkboxes.forEach(cb => { cb.checked = true; selectedIds.add(cb.value); });
+      // 一次拉取全部 doc_id
+      const token = ++_selectAllAbort;
+      try {
+        const res = await API.listDocumentIds({
+          keyword: currentKeyword || undefined,
+          status: currentStatus || undefined,
+          category: currentCategory || undefined,
+        });
+        if (token !== _selectAllAbort) return;
+        (res?.data || []).forEach(id => selectedIds.add(id));
+      } catch (e) { /* skip */ }
+      if (token === _selectAllAbort) updateBatchBtn();
+    } else {
+      selectedIds.clear();
+      checkboxes.forEach(cb => { cb.checked = false; });
+      updateBatchBtn();
+    }
   }
 
   function toggleSelect(e) {
@@ -280,11 +694,14 @@ const Documents = (() => {
   function updateBatchBtn() {
     const btn = document.getElementById('batchDeleteDocBtn');
     if (btn) btn.disabled = selectedIds.size === 0;
+    const retryBtn = document.getElementById('batchRetryBtn');
+    if (retryBtn) retryBtn.disabled = selectedIds.size === 0;
   }
 
   async function batchDelete() {
     if (!selectedIds.size) return;
-    if (!confirm(`确认批量删除 ${selectedIds.size} 篇文档？`)) return;
+    const ok = await UI.showConfirm('批量删除确认', `确认批量删除 ${selectedIds.size} 篇文档？（注意：如果有关联的知识块，将同步删除。）`, '确认删除');
+    if (!ok) return;
     let done = 0;
     for (const id of selectedIds) {
       try { await API.deleteDocument(id); done++; } catch (e) { /* skip */ }
@@ -323,12 +740,11 @@ const Documents = (() => {
               <input id="editDocTitle" class="input" style="width: 100%;" value="${UI.escapeHtml(doc.title || '')}" />
             </div>
             <div>
-              <label class="field-label">分类 <span>(选择已有或输入新分类)</span></label>
+              <label class="field-label">分类</label>
               <select class="select" id="editDocCategorySelect" onchange="Documents.onEditCategorySelect()" style="width: 100%;">
                 ${catOptions}
                 <option value="__custom__">✚ 新增分类…</option>
               </select>
-              <input class="input" type="text" id="editDocCategoryInput" placeholder="输入新分类名称" style="width: 100%; margin-top: var(--space-2); display: none;">
             </div>
           </div>
         `,
@@ -344,29 +760,66 @@ const Documents = (() => {
 
   function onEditCategorySelect() {
     const select = document.getElementById('editDocCategorySelect');
-    const input = document.getElementById('editDocCategoryInput');
-    if (!select || !input) return;
+    if (!select) return;
     if (select.value === '__custom__') {
-      input.style.display = 'block';
-      input.focus();
-    } else {
-      input.style.display = 'none';
+      showNewCategoryDialog('edit');
+      select.value = ''; // 重置，避免再次触发
     }
+  }
+
+  function showNewCategoryDialog(mode) {
+    UI.showModal(
+      '新增分类',
+      `
+        <div class="form-stack">
+          <div>
+            <label class="field-label">分类名称 <span>*</span></label>
+            <input class="input" type="text" id="newCategoryInput" placeholder="输入新分类名称" style="width:100%" autofocus>
+          </div>
+        </div>
+      `,
+      `
+        <button class="btn btn-secondary" onclick="this.closest('.modal-backdrop').remove()">取消</button>
+        <button class="btn btn-primary" onclick="Documents.confirmNewCategory('${mode}')">确认添加</button>
+      `
+    );
+    setTimeout(() => document.getElementById('newCategoryInput')?.focus(), 100);
+  }
+
+  function confirmNewCategory(mode) {
+    const name = document.getElementById('newCategoryInput')?.value?.trim();
+    if (!name) { UI.toast('请输入分类名称', 'error'); return; }
+
+    if (mode === 'edit') {
+      const select = document.getElementById('editDocCategorySelect');
+      if (select) {
+        // 在 __custom__ 之前插入新选项
+        const customOpt = select.querySelector('option[value="__custom__"]');
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        opt.selected = true;
+        if (customOpt) {
+          select.insertBefore(opt, customOpt);
+        } else {
+          select.appendChild(opt);
+        }
+      }
+    }
+    // 关闭最顶层弹窗
+    const backdrops = document.querySelectorAll('.modal-backdrop');
+    if (backdrops.length) backdrops[backdrops.length - 1].remove();
+    UI.toast(`已添加分类: ${name}`, 'success');
   }
 
   async function saveEdit(docId) {
     const title = document.getElementById('editDocTitle')?.value?.trim();
     const categorySelect = document.getElementById('editDocCategorySelect');
-    const categoryInput = document.getElementById('editDocCategoryInput');
     const errorEl = document.getElementById('editDocFormError');
 
     let category = '通用';
     if (categorySelect) {
-      if (categorySelect.value === '__custom__') {
-        category = categoryInput?.value?.trim() || '通用';
-      } else {
-        category = categorySelect.value;
-      }
+      category = categorySelect.value || '通用';
     }
 
     if (!title) {
@@ -559,7 +1012,7 @@ const Documents = (() => {
     renderSelectedFiles();
   }
 
-  async function doUpload() {
+  async function doUpload(replaceDocId = null, confirmReplace = false) {
     if (!selectedFiles.length) { UI.toast('请先选择文件', 'error'); return; }
     const title = selectedFiles.length === 1 ? (document.getElementById('docTitle')?.value?.trim() || '') : '';
     const categorySelect = document.getElementById('docCategorySelect');
@@ -572,66 +1025,232 @@ const Documents = (() => {
         category = categorySelect.value;
       }
     }
-    const btn = document.getElementById('uploadBtn');
-    const progressDiv = document.getElementById('uploadProgress');
-    const progressFill = document.getElementById('uploadProgressFill');
-    const progressText = document.getElementById('uploadProgressText');
 
-    btn.disabled = true; btn.textContent = '上传中…';
-    progressDiv.style.display = 'block';
-    progressFill.style.width = '0%'; progressText.textContent = `准备上传 ${selectedFiles.length} 个文件…`;
+    // 立即关闭弹窗，显示弹条
+    const fileList = selectedFiles.slice();
+    closeUploadModal();
+    currentTab = 'active';
+    currentStatus = 'active';
+    loadPage(1);
+    showProcessingToast(fileList.map(f => ({ title: f.name })));
+
+    let success = 0;
+    let duplicate = 0;
+    let failed = 0;
+    let successItems = [];
 
     try {
-      let success = 0;
-      let duplicate = 0;
-      let failed = 0;
-      const failedFiles = [];
-      let hasIngestJob = false;
-
-      for (let i = 0; i < selectedFiles.length; i++) {
-        const file = selectedFiles[i];
-        progressText.textContent = `正在上传 ${i + 1}/${selectedFiles.length}：${file.name}`;
-        const startedPercent = Math.round((i / selectedFiles.length) * 100);
-        progressFill.style.width = `${startedPercent}%`;
-
+      for (let i = 0; i < fileList.length; i++) {
+        const file = fileList[i];
         try {
           const result = await API.uploadDocument(file, title, category, {
             ingestAfterCreate: true,
-            mode: 'incremental',
+            replaceDocId,
+            confirmReplace,
           });
           const data = result?.data || {};
-          if (data.duplicate) duplicate++;
-          else success++;
-          if (data.ingest_job_id) hasIngestJob = true;
+          if (data.duplicate) {
+            duplicate++;
+            UI.toast(`「${file.name}」内容重复，已跳过`, 'info');
+          } else if (data.suggested_replace && !confirmReplace) {
+            // 同名替换提示，重新打开弹窗
+            showReplaceConfirmModal(data, file, title, category);
+            return;
+          } else {
+            success++;
+            successItems.push({ title: file.name, docId: data.doc_id });
+          }
         } catch (e) {
           failed++;
-          failedFiles.push(file);
-          console.warn(`上传失败: ${file.name}`, e);
+          UI.toast(`「${file.name}」上传失败: ${e.message}`, 'error');
         }
-
-        const finishedPercent = Math.round(((i + 1) / selectedFiles.length) * 100);
-        progressFill.style.width = `${finishedPercent}%`;
       }
 
-      progressText.textContent = `上传完成：成功 ${success}，重复 ${duplicate}，失败 ${failed}`;
-      UI.toast(`上传完成：成功 ${success}，重复 ${duplicate}，失败 ${failed}`, failed ? 'error' : 'success');
-      if (failedFiles.length) {
-        selectedFiles = failedFiles;
-        renderSelectedFiles();
-        btn.disabled = false;
-        btn.textContent = '↑ 重试失败文件';
-        loadPage(currentPage);
-        return;
-      }
-      setTimeout(() => {
-        closeUploadModal();
-        loadPage(currentPage);
-        if (hasIngestJob) App.router.navigate('/ingestion');
-      }, 1000);
+      UI.toast(`上传完成：成功 ${success}，重复 ${duplicate}${failed ? `，失败 ${failed}` : ''}`, failed ? 'error' : 'success');
+      loadPage(1);
+      // 更新弹条为实际 docId 以便轮询
+      if (successItems.length) showProcessingToast(successItems);
     } catch (e) {
-      progressText.textContent = `失败: ${e.message}`;
       UI.toast(`上传失败: ${e.message}`, 'error');
-      btn.disabled = false; btn.textContent = '↑ 重试上传';
+    }
+  }
+
+  function showReplaceConfirmModal(suggestedData, file, title, category) {
+    const backdrop = document.querySelector('.modal-backdrop');
+    if (backdrop) backdrop.remove();
+
+    UI.showModal(
+      '检测到同名文件',
+      `
+        <div style="padding: var(--space-4) 0;">
+          <div style="display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-4);">
+            <span style="font-size: 2rem;">⚠️</span>
+            <div>
+              <div style="font-weight: 550;">已存在同名文档</div>
+              <div style="font-size: var(--text-sm); color: var(--ink-wash);">
+                文档：${UI.escapeHtml(suggestedData.suggested_doc_title || '未命名')}
+              </div>
+            </div>
+          </div>
+          <div style="background: var(--mist); padding: var(--space-3); border-radius: var(--radius-md);">
+            <div style="font-size: var(--text-sm); color: var(--ink-wash);">
+              即将上传：${UI.escapeHtml(file.name)}
+            </div>
+          </div>
+        </div>
+      `,
+      `
+        <button class="btn btn-secondary" onclick="Documents.closeUploadModal();">取消</button>
+        <button class="btn btn-outline" onclick="Documents.uploadAsNew('${UI.escapeHtml(suggestedData.suggested_doc_id)}')">作为新文档上传</button>
+        <button class="btn btn-primary" onclick="Documents.confirmReplace('${UI.escapeHtml(suggestedData.suggested_doc_id)}')">替换现有文档</button>
+      `
+    );
+  }
+
+  async function uploadAsNew(skipDocId) {
+    closeUploadModal();
+    UI.toast('将作为新文档上传', 'info');
+    showUploadModal();
+  }
+
+  async function confirmReplace(docId) {
+    const backdrop = document.querySelector('.modal-backdrop');
+    if (backdrop) backdrop.remove();
+
+    showUploadModal();
+    setTimeout(() => {
+      selectedFiles = [selectedFiles[0]];
+      renderSelectedFiles();
+      const btn = document.getElementById('uploadBtn');
+      if (btn) {
+        btn.textContent = '↑ 确认替换并上传';
+        btn.onclick = () => Documents.doUpload(docId, true);
+      }
+    }, 100);
+  }
+
+  let updatingDocId = null;
+
+  async function showUpdateModal(docId, docTitle) {
+    updatingDocId = docId;
+
+    let existingCategories = [];
+    try {
+      const res = await API.searchFilters();
+      existingCategories = (res?.data?.categories || []).map(c => c.value);
+    } catch (e) { /* ignore */ }
+
+    UI.showModal(
+      `更新文档：${docTitle}`,
+      `
+        <div class="upload-zone" id="updateUploadZone" style="border: 2px dashed var(--mist); border-radius: var(--radius-lg); padding: var(--space-6); text-align: center; cursor: pointer; transition: border-color var(--duration-fast) var(--ease-out);">
+          <span style="font-size: 2.5rem;">📁</span>
+          <div style="font-weight: 550; margin-top: var(--space-2);">选择新版本文件</div>
+          <div style="font-size: var(--text-xs); color: var(--ink-wash); margin-top: var(--space-1);">旧版本将被软删除，新知识块将重新生成</div>
+          <input type="file" id="updateFileInput" style="display: none;" accept=".md,.txt,.docx,.xlsx,.html,.htm,.pdf,.pptx">
+          <button class="btn btn-primary" onclick="document.getElementById('updateFileInput').click();event.stopPropagation()" style="margin-top: var(--space-3);">选择文件</button>
+        </div>
+
+        <div id="updateFileInfo" style="display: none; margin-top: var(--space-4);">
+          <div class="card">
+            <div style="display: flex; align-items: center; gap: var(--space-3);">
+              <span style="font-size: 1.5rem;">📄</span>
+              <div style="flex: 1;">
+                <div style="font-weight: 550;" id="updateFileNameDisplay">—</div>
+                <div style="font-size: var(--text-xs); color: var(--ink-wash);" id="updateFileSizeDisplay">—</div>
+              </div>
+              <button class="btn btn-sm btn-ghost" onclick="Documents.clearUpdateFile()">✕</button>
+            </div>
+          </div>
+
+          <div id="updateUploadProgress" style="display: none; margin-top: var(--space-4);">
+            <div class="upload-progress-bar"><div class="upload-progress-fill" id="updateUploadProgressFill" style="width: 0%;"></div></div>
+            <div class="upload-progress-text" id="updateUploadProgressText">上传中…</div>
+          </div>
+        </div>
+      `,
+      `
+        <button class="btn btn-secondary" onclick="this.closest('.modal-backdrop').remove()">取消</button>
+        <button class="btn btn-primary" id="updateUploadBtn" onclick="Documents.doUpdateUpload()" disabled>↑ 更新文档</button>
+      `
+    );
+
+    setTimeout(() => {
+      const zone = document.getElementById('updateUploadZone');
+      const input = document.getElementById('updateFileInput');
+      if (zone && input) {
+        zone.addEventListener('click', () => input.click());
+        zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
+        zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+        zone.addEventListener('drop', (e) => {
+          e.preventDefault(); zone.classList.remove('drag-over');
+          if (e.dataTransfer.files.length > 0) selectUpdateFile(e.dataTransfer.files[0]);
+        });
+        input.addEventListener('change', () => { if (input.files.length > 0) selectUpdateFile(input.files[0]); });
+      }
+    }, 50);
+  }
+
+  let selectedUpdateFile = null;
+
+  function selectUpdateFile(file) {
+    if (!file) return;
+    if (file.size > 100 * 1024 * 1024) {
+      UI.toast('文件超过 100 MB', 'error');
+      return;
+    }
+    selectedUpdateFile = file;
+    document.getElementById('updateFileInfo').style.display = 'block';
+    document.getElementById('updateFileNameDisplay').textContent = file.name;
+    document.getElementById('updateFileSizeDisplay').textContent = UI.formatSize(file.size);
+    const btn = document.getElementById('updateUploadBtn');
+    if (btn) btn.disabled = false;
+  }
+
+  function clearUpdateFile() {
+    selectedUpdateFile = null;
+    document.getElementById('updateFileInfo').style.display = 'none';
+    const input = document.getElementById('updateFileInput');
+    if (input) input.value = '';
+    const btn = document.getElementById('updateUploadBtn');
+    if (btn) btn.disabled = true;
+  }
+
+  async function doUpdateUpload() {
+    if (!selectedUpdateFile || !updatingDocId) {
+      UI.toast('请先选择文件', 'error');
+      return;
+    }
+
+    const file = selectedUpdateFile;
+    const updateTitle = file.name || '文档';
+
+    // 立即关闭弹窗，显示弹条
+    document.querySelector('.modal-backdrop:last-child')?.remove();
+    currentTab = 'active';
+    currentStatus = 'active';
+    loadPage(1);
+    showProcessingToast([{ title: updateTitle }]);
+
+    try {
+      const result = await API.uploadDocument(file, '', '通用', {
+        ingestAfterCreate: true,
+        replaceDocId: updatingDocId,
+        confirmReplace: true,
+      });
+
+      const data = result?.data || {};
+      if (data.duplicate) {
+        UI.toast('文件内容与已有文档重复，更新已取消', 'error');
+      } else if (data.suggested_replace) {
+        UI.toast('检测到同名文件，请重新操作', 'error');
+      } else {
+        UI.toast('文档已更新', 'success');
+        loadPage(1);
+        showProcessingToast([{ title: updateTitle, docId: data.doc_id }]);
+      }
+    } catch (e) {
+      UI.toast(`更新失败: ${e.message}`, 'error');
     }
   }
 
@@ -641,5 +1260,5 @@ const Documents = (() => {
     return map[ext] || 'unknown';
   }
 
-  return { renderList, showUploadModal, closeUploadModal, onCategorySelect, onEditCategorySelect, doSearch, resetFilters, loadPage, deleteDoc, restoreDoc, ingestDocument, showEditDialog, saveEdit, toggleSelectAll, toggleSelect, batchDelete, selectFile, clearFile, removeSelectedFile, doUpload };
+  return { renderList, showUploadModal, closeUploadModal, onCategorySelect, onEditCategorySelect, showNewCategoryDialog, confirmNewCategory, doSearch, switchTab, resetFilters, loadPage, deleteDoc, restoreDoc, retryDoc, batchRetry, batchRestore, showEditDialog, saveEdit, toggleSelectAll, toggleSelect, batchDelete, selectFile, clearFile, removeSelectedFile, doUpload, showUpdateModal, selectUpdateFile, clearUpdateFile, doUpdateUpload, confirmReplace, uploadAsNew, showDocDetail };
 })();

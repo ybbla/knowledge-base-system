@@ -18,12 +18,5 @@ def test_ingestion_with_milvus_minio_end_to_end():
         source_uri="memory://inline",
         metadata={"raw_content": "# 标题\n\n![img](https://example.com/a.png)\n"},
     )
-    job = ingestion_pipeline.submit(doc)
-    assert job.job_id
-
-    deadline = time.time() + 60
-    while job.status in {"pending", "processing"} and time.time() < deadline:
-        time.sleep(0.5)
-
-    assert job.status == "completed"
-    assert job.chunk_count > 0
+    doc = ingestion_pipeline.ingest(doc)
+    assert doc.status.value == "active"

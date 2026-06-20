@@ -65,8 +65,7 @@ def _cleanup_doc(doc_id: str):
 
 def _create_chunk(doc_id: str, title="搜索测试知识块",
                   content="这是一个用于搜索集成测试的知识块内容。",
-                  knowledge_type="declarative", category="通用",
-                  index_after_create=True):
+                  knowledge_type="declarative", category="通用"):
     """创建测试知识块并返回响应 JSON data。"""
     resp = client.post("/api/v1/chunks", params={
         "doc_id": doc_id,
@@ -74,7 +73,6 @@ def _create_chunk(doc_id: str, title="搜索测试知识块",
         "content": content,
         "knowledge_type": knowledge_type,
         "category": category,
-        "index_after_create": str(index_after_create).lower(),
     })
     assert resp.status_code == 201, f"创建知识块失败: {resp.text}"
     return resp.json()["data"]
@@ -229,13 +227,6 @@ class TestSearchFilters:
         chunk_statuses = response.json()["data"].get("chunk_statuses", [])
 
         assert isinstance(chunk_statuses, list)
-
-    def test_filters_contains_index_statuses(self):
-        """筛选项包含 index_statuses 列表（search.js:87 用 indexed 过滤）。"""
-        response = client.get("/api/v1/search/filters")
-        index_statuses = response.json()["data"].get("index_statuses", [])
-
-        assert isinstance(index_statuses, list)
 
     def test_filters_contains_doc_statuses(self):
         """筛选项包含 doc_statuses 列表。"""
@@ -538,7 +529,6 @@ class TestStandardSearch:
             "top_k": 3,
             "filters": {
                 "chunk_status": ["active"],
-                "index_status": ["indexed"],
             },
             "options": {
                 "hybrid": True,
@@ -1080,7 +1070,6 @@ class TestSearchFrontendWorkflow:
             "top_k": 3,
             "filters": {
                 "chunk_status": ["active"],
-                "index_status": ["indexed"],
             },
             "options": {
                 "hybrid": True,

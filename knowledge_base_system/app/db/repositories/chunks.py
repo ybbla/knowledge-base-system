@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from app.core.models import (
     AssetRef,
     AssetRelation,
-    ChunkIndexStatus,
     KnowledgeChunk,
     KnowledgeType,
     Render,
@@ -26,19 +25,14 @@ class PgChunkStore(BaseRepository):
         return DbKnowledgeChunk(
             chunk_id=chunk.chunk_id,
             doc_id=chunk.doc_id,
-            doc_version=chunk.doc_version,
             title=chunk.title,
             content=chunk.content,
             content_hash=chunk.content_hash,
             knowledge_type=chunk.knowledge_type.value,
             category=chunk.category,
             status=chunk.status.value,
-            index_status=chunk.index_status.value,
-            indexed_at=chunk.indexed_at,
-            index_error=chunk.index_error,
             asset_refs=[ref.model_dump(mode="json") for ref in chunk.asset_refs],
             source_refs=[ref.model_dump(mode="json") for ref in chunk.source_refs],
-            ingest_job_id=chunk.ingest_job_id,
             meta=chunk.metadata,
         )
 
@@ -75,19 +69,14 @@ class PgChunkStore(BaseRepository):
         return KnowledgeChunk(
             chunk_id=db_chunk.chunk_id,
             doc_id=db_chunk.doc_id,
-            doc_version=db_chunk.doc_version,
             title=db_chunk.title,
             content=db_chunk.content,
             content_hash=db_chunk.content_hash,
             knowledge_type=KnowledgeType(db_chunk.knowledge_type),
             category=db_chunk.category,
             status=db_chunk.status,
-            index_status=ChunkIndexStatus(db_chunk.index_status or "pending"),
-            indexed_at=db_chunk.indexed_at,
-            index_error=db_chunk.index_error,
             asset_refs=asset_refs,
             source_refs=source_refs,
-            ingest_job_id=db_chunk.ingest_job_id,
             metadata=db_chunk.meta or {},
         )
 
@@ -121,47 +110,6 @@ class PgChunkStore(BaseRepository):
             db_chunks = query.order_by(DbKnowledgeChunk.chunk_id).all()
             return [self._from_db(c) for c in db_chunks]
 
-    def list_by_index_status(
-        self,
-        statuses: list[ChunkIndexStatus | str],
-        limit: int | None = None,
-    ) -> list[KnowledgeChunk]:
-        values = [
-            status.value if isinstance(status, ChunkIndexStatus) else status
-            for status in statuses
-        ]
-        with self._session() as session:
-            query = (
-                session.query(DbKnowledgeChunk)
-                .filter(DbKnowledgeChunk.index_status.in_(values))
-                .order_by(DbKnowledgeChunk.chunk_id)
-            )
-            if limit is not None:
-                query = query.limit(limit)
-            return [self._from_db(c) for c in query.all()]
-
-    def update_index_status(
-        self,
-        chunk_ids: list[str],
-        status: ChunkIndexStatus | str,
-        error: str | None = None,
-    ) -> None:
-        if not chunk_ids:
-            return
-        value = status.value if isinstance(status, ChunkIndexStatus) else status
-        indexed_at = datetime.now(timezone.utc) if value == ChunkIndexStatus.indexed.value else None
-        with self._session() as session:
-            rows = (
-                session.query(DbKnowledgeChunk)
-                .filter(DbKnowledgeChunk.chunk_id.in_(chunk_ids))
-                .all()
-            )
-            for row in rows:
-                row.index_status = value
-                row.indexed_at = indexed_at
-                row.index_error = error
-            session.commit()
-
     def list_by_doc_id(self, doc_id: str) -> list[KnowledgeChunk]:
         """按文档 ID 查找所有知识块。"""
         with self._session() as session:
@@ -174,7 +122,7 @@ class PgChunkStore(BaseRepository):
             return [self._from_db(c) for c in db_chunks]
 
     def bulk_update_status_by_doc_id(self, doc_id: str, status: str) -> None:
-        """将指定文档下所有 status='active' 的 chunk 批量更新为新状态。"""
+        """将指定文档下所有活跃 chunk 批量更新为新状态（如 deleted）。"""
         from datetime import datetime, timezone
 
         with self._session() as session:
@@ -203,12 +151,9 @@ class PgChunkStore(BaseRepository):
         page_size: int = 20,
         keyword: str | None = None,
         doc_id: str | None = None,
-        doc_version: int | None = None,
         category: str | None = None,
         knowledge_type: str | None = None,
         status: str | None = None,
-        index_status: str | None = None,
-        ingest_job_id: str | None = None,
         has_assets: bool | None = None,
         has_sources: bool | None = None,
         sort_by: str = "chunk_id",
@@ -236,18 +181,12 @@ class PgChunkStore(BaseRepository):
             # ── 条件过滤 ──
             if doc_id is not None:
                 query = query.filter_by(doc_id=doc_id)
-            if doc_version is not None:
-                query = query.filter_by(doc_version=doc_version)
             if category is not None:
                 query = query.filter_by(category=category)
             if knowledge_type is not None:
                 query = query.filter_by(knowledge_type=knowledge_type)
             if status is not None:
                 query = query.filter_by(status=status)
-            if index_status is not None:
-                query = query.filter_by(index_status=index_status)
-            if ingest_job_id is not None:
-                query = query.filter_by(ingest_job_id=ingest_job_id)
 
             # ── 有关联资源/来源过滤（JSON 数组非空） ──
             if has_assets is True:

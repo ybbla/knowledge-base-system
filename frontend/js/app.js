@@ -32,12 +32,6 @@ const App = (() => {
       await SearchPage.render();
     });
 
-    // 入库任务
-    Router.on('/ingestion', async () => {
-      UI.renderSidebar('/ingestion');
-      await Ingestion.render();
-    });
-
     // ── v1 路由 ──
 
     // 知识块管理
@@ -63,14 +57,13 @@ const App = (() => {
     UI.showModal('服务状态详情', statusHtml);
 
     try {
-      const [readyRes, depsRes] = await Promise.all([
-        API.healthReady(),
-        API.healthDependencies(),
+      const [healthRes] = await Promise.all([
+        API.health(),
       ]);
 
-      const overallOk = readyRes?.data?.status === 'ok';
-      const deps = depsRes?.data?.dependencies || {};
-      const version = depsRes?.data?.version || '1.0.0';
+      const overallOk = healthRes?.data?.status === 'ok';
+      const deps = healthRes?.data?.dependencies || {};
+      const version = healthRes?.meta?.version || '1.0.0';
 
       statusHtml = `
         <div style="margin-bottom: var(--space-4);">
@@ -179,7 +172,6 @@ const App = (() => {
     documents: Documents,
     documentDetail: DocumentDetail,
     search: SearchPage,
-    ingestion: Ingestion,
     ui: UI,
     api: API,
   };

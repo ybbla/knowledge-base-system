@@ -102,7 +102,7 @@ class TestDbDocument:
 
         result = db_session.get(DbDocument, "doc_002")
         assert result.version == 1
-        assert result.status == "pending"
+        assert result.status == "processing"
         assert result.category == "通用"
         assert result.source_hash == ""
         assert result.parent_doc_id is None
@@ -485,7 +485,7 @@ class TestDbAsset:
         assert result.storage_uri is None
         assert result.mime_type == ""
         assert result.content_hash == ""
-        assert result.status == "pending"
+        assert result.status == "ready"
         assert result.extracted_text is None
         assert result.error_message is None
         assert result.meta == {}
@@ -506,7 +506,7 @@ class TestDbAsset:
             assert result.asset_type == atype
 
     def test_all_status_values(self, doc_fixture, db_session):
-        for status in ["pending", "ready", "failed", "skipped"]:
+        for status in ["ready", "failed"]:
             asset = DbAsset(
                 asset_id=f"asset_{status}",
                 doc_id="doc_001",
@@ -517,7 +517,7 @@ class TestDbAsset:
             db_session.add(asset)
         db_session.commit()
 
-        for status in ["pending", "ready", "failed", "skipped"]:
+        for status in ["ready", "failed"]:
             result = db_session.get(DbAsset, f"asset_{status}")
             assert result.status == status
 
@@ -558,22 +558,6 @@ class TestDbAsset:
         result = db_session.get(DbAsset, "asset_failed")
         assert result.status == "failed"
         assert result.error_message == "invalid_image_type"
-
-    def test_skipped_asset_with_error(self, doc_fixture, db_session):
-        asset = DbAsset(
-            asset_id="asset_skipped",
-            doc_id="doc_001",
-            asset_type="image",
-            original_uri="https://example.com/large.png",
-            status="skipped",
-            error_message="max_asset_size_exceeded",
-        )
-        db_session.add(asset)
-        db_session.commit()
-
-        result = db_session.get(DbAsset, "asset_skipped")
-        assert result.status == "skipped"
-        assert result.error_message == "max_asset_size_exceeded"
 
     def test_source_element_id_traceability(self, doc_fixture, db_session):
         asset = DbAsset(
@@ -645,9 +629,6 @@ class TestDbKnowledgeChunk:
         assert result.content == "Content with keywords."
         assert result.category == "产品使用"
         assert result.knowledge_type == "declarative"
-        assert result.index_status == "pending"
-        assert result.indexed_at is None
-        assert result.index_error is None
 
         # JSONB round-trip
         assert len(result.asset_refs) == 1
@@ -666,18 +647,13 @@ class TestDbKnowledgeChunk:
         db_session.commit()
 
         result = db_session.get(DbKnowledgeChunk, "chunk_default")
-        assert result.doc_version == 1
         assert result.title == ""
         assert result.content_hash == ""
         assert result.knowledge_type == "declarative"
         assert result.category == "通用"
         assert result.status == "active"
-        assert result.index_status == "pending"
-        assert result.indexed_at is None
-        assert result.index_error is None
         assert result.asset_refs == []
         assert result.source_refs == []
-        assert result.ingest_job_id == ""
         assert result.meta == {}
 
     def test_all_knowledge_types(self, doc_fixture, db_session):
@@ -696,7 +672,7 @@ class TestDbKnowledgeChunk:
             assert result.knowledge_type == ktype
 
     def test_all_chunk_status_values(self, doc_fixture, db_session):
-        for status in ["active", "superseded", "deleted"]:
+        for status in ["active", "deleted"]:
             chunk = DbKnowledgeChunk(
                 chunk_id=f"chunk_cs_{status}",
                 doc_id="doc_001",
@@ -706,65 +682,9 @@ class TestDbKnowledgeChunk:
             db_session.add(chunk)
         db_session.commit()
 
-        for status in ["active", "superseded", "deleted"]:
+        for status in ["active", "deleted"]:
             result = db_session.get(DbKnowledgeChunk, f"chunk_cs_{status}")
             assert result.status == status
-
-    def test_all_index_status_values(self, doc_fixture, db_session):
-        for istatus in ["pending", "indexing", "indexed", "failed"]:
-            chunk = DbKnowledgeChunk(
-                chunk_id=f"chunk_is_{istatus}",
-                doc_id="doc_001",
-                content="X",
-                index_status=istatus,
-            )
-            db_session.add(chunk)
-        db_session.commit()
-
-        for istatus in ["pending", "indexing", "indexed", "failed"]:
-            result = db_session.get(DbKnowledgeChunk, f"chunk_is_{istatus}")
-            assert result.index_status == istatus
-
-    def test_index_status_lifecycle(self, doc_fixture, db_session):
-        """模拟索引生命周期：pending → indexing → indexed。"""
-        chunk = DbKnowledgeChunk(
-            chunk_id="chunk_lifecycle",
-            doc_id="doc_001",
-            content="X",
-        )
-        db_session.add(chunk)
-        db_session.commit()
-
-        result = db_session.get(DbKnowledgeChunk, "chunk_lifecycle")
-        assert result.index_status == "pending"
-
-        result.index_status = "indexing"
-        db_session.commit()
-        result = db_session.get(DbKnowledgeChunk, "chunk_lifecycle")
-        assert result.index_status == "indexing"
-
-        now = datetime.now(timezone.utc)
-        result.index_status = "indexed"
-        result.indexed_at = now
-        db_session.commit()
-        result = db_session.get(DbKnowledgeChunk, "chunk_lifecycle")
-        assert result.index_status == "indexed"
-        assert result.indexed_at is not None
-
-    def test_index_failed_with_error(self, doc_fixture, db_session):
-        chunk = DbKnowledgeChunk(
-            chunk_id="chunk_failed",
-            doc_id="doc_001",
-            content="X",
-            index_status="failed",
-            index_error="embedding timeout",
-        )
-        db_session.add(chunk)
-        db_session.commit()
-
-        result = db_session.get(DbKnowledgeChunk, "chunk_failed")
-        assert result.index_status == "failed"
-        assert result.index_error == "embedding timeout"
 
     def test_asset_refs_multiple(self, doc_fixture, db_session):
         chunk = DbKnowledgeChunk(
@@ -839,19 +759,6 @@ class TestDbKnowledgeChunk:
         assert result.meta["title_path"] == ["产品使用手册", "上传文档"]
         assert result.meta["language"] == "zh-CN"
 
-    def test_ingest_job_id(self, doc_fixture, db_session):
-        chunk = DbKnowledgeChunk(
-            chunk_id="chunk_ingest",
-            doc_id="doc_001",
-            content="X",
-            ingest_job_id="job_001",
-        )
-        db_session.add(chunk)
-        db_session.commit()
-
-        result = db_session.get(DbKnowledgeChunk, "chunk_ingest")
-        assert result.ingest_job_id == "job_001"
-
     def test_query_by_doc_id(self, doc_fixture, db_session):
         for i in range(3):
             chunk = DbKnowledgeChunk(
@@ -865,36 +772,16 @@ class TestDbKnowledgeChunk:
         results = db_session.query(DbKnowledgeChunk).filter_by(doc_id="doc_001").all()
         assert len(results) == 3
 
-    def test_query_by_index_status(self, doc_fixture, db_session):
-        for istatus in ["pending", "indexed", "failed"]:
-            chunk = DbKnowledgeChunk(
-                chunk_id=f"chunk_query_{istatus}",
-                doc_id="doc_001",
-                content="X",
-                index_status=istatus,
-            )
-            db_session.add(chunk)
-        db_session.commit()
-
-        pending = db_session.query(DbKnowledgeChunk).filter_by(index_status="pending").all()
-        assert len(pending) == 1
-        assert pending[0].chunk_id == "chunk_query_pending"
-
     def test_full_fields_round_trip(self, doc_fixture, db_session):
-        now = datetime.now(timezone.utc)
         chunk = DbKnowledgeChunk(
             chunk_id="chunk_full",
             doc_id="doc_001",
-            doc_version=1,
             title="上传文档解析状态判断",
             content="系统支持通过网页端上传知识文档...",
             content_hash="sha256:abc123",
             knowledge_type="declarative",
             category="产品使用",
             status="active",
-            index_status="indexed",
-            indexed_at=now,
-            index_error=None,
             asset_refs=[
                 {"asset_id": "asset_001", "relation": "evidence",
                  "linked_text": "界面截图", "caption": "截图",
@@ -904,7 +791,6 @@ class TestDbKnowledgeChunk:
                 {"doc_id": "doc_001", "doc_version": 1, "element_id": "el_002",
                  "source_location": {"page": 3, "section_path": ["H1", "H2"]}},
             ],
-            ingest_job_id="job_001",
             meta={"title_path": ["手册", "上传"], "language": "zh-CN"},
         )
         db_session.add(chunk)
@@ -914,10 +800,6 @@ class TestDbKnowledgeChunk:
         assert result.title == "上传文档解析状态判断"
         assert result.content_hash == "sha256:abc123"
         assert result.status == "active"
-        assert result.index_status == "indexed"
-        assert result.indexed_at is not None
-        assert result.index_error is None
-        assert result.ingest_job_id == "job_001"
         assert len(result.asset_refs) == 1
         assert len(result.source_refs) == 1
         assert result.meta["language"] == "zh-CN"

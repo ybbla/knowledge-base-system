@@ -32,7 +32,7 @@ def process_image(
 
         max_size = settings.max_asset_size_mb * 1024 * 1024
         if len(data) > max_size:
-            asset.status = AssetStatus.skipped
+            asset.status = AssetStatus.failed
             asset.error_message = "max_asset_size_exceeded"
             asset_store.put(asset)
             return asset

@@ -30,7 +30,6 @@ class TestSearchRequestModel:
                 categories=["设备维护"],
                 knowledge_types=["declarative"],
                 chunk_status=["active"],
-                index_status=["indexed"],
             ),
         )
         assert req.filters.doc_ids == ["doc_1"]
@@ -90,7 +89,6 @@ class TestSearchResponse:
         """过滤条件正确传递。"""
         filters = SearchFilters(
             categories=["设备维护"],
-            chunk_status=["active"],
         )
         result = filters.model_dump(exclude_none=True)
         assert "categories" in result
@@ -140,7 +138,6 @@ class TestSearchFiltersEndpoint:
             "knowledge_types": [{"value": "declarative", "count": 8}],
             "doc_statuses": [{"value": "active"}],
             "chunk_statuses": [{"value": "active", "count": 8}],
-            "index_statuses": [{"value": "indexed", "count": 8}],
         })
         result = resp.model_dump(mode="json")
         assert "categories" in result["data"]
@@ -157,7 +154,6 @@ class TestSearchFiltersEndpoint:
             "knowledge_types": [],
             "doc_statuses": [],
             "chunk_statuses": [],
-            "index_statuses": [],
         })
         result = resp.model_dump(mode="json")
         # 文档仓储统计：技术 15（含尚无 chunk 的新文档）
@@ -201,7 +197,6 @@ class TestMultiCategorySearch:
             category="技术",
             knowledge_type="declarative",
             status="active",
-            index_status="indexed",
         )
         doc = SimpleNamespace(
             source_type="markdown",
@@ -219,7 +214,6 @@ class TestMultiCategorySearch:
             category="其他",
             knowledge_type="declarative",
             status="active",
-            index_status="indexed",
         )
         assert _matches_filters(chunk2, doc, filters) is False
 

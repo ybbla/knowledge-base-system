@@ -37,6 +37,7 @@ app.include_router(v1_router)
 
 # 旧版接口仅用于兼容存量调用方；新前端统一走 /api/v1。
 app.include_router(legacy_upload.router)
+# 以下 ingest 端点已废弃，计划后续版本移除。请使用 POST /api/v1/documents/upload 替代。
 app.include_router(legacy_ingest.router)
 app.include_router(legacy_search.router)
 app.include_router(legacy_documents.router)
