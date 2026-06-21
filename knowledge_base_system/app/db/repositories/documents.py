@@ -1,3 +1,8 @@
+"""文档仓储 — Document 的 PostgreSQL 持久化与查询。
+
+提供文档的 CRUD、分页过滤、去重、软删除/恢复、版本历史和聚合统计等功能。
+"""
+
 from __future__ import annotations
 
 import logging
@@ -12,9 +17,10 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentRepository(BaseRepository):
-    """Persist and query Document records in PostgreSQL."""
+    """文档仓储 — 实现 PostgreSQL 下的 Document 持久化存储与查询。"""
 
     def _to_db(self, doc: Document) -> DbDocument:
+        """将领域模型 Document 转换为 ORM 对象 DbDocument。"""
         return DbDocument(
             doc_id=doc.doc_id,
             title=doc.title,
@@ -34,6 +40,7 @@ class DocumentRepository(BaseRepository):
         )
 
     def _from_db(self, db_doc: DbDocument) -> Document:
+        """将 ORM 对象 DbDocument 还原为领域模型 Document。"""
         return Document(
             doc_id=db_doc.doc_id,
             title=db_doc.title,

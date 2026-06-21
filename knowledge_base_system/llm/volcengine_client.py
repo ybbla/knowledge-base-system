@@ -1,3 +1,12 @@
+"""火山引擎方舟 LLM/Embedding 客户端模块。
+
+封装火山引擎 Ark SDK 的调用：
+- LLMClient: 文本生成 + JSON 结构化输出 + 多模态图片/视频理解
+- EmbeddingClient: 文本向量化（multimodal_embeddings API，1024 维）
+
+模块级单例 llm_client 和 embedding_client 供全项目复用。
+"""
+
 import base64
 import json
 import logging
@@ -14,7 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_json(text: str) -> str:
-    """从 LLM 响应中提取 JSON，处理 markdown 代码块。"""
+    """从 LLM 响应文本中提取 JSON 内容。
+
+    优先匹配 ```json ... ``` 代码块，其次匹配裸花括号对。
+    """
     m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if m:
         return m.group(1).strip()
@@ -25,7 +37,7 @@ def _extract_json(text: str) -> str:
 
 
 def _create_ark_client(settings) -> Ark:
-    """创建带统一超时的火山方舟客户端。"""
+    """创建带统一超时配置的火山方舟 Ark 客户端（max_retries=0，由上层自行重试）。"""
     return Ark(
         api_key=settings.api_key,
         base_url=settings.base_url,
@@ -35,7 +47,13 @@ def _create_ark_client(settings) -> Ark:
 
 
 class LLMClient:
-    """火山引擎方舟 LLM 客户端 — 基于 Ark SDK。"""
+    """火山引擎方舟 LLM 客户端 — 封装文本生成、JSON 解析和多模态理解。
+
+    核心方法：
+    - chat_json: 文本聊天 + JSON Schema 约束输出，自动重试
+    - describe_image: 多模态图片内容中文描述
+    - describe_video: 多模态视频内容中文总结
+    """
 
     def chat_json(
         self,
@@ -43,7 +61,22 @@ class LLMClient:
         schema: dict[str, Any] | None = None,
         temperature: float = 0.3,
     ) -> dict[str, Any]:
-        """发送聊天请求，返回解析后的 JSON。失败自动重试。"""
+        """发送聊天请求并返回解析后的 JSON dict。
+
+        自动从 LLM 响应中提取 JSON（处理 markdown 代码块），
+        失败时按 max_json_retries 配置自动重试。
+
+        参数:
+            messages: 消息列表 [{"role": "system", "content": ...}, ...]
+            schema: 可选的 JSON Schema（仅校验 required 字段）
+            temperature: 采样温度，默认 0.3
+
+        返回:
+            解析后的 JSON 字典
+
+        抛出:
+            LLMError: 所有重试均失败或 API Key 未配置
+        """
         settings = get_settings(reload_env=True)
         model = settings.llm_model
         max_retries = settings.max_json_retries
@@ -91,7 +124,7 @@ class LLMClient:
 
     @staticmethod
     def _validate(data: dict[str, Any], schema: dict[str, Any]) -> None:
-        """基础 JSON Schema 校验（必填字段检查）。"""
+        """基础 JSON Schema 校验 — 仅检查 required 字段是否存在。"""
         required = schema.get("required", [])
         for field in required:
             if field not in data:
@@ -205,16 +238,19 @@ class LLMClient:
 
 
 class EmbeddingClient:
-    """火山引擎方舟 Embedding 客户端 — 基于 Ark SDK，调用 multimodal_embeddings。"""
+    """火山引擎方舟 Embedding 客户端 — 调用 multimodal_embeddings API 生成 1024 维稠密向量。"""
 
     def embed_text(self, texts: list[str]) -> list[list[float]]:
-        """生成文本嵌入向量，逐条调用 multimodal_embeddings API。
+        """生成文本嵌入向量（1024 维），逐条调用 multimodal_embeddings API。
 
         参数:
             texts: 待嵌入的文本列表
 
         返回:
-            嵌入向量列表，与输入顺序一一对应
+            嵌入向量列表，每个向量为 1024 维 float 列表，与输入顺序一一对应
+
+        抛出:
+            LLMError: API Key 未配置或调用失败
         """
         if not texts:
             return []
@@ -242,6 +278,6 @@ class EmbeddingClient:
             raise LLMError(f"Embedding 调用失败: {exc}") from exc
 
 
-# 模块级单例
+# 模块级单例 — 全项目通过这两个实例复用 LLM 和 Embedding 客户端
 llm_client = LLMClient()
 embedding_client = EmbeddingClient()

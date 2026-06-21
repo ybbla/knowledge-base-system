@@ -1,5 +1,10 @@
+"""Markdown 和纯文本文档解析器。
+
+使用 markdown-it 解析 Markdown 文档，提取标题、段落、列表、表格、代码块等
+结构化元素，同时识别图片和视频资源。
+"""
+
 import re
-from typing import Any
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
@@ -19,7 +24,10 @@ from parsers.base import DocumentParser, ParseResult
 
 
 class MarkdownParser(DocumentParser):
-    """Parse Markdown and plain-text documents into ParsedElements."""
+    """将 Markdown 和纯文本文档解析为 ParsedElement 和 Asset。
+
+    支持的 source_type：markdown、md、txt、text。
+    """
 
     SUPPORTED_TYPES = {"markdown", "md", "txt", "text"}
     VIDEO_URL_RE = re.compile(
@@ -39,6 +47,7 @@ class MarkdownParser(DocumentParser):
         return source_type.lower() in self.SUPPORTED_TYPES
 
     def parse(self, doc: Document) -> ParseResult:
+        """主解析入口：将 Markdown 文本解析为结构化元素和资源列表。"""
         md = MarkdownIt("commonmark", {"breaks": True, "html": False})
         md.enable("table")
         content = self._read_content(doc)
@@ -55,12 +64,13 @@ class MarkdownParser(DocumentParser):
         self._extract_video_assets(content, state, elements, assets)
         self._link_assets_to_elements(elements, assets)
 
-        # Update document hash
+        # 更新文档内容哈希
         doc.source_hash = compute_hash(content)
 
         return ParseResult(doc=doc, elements=elements, assets=assets)
 
     def _read_content(self, doc: Document) -> str:
+        """从 metadata.raw_content 或 file:// URI 读取文档文本。"""
         raw = doc.metadata.get("raw_content", "")
         if not raw and doc.source_uri.startswith("file://"):
             filepath = resolve_file_uri(doc.source_uri)
@@ -68,11 +78,12 @@ class MarkdownParser(DocumentParser):
                 raw = filepath.read_text(encoding="utf-8")
         return raw
 
-    # ── token processing ──────────────────────────────────────────
+    # ── token 遍历处理 ──────────────────────────────────────────
 
     def _process_token(
         self, token: Token, state: "_ParseState", assets: list[Asset]
     ) -> None:
+        """根据 token 类型分发到对应的状态转换方法。"""
         ttype = token.type
 
         if ttype == "heading_open":
@@ -84,7 +95,7 @@ class MarkdownParser(DocumentParser):
             state.add_title(heading_text, state.heading_level)
 
         elif ttype == "paragraph_open":
-            # Skip paragraph mode inside table cells and list items
+            # 在表格单元格和列表项内部不启用段落模式
             if not state.in_table_cell and not state.in_list_item:
                 state.in_paragraph = True
                 state.para_text = ""
@@ -99,7 +110,7 @@ class MarkdownParser(DocumentParser):
 
         elif ttype == "inline":
             inline_text = self._render_inline_text(token)
-            # Collect image assets
+            # 收集内嵌图片资源
             for child in token.children or []:
                 if child.type == "image":
                     asset = self._asset_from_image(child, state)
@@ -181,15 +192,18 @@ class MarkdownParser(DocumentParser):
             state.add_code(token.content, token.info or "")
 
         elif ttype == "blockquote_open":
-            pass  # treat as paragraph
+            pass  # 引用的开始，暂视为普通段落处理
 
         elif ttype == "blockquote_close":
-            pass
+            pass  # 引用的结束
 
-    # ── inline rendering ──────────────────────────────────────────
+    # ── 内联文本渲染 ──────────────────────────────────────────
 
     def _render_inline_text(self, token: Token) -> str:
-        """Extract plain text from an inline token."""
+        """从内联 token 中提取纯文本表示。
+
+        对图片、链接等元素生成可读的替代文本。
+        """
         if not token.children:
             return token.content
         parts: list[str] = []
@@ -221,7 +235,7 @@ class MarkdownParser(DocumentParser):
     def _asset_from_image(
         self, token: Token, state: "_ParseState"
     ) -> Asset:
-        """Create an Asset from a markdown image token."""
+        """从 Markdown 图片 token 创建 Asset 对象。"""
         src = ""
         alt = ""
         if isinstance(token.attrs, dict):
@@ -245,6 +259,7 @@ class MarkdownParser(DocumentParser):
         elements: list[ParsedElement],
         assets: list[Asset],
     ) -> None:
+        """从原始内容中提取视频链接并创建对应的 Asset 和 image/video 类型元素。"""
         seen = {asset.original_uri for asset in assets if asset.asset_type == AssetType.video}
         candidates: list[tuple[str, str]] = []
         candidates.extend((m.group("src"), "video") for m in self.VIDEO_TAG_RE.finditer(content))
@@ -280,6 +295,7 @@ class MarkdownParser(DocumentParser):
 
     @classmethod
     def _is_video_link(cls, src: str, alt: str = "") -> bool:
+        """判断链接是否为视频资源（基于 alt 文本、URL 模式或文件扩展名）。"""
         return (
             "video" in alt.lower()
             or bool(cls.VIDEO_URL_RE.search(src))
@@ -291,7 +307,7 @@ class MarkdownParser(DocumentParser):
         elements: list[ParsedElement],
         assets: list[Asset],
     ) -> None:
-        """Backfill source_element_id after elements have their generated IDs."""
+        """在元素获得生成的 ID 后，回填 Asset 的 source_element_id 关联。"""
         elements_by_asset_id = {
             asset_id: el.element_id
             for el in elements
@@ -305,6 +321,7 @@ class MarkdownParser(DocumentParser):
 
     @staticmethod
     def _guess_mime(uri: str) -> str:
+        """根据 URI 扩展名推断 MIME 类型。"""
         ext = uri.rsplit(".", 1)[-1].lower() if "." in uri else ""
         mime_map = {
             "png": "image/png",
@@ -319,11 +336,14 @@ class MarkdownParser(DocumentParser):
         return mime_map.get(ext, "application/octet-stream")
 
 
-# ── internal parse state machine ──────────────────────────────────
+# ── 内部解析状态机 ──────────────────────────────────────────
 
 
 class _ParseState:
-    """Mutable state machine for building elements during token traversal."""
+    """Markdown 解析过程中的可变状态，在 token 遍历时逐步构建元素。
+
+    维护当前段落、标题、列表、表格和资源的累积状态。
+    """
 
     def __init__(self, doc_id: str, doc_version: int):
         self.doc_id = doc_id
@@ -332,16 +352,16 @@ class _ParseState:
         self._seq = 0
         self._section_path: list[str] = []
 
-        # heading
+        # 标题状态
         self.heading_level = 0
         self.in_heading = False
         self.heading_text_parts: list[str] = []
 
-        # paragraph
+        # 段落状态
         self.in_paragraph = False
         self.para_text = ""
 
-        # list
+        # 列表状态
         self.in_list = False
         self.in_list_item = False
         self._pending_list_text = ""
@@ -350,7 +370,7 @@ class _ParseState:
         self._list_seq_start = 0
         self._list_section_path: list[str] = []
 
-        # table
+        # 表格状态
         self.in_table = False
         self.in_thead = False
         self.in_tbody = False
@@ -359,32 +379,36 @@ class _ParseState:
         self.table_rows: list[list[str]] = []
         self._current_row: list[str] | None = None
 
-        # tracking for sequence
+        # 资源跟踪
         self._tracked_assets: list[str] = []
 
     def _next_seq(self) -> int:
+        """生成递增的序号。"""
         self._seq += 1
         return self._seq
 
     def flush_elements(self) -> list[ParsedElement]:
-        """Return elements, cleaning up any unclosed state."""
+        """完成解析，返回所有累积的元素并清理未关闭的状态。"""
         return self.elements
 
-    # ── heading ───────────────────────────────────────────────────
+    # ── 标题 ─────────────────────────────────────────────────
 
     def open_heading(self, level: int) -> None:
+        """开始解析指定层级的标题。"""
         self.heading_level = level
         self.in_heading = True
         self.heading_text_parts = []
-        # Update section path
+        # 更新 section_path，弹出 >= 当前层级的路径
         while len(self._section_path) >= level:
             self._section_path.pop()
 
     def pop_heading_text(self) -> str:
+        """结束标题解析，返回标题文本。"""
         self.in_heading = False
         return "".join(self.heading_text_parts).strip()
 
     def add_title(self, text: str, level: int) -> None:
+        """添加标题元素并按层级更新 section_path。"""
         if not text:
             return
         self._section_path.append(text)
@@ -400,9 +424,10 @@ class _ParseState:
             )
         )
 
-    # ── paragraph ─────────────────────────────────────────────────
+    # ── 段落 ─────────────────────────────────────────────────
 
     def add_paragraph(self, text: str) -> None:
+        """添加段落元素，关联之前跟踪的资源 ID。"""
         el = ParsedElement(
             doc_id=self.doc_id,
             doc_version=self.doc_version,
@@ -416,9 +441,10 @@ class _ParseState:
             self._tracked_assets = []
         self.elements.append(el)
 
-    # ── list ──────────────────────────────────────────────────────
+    # ── 列表 ─────────────────────────────────────────────────
 
     def open_list(self, ordered: bool) -> None:
+        """开始解析列表容器。"""
         self.in_list = True
         self._list_ordered = ordered
         self._list_items = []
@@ -426,9 +452,11 @@ class _ParseState:
         self._list_section_path = list(self._section_path)
 
     def add_list_item(self, text: str) -> None:
+        """向当前列表追加一项。"""
         self._list_items.append(text)
 
     def close_list(self) -> ParsedElement | None:
+        """关闭列表容器，返回列表容器元素（子项已提前添加到 elements）。"""
         self.in_list = False
         if not self._list_items:
             return None
@@ -458,9 +486,10 @@ class _ParseState:
         self._list_items = []
         return container
 
-    # ── code ──────────────────────────────────────────────────────
+    # ── 代码块 ──────────────────────────────────────────────
 
     def add_code(self, content: str, language: str) -> None:
+        """添加代码块元素。"""
         self.elements.append(
             ParsedElement(
                 doc_id=self.doc_id,
@@ -473,15 +502,17 @@ class _ParseState:
             )
         )
 
-    # ── table ─────────────────────────────────────────────────────
+    # ── 表格 ─────────────────────────────────────────────────
 
     def open_table(self) -> None:
+        """开始解析表格。"""
         self.in_table = True
         self.table_headers = []
         self.table_rows = []
         self._current_row = None
 
     def close_table(self) -> ParsedElement | None:
+        """关闭表格，返回包含结构化数据和纯文本的表格元素。"""
         self.in_table = False
         if not self.table_rows:
             return None
@@ -518,7 +549,8 @@ class _ParseState:
             source_location=SourceLocation(section_path=list(self._section_path)),
         )
 
-    # ── assets ────────────────────────────────────────────────────
+    # ── 资源 ─────────────────────────────────────────────────
 
     def add_asset_id(self, asset_id: str) -> None:
+        """记录当前段落引用的资源 ID，用于后续关联。"""
         self._tracked_assets.append(asset_id)

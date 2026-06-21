@@ -1,3 +1,9 @@
+"""PPTX 演示文稿解析器。
+
+使用 python-pptx 将 .pptx 文件解析为统一的 ParsedElement 和 Asset，
+支持幻灯片标题、文本形状、列表、表格、图片和超链接资源的提取。
+"""
+
 import hashlib
 import io
 import re
@@ -22,12 +28,14 @@ from parsers.base import DocumentParser, ParseResult
 
 @dataclass
 class _AssetRecord:
+    """内部 Asset 记录，含去重用的查询键。"""
     asset: Asset
     key: tuple[str, str]
 
 
 @dataclass
 class _ShapeRecord:
+    """形状记录，含排序用的位置和索引信息。"""
     shape: Any
     index: int
     left: int
@@ -38,6 +46,7 @@ class _ShapeRecord:
 
 @dataclass
 class _PptxParseState:
+    """PPTX 解析过程中的可变状态。"""
     doc_id: str
     doc_version: int
     elements: list[ParsedElement] = field(default_factory=list)
@@ -47,12 +56,17 @@ class _PptxParseState:
     section_path: list[str] = field(default_factory=list)
 
     def next_seq(self) -> int:
+        """生成递增的序号。"""
         self.seq += 1
         return self.seq
 
 
 class PptxParser(DocumentParser):
-    """将 PPTX 演示文稿解析为统一的 ParsedElement 和 Asset。"""
+    """将 PPTX 演示文稿解析为统一的 ParsedElement 和 Asset。
+
+    支持的 source_type：pptx。
+    按幻灯片顺序处理形状，识别标题占位符、列表、表格和嵌入图片。
+    """
 
     SUPPORTED_TYPES = {"pptx"}
     VIDEO_URL_RE = re.compile(
@@ -78,6 +92,7 @@ class PptxParser(DocumentParser):
         return source_type.lower() in self.SUPPORTED_TYPES
 
     def parse(self, doc: Document) -> ParseResult:
+        """主解析入口：将 PPTX 文档解析为结构化元素和资源列表。"""
         raw = self._read_content(doc)
         if not raw:
             raise ValueError("PPTX 解析失败：文档内容为空")
@@ -108,6 +123,7 @@ class PptxParser(DocumentParser):
         return ParseResult(doc=doc, elements=state.elements, assets=state.assets)
 
     def _read_content(self, doc: Document) -> bytes:
+        """从 metadata.raw_content 或 file:// URI 读取文档字节。"""
         raw = doc.metadata.get("raw_content", b"")
         if raw:
             return raw.encode("utf-8") if isinstance(raw, str) else raw
@@ -126,6 +142,7 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> None:
+        """处理单个幻灯片：识别标题，然后按顺序处理其余形状。"""
         shape_records = self._shape_records(slide)
         title_record = self._find_title_shape(shape_records)
         title_text = (
@@ -170,6 +187,7 @@ class PptxParser(DocumentParser):
                 self._add_unknown(record, slide_index, state)
 
     def _shape_records(self, slide: Any) -> list[_ShapeRecord]:
+        """按 (top, left, index) 排序收集幻灯片中的所有形状。"""
         records: list[_ShapeRecord] = []
         for index, shape in enumerate(slide.shapes):
             records.append(
@@ -185,6 +203,10 @@ class PptxParser(DocumentParser):
         return sorted(records, key=lambda item: (item.top, item.left, item.index))
 
     def _find_title_shape(self, records: list[_ShapeRecord]) -> _ShapeRecord | None:
+        """定位幻灯片的标题形状。
+
+        优先匹配 TITLE/CENTER_TITLE 占位符类型，其次选首个有文本的形状。
+        """
         for record in records:
             if not self._shape_has_text(record.shape):
                 continue
@@ -204,6 +226,7 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> None:
+        """处理文本形状：区分列表和普通段落。"""
         paragraphs = self._paragraphs(record.shape)
         if not paragraphs:
             return
@@ -282,6 +305,7 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> None:
+        """处理表格形状，生成结构化表格元素。"""
         table = record.shape.table
         rows: list[list[dict[str, Any]]] = []
         asset_ids: list[str] = []
@@ -360,6 +384,7 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> None:
+        """处理图片形状，创建 image Asset 和对应的 ParsedElement。"""
         image = record.shape.image
         data = image.blob
         content_hash = f"sha256:{hashlib.sha256(data).hexdigest()}"
@@ -419,6 +444,7 @@ class PptxParser(DocumentParser):
         slide_index: int,
         state: _PptxParseState,
     ) -> None:
+        """为不支持的形状类型（图表、OLE 等）添加占位元素。"""
         self._append_element(
             state,
             ParsedElement(
@@ -426,7 +452,7 @@ class PptxParser(DocumentParser):
                 doc_version=state.doc_version,
                 sequence_order=state.next_seq(),
                 element_type=ElementType.unknown,
-                text=f"[Unsupported PPTX object: {self._shape_type_name(record.shape)}]",
+                text=f"[不支持的 PPTX 对象: {self._shape_type_name(record.shape)}]",
                 source_location=SourceLocation(section_path=list(state.section_path)),
                 metadata={
                     **self._slide_metadata(slide_index),
@@ -443,6 +469,7 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> list[str]:
+        """从文本中识别 URL 并创建对应的 Asset。"""
         urls = [match.group(0) for match in self.HTTP_URL_RE.finditer(text or "")]
         return self._asset_ids_for_urls(urls, record, slide_index, state, doc, "pptx_text")
 
@@ -453,6 +480,7 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> list[str]:
+        """从形状和文本运行中的超链接创建 Asset。"""
         urls: list[str] = []
         try:
             address = record.shape.click_action.hyperlink.address
@@ -489,6 +517,7 @@ class PptxParser(DocumentParser):
         doc: Document,
         source: str,
     ) -> list[str]:
+        """为一批 URL 创建 Asset 并返回 ID 列表。"""
         asset_ids: list[str] = []
         for url in dict.fromkeys(urls):
             asset_type = self._asset_type_for_url(url)
@@ -514,6 +543,7 @@ class PptxParser(DocumentParser):
         doc: Document,
         metadata: dict[str, Any],
     ) -> Asset:
+        """创建或查找已有 Asset（按 URL + 类型去重）。"""
         key = (asset_type.value, url)
         existing = state.assets_by_key.get(key)
         if existing is not None:
@@ -535,6 +565,7 @@ class PptxParser(DocumentParser):
 
     @staticmethod
     def _append_element(state: _PptxParseState, element: ParsedElement) -> None:
+        """添加元素并回链 Asset 的 source_element_id。"""
         linked = set(element.asset_ids)
         for record in state.assets_by_key.values():
             if record.asset.asset_id in linked and not record.asset.source_element_id:
@@ -542,6 +573,7 @@ class PptxParser(DocumentParser):
         state.elements.append(element)
 
     def _paragraphs(self, shape: Any) -> list[dict[str, Any]]:
+        """提取形状中的段落文本及缩进级别。"""
         items: list[dict[str, Any]] = []
         for paragraph in shape.text_frame.paragraphs:
             text = self._normalize_text(paragraph.text)
@@ -550,6 +582,10 @@ class PptxParser(DocumentParser):
         return items
 
     def _is_list_shape(self, shape: Any, paragraphs: list[dict[str, Any]]) -> bool:
+        """判断形状内容是否为列表格式。
+
+        依据：多段落 + 有缩进层级，或占位符类型为 BODY。
+        """
         if len(paragraphs) <= 1:
             return False
         if any(item["level"] > 0 for item in paragraphs):
@@ -558,36 +594,44 @@ class PptxParser(DocumentParser):
 
     @staticmethod
     def _shape_has_text(shape: Any) -> bool:
+        """判断形状是否包含文本框。"""
         return bool(getattr(shape, "has_text_frame", False))
 
     @staticmethod
     def _shape_has_table(shape: Any) -> bool:
+        """判断形状是否包含表格。"""
         return bool(getattr(shape, "has_table", False))
 
     def _shape_text(self, shape: Any) -> str:
+        """获取形状的纯文本内容（经空白归一化）。"""
         if not self._shape_has_text(shape):
             return ""
         return self._normalize_text(shape.text)
 
     @staticmethod
     def _normalize_text(text: str) -> str:
+        """将连续空白字符归一化为单个空格并去除首尾空白。"""
         return re.sub(r"[ \t\r\f\v]+", " ", text or "").strip()
 
     def _is_picture(self, shape: Any) -> bool:
+        """判断形状是否为图片。"""
         if hasattr(shape, "image"):
             return True
         return self._shape_type_name(shape) == "PICTURE"
 
     def _is_unsupported_shape(self, shape: Any) -> bool:
+        """判断形状是否为不支持的类型（图表、OLE 等）。"""
         return self._shape_type_name(shape) in self.UNSUPPORTED_SHAPE_TYPES
 
     @staticmethod
     def _shape_type_name(shape: Any) -> str:
+        """获取形状类型名称（大写字符串）。"""
         value = getattr(shape, "shape_type", "")
         return getattr(value, "name", str(value)).upper()
 
     @staticmethod
     def _placeholder_type_name(shape: Any) -> str:
+        """获取占位符类型名称（大写字符串）。"""
         if not getattr(shape, "is_placeholder", False):
             return ""
         try:
@@ -598,6 +642,7 @@ class PptxParser(DocumentParser):
 
     @staticmethod
     def _coord(shape: Any, attr: str) -> int:
+        """安全获取形状的 EMU 坐标整数值。"""
         value = getattr(shape, attr, 0)
         try:
             return int(value)
@@ -606,9 +651,11 @@ class PptxParser(DocumentParser):
 
     @staticmethod
     def _slide_metadata(slide_index: int) -> dict[str, Any]:
+        """生成幻灯片元数据字典。"""
         return {"slide_index": slide_index, "slide_number": slide_index}
 
     def _shape_metadata(self, record: _ShapeRecord) -> dict[str, Any]:
+        """生成形状元数据字典（ID、名称、类型、位置等）。"""
         shape = record.shape
         return {
             "shape_id": getattr(shape, "shape_id", None),
@@ -623,12 +670,15 @@ class PptxParser(DocumentParser):
         }
 
     def _is_video_url(self, url: str) -> bool:
+        """判断 URL 是否为视频链接。"""
         return bool(self.VIDEO_URL_RE.search(url or ""))
 
     def _is_audio_url(self, url: str) -> bool:
+        """判断 URL 是否为音频链接。"""
         return bool(self.AUDIO_URL_RE.search(url or ""))
 
     def _asset_type_for_url(self, url: str) -> AssetType:
+        """根据 URL 模式判断资源类型（视频/音频/附件）。"""
         if self._is_video_url(url):
             return AssetType.video
         if self._is_audio_url(url):
@@ -637,6 +687,7 @@ class PptxParser(DocumentParser):
 
     @staticmethod
     def _guess_mime(url: str, asset_type: AssetType) -> str:
+        """根据 URL 后缀和资源类型推断 MIME 类型。"""
         suffix = PurePosixPath(url.split("?", 1)[0]).suffix.lower()
         mime_map = {
             ".png": "image/png",

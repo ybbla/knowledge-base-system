@@ -1,3 +1,9 @@
+"""递归文档加载器 — 解析嵌入子文档，带深度和元素数量的边界保护。
+
+支持 load（从头解析根文档）和 load_embedded（从已解析元素继续递归）两种入口。
+通过 source_hash 去重和最大深度/元素数限制防止无限递归。
+"""
+
 import logging
 from collections.abc import Callable
 
@@ -11,7 +17,7 @@ ParseFn = Callable[[Document], ParseResult]
 
 
 class RecursiveLoader:
-    """Load and recursively parse embedded documents with boundary protection."""
+    """递归文档加载器 — 解析嵌入子文档并施加深度/数量边界保护。"""
 
     def __init__(
         self,
@@ -30,9 +36,9 @@ class RecursiveLoader:
         self._total_elements = 0
 
     def load(self, root_doc: Document, raw_content: str = "") -> tuple[list[Document], list]:
-        """Entry: parse root doc and all embedded docs recursively.
+        """入口方法：解析根文档并递归解析所有嵌入子文档。
 
-        Returns (all_docs, all_elements).
+        返回 (all_docs, all_elements)。
         """
         # 仅在 raw_content 非空或 metadata 中尚无 raw_content 时设置，避免空值覆盖已有数据
         if raw_content or "raw_content" not in root_doc.metadata:
@@ -56,7 +62,7 @@ class RecursiveLoader:
             self._visited_hashes.add(root_doc.source_hash)
         self._total_elements += len(root_elements)
         if self._total_elements > self._max_elements:
-            logger.warning("Max elements %d exceeded", self._max_elements)
+            logger.warning("已达到最大元素数 %d，跳过更多递归", self._max_elements)
 
         all_docs: list[Document] = []
         all_elements: list[ParsedElement] = []
@@ -72,8 +78,9 @@ class RecursiveLoader:
     def _parse_recursive(
         self, doc: Document, depth: int, all_docs: list[Document], all_elements: list
     ) -> None:
+        """递归解析单个文档及其嵌入子文档（内部方法）。"""
         if depth > self._max_depth:
-            logger.warning("Max depth %d exceeded for %s", self._max_depth, doc.doc_id)
+            logger.warning("已达到最大递归深度 %d，文档 %s 跳过", self._max_depth, doc.doc_id)
             doc.metadata["skipped_reason"] = "max_depth_exceeded"
             doc.status = DocStatus.failed
             all_docs.append(doc)
@@ -108,7 +115,7 @@ class RecursiveLoader:
         self._total_elements += len(elements)
 
         if self._total_elements > self._max_elements:
-            logger.warning("Max elements %d exceeded", self._max_elements)
+            logger.warning("已达到最大元素数 %d，跳过更多解析", self._max_elements)
 
         doc.status = "active"
         all_docs.append(doc)
@@ -125,7 +132,7 @@ class RecursiveLoader:
         all_docs: list[Document],
         all_elements: list[ParsedElement],
     ) -> None:
-        """根据已解析元素中的 embedded_doc_id 递归加载子文档。"""
+        """遍历元素中 embedded_doc_id，递归加载并解析嵌入的子文档。"""
         for el in elements:
             if el.embedded_doc_id:
                 child = Document(

@@ -82,6 +82,7 @@ class _TextBlock:
 
 @dataclass
 class _AssetRecord:
+    """内部 Asset 记录，含去重用的查询键。"""
     asset: Asset
     key: tuple[str, str]
 
@@ -98,6 +99,7 @@ class _PdfParseState:
     seq: int = 0
 
     def next_seq(self) -> int:
+        """生成递增的序号。"""
         self.seq += 1
         return self.seq
 
@@ -105,7 +107,11 @@ class _PdfParseState:
 # ── PdfParser ──────────────────────────────────────────────────────
 
 class PdfParser(DocumentParser):
-    """将 PDF 文档解析为统一的 ParsedElement 和 Asset。"""
+    """将 PDF 文档解析为统一的 ParsedElement 和 Asset。
+
+    支持的 source_type：pdf。
+    使用字体启发式和 TOC 双重策略检测标题，自动过滤页眉页脚和页码。
+    """
 
     SUPPORTED_TYPES = {"pdf"}
 
@@ -113,7 +119,7 @@ class PdfParser(DocumentParser):
         return source_type.lower() in self.SUPPORTED_TYPES
 
     def parse(self, doc: Document) -> ParseResult:
-        """主解析入口。"""
+        """主解析入口：将 PDF 解析为结构化元素和资源列表。"""
         raw = self._read_content(doc)
         if not raw:
             raise ValueError("PDF 解析失败：文档内容为空")
@@ -134,7 +140,7 @@ class PdfParser(DocumentParser):
         state = _PdfParseState(doc.doc_id, doc.version)
 
         try:
-            # 获取 TOC，构建页码→标题映射
+            # 获取 TOC，构建页码到标题的映射
             toc_entries = self._build_toc_map(pdf)
 
             # 第一遍：收集所有页面文本块
@@ -223,7 +229,7 @@ class PdfParser(DocumentParser):
 
     @staticmethod
     def _build_toc_map(pdf: fitz.Document) -> dict[int, list[tuple[int, str]]]:
-        """构建页码 → TOC 标题列表的映射。
+        """构建页码到 TOC 标题列表的映射。
 
         Returns:
             dict: {page_number: [(level, title), ...]}  按 level 升序排列。
@@ -321,7 +327,7 @@ class PdfParser(DocumentParser):
         all_blocks: list[_TextBlock],
         page_count: int,
     ) -> set[tuple[int, str]]:
-        """检测页眉页脚块，返回应过滤的 (page, normalized_key) 集合。
+        """检测页眉页脚块，返回应过滤的 (y_bucket, normalized_text) 集合。
 
         使用两种策略：
         1. 重复文本检测：相同文本在 ≥ 3 个页面相同 y 区间出现
@@ -870,10 +876,12 @@ class PdfParser(DocumentParser):
         return AssetType.attachment
 
     def _is_video_url(self, url: str) -> bool:
+        """判断 URL 是否为视频链接。"""
         return bool(VIDEO_URL_RE.search(url or ""))
 
     @staticmethod
     def _is_attachment_url(url: str) -> bool:
+        """判断 URL 是否指向附件文件。"""
         path = url.split("?", 1)[0]
         suffix = PurePosixPath(path).suffix.lower()
         if suffix:
@@ -895,6 +903,7 @@ class PdfParser(DocumentParser):
 
     @staticmethod
     def _guess_mime(url: str, asset_type: AssetType) -> str:
+        """根据 URL 后缀和资源类型推断 MIME 类型。"""
         suffix = PurePosixPath(url.split("?", 1)[0]).suffix.lower()
         mime_map = {
             ".png": "image/png",
@@ -923,7 +932,7 @@ class PdfParser(DocumentParser):
 
     @staticmethod
     def _guess_image_mime(ext: str) -> str:
-        """根据图片扩展名推断 MIME。"""
+        """根据图片扩展名推断 MIME 类型。"""
         ext_lower = ext.lower().lstrip(".")
         mime_map = {
             "png": "image/png",

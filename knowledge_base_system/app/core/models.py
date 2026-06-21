@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 
-# ── helpers ────────────────────────────────────────────────────────
+# ── 辅助函数 ──────────────────────────────────────────────────────
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
@@ -19,7 +19,7 @@ def compute_hash(content: str | bytes) -> str:
     return f"sha256:{hashlib.sha256(content).hexdigest()}"
 
 
-# ── enums ──────────────────────────────────────────────────────────
+# ── 枚举类型 ──────────────────────────────────────────────────────
 
 # 文档生命周期：processing → active | failed
 class DocStatus(str, Enum):
@@ -76,7 +76,7 @@ class AssetRelation(str, Enum):
     attachment = "attachment"        # 预留 — LLM 未实际输出，表示资源作为附件关联
 
 
-# ── nested types ───────────────────────────────────────────────────
+# ── 嵌套类型 ──────────────────────────────────────────────────────
 
 class SourceLocation(BaseModel):
     page: int | None = None
@@ -113,7 +113,7 @@ class ScoreComponents(BaseModel):
     rerank: float | None = None  # None 表示 LLM Rerank 未执行或失败
 
 
-# ── top-level models ───────────────────────────────────────────────
+# ── 顶层模型 ──────────────────────────────────────────────────────
 
 class Document(BaseModel):
     doc_id: str = Field(default_factory=lambda: new_id("doc"))

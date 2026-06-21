@@ -1,3 +1,5 @@
+"""应用全局配置管理 — 火山引擎 LLM/Embedding、PostgreSQL、Milvus、MinIO 等外部服务参数。"""
+
 import os
 from pathlib import Path
 
@@ -27,14 +29,14 @@ class Settings(BaseSettings):
     final_top_k: int = Field(default=5, validation_alias="FINAL_TOP_K")
     rrf_k: int = Field(default=60, validation_alias="RRF_K")
 
-    # Ingestion limits
+    # 入库处理限制
     max_recursion_depth: int = 3
     max_elements_per_doc: int = 1000
     max_window_tokens: int = 3000
     embedding_batch_size: int = Field(default=32, validation_alias="EMBEDDING_BATCH_SIZE")
     index_upsert_batch_size: int = Field(default=100, validation_alias="INDEX_UPSERT_BATCH_SIZE")
 
-    # LLM retry
+    # LLM 重试策略
     max_json_retries: int = 3
 
     # 后端模式：仅支持 postgres。

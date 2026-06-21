@@ -1,12 +1,19 @@
+"""内存向量索引实现 — 基于 numpy 余弦相似度。
+
+注意：MemoryVectorIndex 当前仅在测试中使用，生产环境统一使用 MilvusVectorIndex。
+代码中没有任何生产路径引用此模块。保留此文件以供本地测试或无 Milvus 环境的快速验证。
+"""
+
 import numpy as np
 
 from indexing.base import VectorIndex
 
 
 class MemoryVectorIndex(VectorIndex):
-    """In-memory vector index using numpy cosine similarity."""
+    """基于 numpy 余弦相似度的内存向量索引实现（仅供测试使用）。"""
 
     def __init__(self) -> None:
+        """初始化空的内存向量存储。"""
         self._chunk_ids: list[str] = []
         self._vectors: list[np.ndarray] = []
         self._metadata: dict[str, dict] = {}
@@ -17,13 +24,14 @@ class MemoryVectorIndex(VectorIndex):
         vector: list[float],
         metadata: dict | None = None,
     ) -> None:
-        # Remove if already exists
+        """添加向量记录，若已存在则先删除再添加（幂等写入）。"""
         self.delete(chunk_id)
         self._chunk_ids.append(chunk_id)
         self._vectors.append(np.array(vector, dtype=np.float32))
         self._metadata[chunk_id] = metadata or {}
 
     def delete(self, chunk_id: str) -> None:
+        """删除指定知识块的向量，不存在则静默跳过。"""
         try:
             idx = self._chunk_ids.index(chunk_id)
             self._chunk_ids.pop(idx)
@@ -33,6 +41,7 @@ class MemoryVectorIndex(VectorIndex):
             pass
 
     def get_metadata(self, chunk_id: str) -> dict:
+        """获取知识块的元数据字典。"""
         return self._metadata.get(chunk_id, {})
 
     def search(
@@ -41,6 +50,7 @@ class MemoryVectorIndex(VectorIndex):
         top_k: int,
         category: str | None = None,
     ) -> list[tuple[str, float]]:
+        """余弦相似度检索，过滤 status=active 和 category，返回 top_k 结果。"""
         if not self._vectors:
             return []
 

@@ -1,4 +1,14 @@
-"""文档管理 API — 列表、详情、解析元素、知识块查询。"""
+"""旧版文档管理 API — 已废弃，保留仅为向后兼容。
+
+提供文档列表、详情、解析元素、知识块查询等接口。
+请使用以下 v1 接口替代：
+- 文档列表：       GET  /api/v1/documents
+- 文档详情：       GET  /api/v1/documents/{doc_id}
+- 解析元素列表：    GET  /api/v1/documents/{doc_id}/elements
+- 知识块列表：      GET  /api/v1/documents/{doc_id}/chunks
+
+旧版接口将在后续大版本中移除。
+"""
 
 import logging
 
@@ -8,13 +18,13 @@ from app.core import deps
 
 
 def _mark_deprecated(response: Response) -> None:
-    """为旧文档接口添加运行时废弃提示。"""
+    """路由级依赖：为所有旧版文档接口添加 X-Deprecated 响应头。"""
     response.headers["X-Deprecated"] = "Use /api/v1/documents"
 
 
 router = APIRouter(
     prefix="/documents",
-    tags=["documents"],
+    tags=["documents (deprecated)"],
     dependencies=[Depends(_mark_deprecated)],
 )
 logger = logging.getLogger(__name__)
@@ -79,7 +89,8 @@ async def list_documents(
     category: str | None = Query(default=None, description="按分类过滤"),
     status: str | None = Query(default=None, description="按状态过滤"),
 ):
-    """获取所有文档列表。"""
+    """获取所有文档列表。已废弃：请使用 GET /api/v1/documents。"""
+    logger.warning("已废弃接口 GET /documents 被调用")
     repo = deps.document_repo
     if repo is None:
         raise HTTPException(status_code=503, detail="PostgreSQL 文档仓储不可用")
@@ -94,7 +105,8 @@ async def list_documents(
 
 @router.get("/{doc_id}", deprecated=True)
 async def get_document(doc_id: str):
-    """获取单个文档详情。"""
+    """获取单个文档详情。已废弃：请使用 GET /api/v1/documents/{doc_id}。"""
+    logger.warning("已废弃接口 GET /documents/%s 被调用", doc_id)
     repo = deps.document_repo
     if repo is None:
         raise HTTPException(status_code=503, detail="PostgreSQL 文档仓储不可用")
@@ -107,7 +119,8 @@ async def get_document(doc_id: str):
 
 @router.get("/{doc_id}/elements", deprecated=True)
 async def get_document_elements(doc_id: str):
-    """获取文档的解析元素列表。"""
+    """获取文档的解析元素列表。已废弃：请使用 GET /api/v1/documents/{doc_id}/elements。"""
+    logger.warning("已废弃接口 GET /documents/%s/elements 被调用", doc_id)
     repo = deps.element_repo
     if repo is None:
         raise HTTPException(status_code=503, detail="PostgreSQL 解析元素仓储不可用")
@@ -118,7 +131,8 @@ async def get_document_elements(doc_id: str):
 
 @router.get("/{doc_id}/chunks", deprecated=True)
 async def get_document_chunks(doc_id: str):
-    """获取文档的知识块列表。"""
+    """获取文档的知识块列表。已废弃：请使用 GET /api/v1/documents/{doc_id}/chunks。"""
+    logger.warning("已废弃接口 GET /documents/%s/chunks 被调用", doc_id)
     chunk_store = deps.chunk_store
     if chunk_store is None:
         raise HTTPException(status_code=503, detail="PostgreSQL 知识块存储不可用")

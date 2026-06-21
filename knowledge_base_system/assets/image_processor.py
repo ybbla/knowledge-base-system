@@ -1,3 +1,8 @@
+"""图片和视频资源处理器。
+
+负责 Asset 的后续处理流程：文件读取、格式校验、哈希去重、视觉理解和 MinIO 上传。
+"""
+
 import hashlib
 import logging
 from pathlib import Path
@@ -9,6 +14,7 @@ from assets.minio_store import MinioAssetStore, make_minio_key, read_uri_bytes
 
 logger = logging.getLogger(__name__)
 
+# 魔数 → MIME 类型映射（用于验证图片文件头）
 MAGIC_MIME = {
     b"\x89PNG\r\n\x1a\n": "image/png",
     b"\xff\xd8\xff": "image/jpeg",
@@ -24,7 +30,24 @@ def process_image(
     asset_store: AssetStore,
     minio_store: MinioAssetStore | None = None,
 ) -> Asset:
-    """处理图片 Asset：读取、校验、hash 去重，并按需上传 MinIO。"""
+    """处理图片 Asset：读取、校验、哈希去重，并按需上传 MinIO。
+
+    处理流程：
+    1. 从 asset._data 或 original_uri 读取字节
+    2. 校验文件大小不超过限制
+    3. 通过魔数校验图片 MIME 类型
+    4. 计算 SHA-256 哈希，查找已有副本实现去重
+    5. 调用视觉理解模型生成图片描述（可选）
+    6. 上传 MinIO 并更新 storage_uri
+
+    Args:
+        asset: 待处理的图片 Asset。
+        asset_store: Asset 元数据存储。
+        minio_store: MinIO 对象存储后端（None 时跳过上传）。
+
+    Returns:
+        处理后的 Asset（状态为 ready 或 failed）。
+    """
     try:
         data = getattr(asset, "_data", None)
         if data is None:
@@ -101,6 +124,13 @@ def process_video(
 
     仅对可获取字节（`_data` 属性非空）的视频调用视觉理解。
     外链视频（无字节）直接跳过，不调用视觉模型。
+
+    Args:
+        asset: 待处理的视频 Asset。
+        asset_store: Asset 元数据存储。
+
+    Returns:
+        处理后的 Asset。
     """
     data = getattr(asset, "_data", None)
     if data is None:
@@ -125,6 +155,14 @@ def process_video(
 
 
 def sniff_image_mime(data: bytes) -> str | None:
+    """通过文件头魔数推断图片的 MIME 类型。
+
+    Args:
+        data: 图片文件的原始字节。
+
+    Returns:
+        MIME 类型字符串（如 "image/png"），无法识别时返回 None。
+    """
     for magic, mime in MAGIC_MIME.items():
         if data.startswith(magic):
             if mime == "image/webp" and data[8:12] != b"WEBP":
@@ -134,6 +172,7 @@ def sniff_image_mime(data: bytes) -> str | None:
 
 
 def _local_or_external_uri(uri: str) -> str:
+    """为本地路径补充 file:// 前缀，已是远程协议的 URI 原样返回。"""
     if uri.startswith(("http://", "https://", "file://", "minio://")):
         return uri
     return f"file:///{Path(uri).resolve().as_posix()}"
@@ -144,6 +183,20 @@ def find_ready_duplicate(
     content_hash: str,
     current_asset_id: str,
 ) -> Asset | None:
+    """在已存储的 Asset 中查找具有相同 content_hash 的 ready 状态副本。
+
+    支持两种存储后端：
+    - 内存存储（MemoryAssetStore）：直接遍历内部 dict
+    - 数据库存储（PgAssetStore）：通过 session_factory 查询
+
+    Args:
+        asset_store: Asset 存储后端。
+        content_hash: 待匹配的内容哈希值。
+        current_asset_id: 当前 Asset 的 ID（排除自身匹配）。
+
+    Returns:
+        匹配的已存在 Asset，未找到时返回 None。
+    """
     metadata_store = getattr(asset_store, "_metadata_store", asset_store)
     if hasattr(metadata_store, "_store"):
         for asset in metadata_store._store.values():

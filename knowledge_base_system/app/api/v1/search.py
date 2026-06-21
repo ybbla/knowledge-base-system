@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, status
 from pydantic import BaseModel, Field
 
-from app.api.v1.schemas import APIResponse, error_json, response_json
+from app.api.v1.schemas import APIResponse, error_json
 from app.core.deps import (
     chunk_store,
     document_repo,

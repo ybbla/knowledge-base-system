@@ -1,3 +1,9 @@
+"""XLSX 工作簿解析器。
+
+使用 openpyxl 将 .xlsx 文件解析为统一的 ParsedElement 和 Asset，
+支持按区域自动检测表格与散列数据，处理合并单元格、超链接和公式。
+"""
+
 import io
 import re
 import zipfile
@@ -25,6 +31,7 @@ from parsers.base import DocumentParser, ParseResult
 
 @dataclass
 class _CellInfo:
+    """单元格信息，包含位置、文本、资源和元数据。"""
     row: int
     col: int
     coordinate: str
@@ -35,6 +42,7 @@ class _CellInfo:
 
 @dataclass
 class _Region:
+    """连续数据区域（用于区域检测和表格/段落判别）。"""
     min_row: int
     max_row: int
     min_col: int
@@ -56,7 +64,11 @@ class _Region:
 
 
 class XlsxParser(DocumentParser):
-    """将 XLSX 工作簿解析为统一的 ParsedElement 和 Asset。"""
+    """将 XLSX 工作簿解析为统一的 ParsedElement 和 Asset。
+
+    支持的 source_type：xlsx。
+    逐工作表处理，多行多列区域视为表格，否则视为段落。
+    """
 
     SUPPORTED_TYPES = {"xlsx"}
     VIDEO_URL_RE = re.compile(
@@ -69,6 +81,7 @@ class XlsxParser(DocumentParser):
         return source_type.lower() in self.SUPPORTED_TYPES
 
     def parse(self, doc: Document) -> ParseResult:
+        """主解析入口：将 XLSX 工作簿解析为结构化元素和资源列表。"""
         raw = self._read_content(doc)
         if not raw:
             raise ValueError("XLSX 解析失败：文档内容为空")
@@ -107,6 +120,7 @@ class XlsxParser(DocumentParser):
         return ParseResult(doc=doc, elements=state.elements, assets=assets)
 
     def _read_content(self, doc: Document) -> bytes:
+        """从 metadata.raw_content 或 file:// URI 读取文档字节。"""
         raw = doc.metadata.get("raw_content", b"")
         if raw:
             return raw.encode("utf-8") if isinstance(raw, str) else raw
@@ -127,6 +141,7 @@ class XlsxParser(DocumentParser):
         assets: list[Asset],
         assets_by_uri: dict[str, Asset],
     ) -> dict[tuple[int, int], _CellInfo]:
+        """遍历工作表中的所有单元格，收集文本、公式、超链接和资源。"""
         merged_map = self._build_merged_map(formula_ws)
         cells: dict[tuple[int, int], _CellInfo] = {}
 
@@ -186,6 +201,7 @@ class XlsxParser(DocumentParser):
 
     @staticmethod
     def _build_merged_map(ws) -> dict[tuple[int, int], tuple[int, int]]:
+        """构建合并单元格到源单元格的映射。"""
         merged_map: dict[tuple[int, int], tuple[int, int]] = {}
         for merged_range in ws.merged_cells.ranges:
             min_col, min_row, max_col, max_row = range_boundaries(str(merged_range))
@@ -196,18 +212,21 @@ class XlsxParser(DocumentParser):
 
     @staticmethod
     def _formula_text(value: Any) -> str | None:
+        """如果单元格值为公式（以 = 开头）则返回，否则返回 None。"""
         if isinstance(value, str) and value.startswith("="):
             return value
         return None
 
     @staticmethod
     def _hyperlink_target(cell) -> str | None:
+        """获取单元格的超链接目标 URL。"""
         if cell.hyperlink is None:
             return None
         return cell.hyperlink.target or cell.hyperlink.location
 
     @staticmethod
     def _stringify(value: Any) -> str:
+        """将单元格值安全转换为字符串。"""
         if value is None:
             return ""
         if isinstance(value, datetime):
@@ -226,6 +245,7 @@ class XlsxParser(DocumentParser):
         assets: list[Asset],
         assets_by_uri: dict[str, Asset],
     ) -> list[str]:
+        """从单元格文本和超链接中提取 URL 并创建 Asset。"""
         urls: list[str] = []
         if text:
             urls.extend(match.group(0) for match in self.HTTP_URL_RE.finditer(text))
@@ -257,10 +277,12 @@ class XlsxParser(DocumentParser):
         return asset_ids
 
     def _is_video_url(self, url: str) -> bool:
+        """判断 URL 是否为视频链接。"""
         return bool(self.VIDEO_URL_RE.search(url))
 
     @staticmethod
     def _guess_mime(url: str, asset_type: AssetType) -> str:
+        """根据 URL 后缀和资源类型推断 MIME 类型。"""
         ext = url.lower().split("?", 1)[0].rsplit(".", 1)[-1]
         mime_map = {
             "mp4": "video/mp4",
@@ -277,6 +299,10 @@ class XlsxParser(DocumentParser):
 
     @staticmethod
     def _find_regions(cells: dict[tuple[int, int], _CellInfo]) -> list[_Region]:
+        """从单元格集合中检测连续的数据区域。
+
+        按行连续分组和列连续分组的笛卡尔积获得所有候选区域。
+        """
         if not cells:
             return []
 
@@ -307,10 +333,12 @@ class _XlsxParseState:
         self._section_path: list[str] = []
 
     def _next_seq(self) -> int:
+        """生成递增的序号。"""
         self._seq += 1
         return self._seq
 
     def add_sheet_title(self, sheet_name: str, sheet_index: int) -> None:
+        """为每个工作表添加标题元素。"""
         self._section_path = [sheet_name]
         self.elements.append(
             ParsedElement(
@@ -332,6 +360,7 @@ class _XlsxParseState:
         cells: dict[tuple[int, int], _CellInfo],
         assets_by_uri: dict[str, Asset],
     ) -> None:
+        """为多行多列区域创建表格元素（首行为标题）。"""
         headers = [
             self._cell(cells, region.min_row, col).text
             for col in range(region.min_col, region.max_col + 1)
@@ -413,6 +442,7 @@ class _XlsxParseState:
         cells: dict[tuple[int, int], _CellInfo],
         assets_by_uri: dict[str, Asset],
     ) -> None:
+        """为单行或单列区域创建段落元素。"""
         for row in range(region.min_row, region.max_row + 1):
             for col in range(region.min_col, region.max_col + 1):
                 cell = cells.get((row, col))
@@ -446,11 +476,13 @@ class _XlsxParseState:
 
     @staticmethod
     def _cell(cells: dict[tuple[int, int], _CellInfo], row: int, col: int) -> _CellInfo:
+        """安全获取单元格信息，缺失时返回空 _CellInfo。"""
         coordinate = f"{get_column_letter(col)}{row}"
         return cells.get((row, col)) or _CellInfo(row=row, col=col, coordinate=coordinate)
 
     @staticmethod
     def _table_text(headers: list[str], rows: list[dict[str, Any]]) -> str:
+        """将表格数据序列化为纯文本表示。"""
         parts: list[str] = []
         if headers:
             parts.append(" | ".join(headers))
@@ -460,6 +492,7 @@ class _XlsxParseState:
 
     @staticmethod
     def _link_assets(element: ParsedElement, assets_by_uri: dict[str, Asset]) -> None:
+        """将元素的 asset_ids 关联的 Asset 回链 source_element_id。"""
         linked = set(element.asset_ids)
         for asset in assets_by_uri.values():
             if asset.asset_id in linked and not asset.source_element_id:
@@ -467,6 +500,10 @@ class _XlsxParseState:
 
 
 def _group_contiguous(values: list[int]) -> list[tuple[int, int]]:
+    """将整数列表按连续性分组。
+
+    例：[1, 2, 3, 5, 6] → [(1, 3), (5, 6)]
+    """
     if not values:
         return []
 

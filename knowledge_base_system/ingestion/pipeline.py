@@ -1,4 +1,10 @@
-import asyncio
+"""文档入库流水线 — 编排解析、递归加载、语义抽取、索引写入的完整流程。
+
+主要类：
+- IngestionPipeline: 同步执行文档入库，包含清理旧块、解析、递归、抽取、索引五个阶段。
+- _batched: 通用列表分片工具函数。
+"""
+
 import logging
 import threading
 import time
@@ -37,7 +43,11 @@ def _batched(items: list[Any], size: int) -> list[list[Any]]:
 
 
 class IngestionPipeline:
-    """编排完整的文档入库流程。"""
+    """文档入库流水线编排器。
+
+    协调解析器注册表、语义抽取器、向量/BM25 双路索引和资源存储，
+    执行完整的文档入库流程：解析 → 递归加载嵌入子文档 → LLM 语义抽取 → 索引写入。
+    """
 
     def __init__(
         self,
@@ -210,7 +220,7 @@ class IngestionPipeline:
                     break
 
     def index_existing_chunks(self, chunks: list[KnowledgeChunk]) -> None:
-        """重新索引已持久化的知识块，用于启动恢复或人工补偿。"""
+        """重新索引已持久化的知识块（不重复写 PG），用于启动恢复或人工补偿。"""
         self._index_chunks(chunks, persist_chunks=False)
 
     def _index_chunks(
@@ -219,7 +229,10 @@ class IngestionPipeline:
         *,
         persist_chunks: bool = True,
     ) -> None:
-        """生成 embedding，写入 dense/sparse 索引，并持久化知识块。"""
+        """生成 embedding，写入向量/BM25 双路索引，并可选地持久化知识块到 PG。
+
+        步骤：1) 可选 PG 持久化  2) 按批生成 Embedding  3) 按批写入 Milvus（dense + sparse）。
+        """
         if self._chunk_store and persist_chunks:
             for chunk in chunks:
                 self._chunk_store.put(chunk)
@@ -246,7 +259,11 @@ class IngestionPipeline:
 
     @staticmethod
     def _chunk_index_metadata(chunk: KnowledgeChunk) -> dict[str, Any]:
-        """构造写入检索索引的知识块元数据。"""
+        """构造写入 Milvus 检索索引的知识块元数据字典。
+
+        包含 doc_id、title、content、category 等标量字段，以及序列化为
+        JSON 字符串的 source_refs、asset_refs 和 metadata。
+        """
         return {
             "doc_id": chunk.doc_id,
             "title": chunk.title,

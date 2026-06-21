@@ -13,7 +13,6 @@ from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
 from app.core.deps import document_repo, ingestion_pipeline
-from app.core.errors import DocumentNotFoundError
 from app.core.models import Document
 
 router = APIRouter(prefix="/ingest", tags=["ingest (deprecated)"])
@@ -24,9 +23,9 @@ class IngestDocument(BaseModel):
     title: str
     source_type: str
     source_uri: str
-    source_hash: str = ""  # \u4e0a\u4f20\u6d41\u7a0b\u5fc5\u4f20\uff1b\u624b\u52a8\u5165\u5e93\u53ef\u4e3a\u7a7a\uff0c\u7a7a\u503c\u65f6\u7528 source_uri \u53bb\u91cd
-    category: str = "\u901a\u7528"
-    doc_id: str | None = None  # \u53ef\u9009\uff0c\u6307\u5b9a\u5219\u8d70\u589e\u91cf\u66f4\u65b0\u6d41\u7a0b
+    source_hash: str = ""  # 上传流程必传；手动入库可为空，空值时用 source_uri 去重
+    category: str = "通用"
+    doc_id: str | None = None  # 可选，指定则走增量更新流程
 
 
 class IngestRequest(BaseModel):

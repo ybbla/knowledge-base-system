@@ -1,3 +1,5 @@
+"""项目路径解析工具 — 提供项目根目录、上传目录路径及 file:// URI 到本地路径的转换。"""
+
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 

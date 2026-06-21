@@ -1,3 +1,9 @@
+"""HTML 文档解析器。
+
+使用 BeautifulSoup 将静态 HTML 文档解析为统一的 ParsedElement 和 Asset，
+支持标题、段落、列表、代码块、表格以及图片、视频、附件等内嵌资源的提取。
+"""
+
 import re
 from dataclasses import dataclass, field
 from html import unescape
@@ -24,12 +30,14 @@ from parsers.base import DocumentParser, ParseResult
 
 @dataclass
 class _AssetRecord:
+    """内部 Asset 记录，保存 Asset 对象及原始 URL。"""
     asset: Asset
     original_url: str
 
 
 @dataclass
 class _HtmlParseState:
+    """HTML 解析过程中的可变状态。"""
     doc_id: str
     doc_version: int
     elements: list[ParsedElement] = field(default_factory=list)
@@ -39,12 +47,16 @@ class _HtmlParseState:
     seq: int = 0
 
     def next_seq(self) -> int:
+        """生成递增的序号。"""
         self.seq += 1
         return self.seq
 
 
 class HtmlParser(DocumentParser):
-    """将静态 HTML 文档解析为统一的 ParsedElement 和 Asset。"""
+    """将静态 HTML 文档解析为统一的 ParsedElement 和 Asset。
+
+    支持的 source_type：html、htm。
+    """
 
     SUPPORTED_TYPES = {"html", "htm"}
     SKIP_TAGS = {"script", "style", "noscript", "template", "meta", "link"}
@@ -98,6 +110,7 @@ class HtmlParser(DocumentParser):
         return source_type.lower() in self.SUPPORTED_TYPES
 
     def parse(self, doc: Document) -> ParseResult:
+        """主解析入口：将 HTML 文档解析为结构化元素和资源列表。"""
         content = self._read_content(doc)
         if not content.strip():
             raise ValueError("HTML 解析失败：文档内容为空")
@@ -118,6 +131,7 @@ class HtmlParser(DocumentParser):
         return ParseResult(doc=doc, elements=state.elements, assets=state.assets)
 
     def _read_content(self, doc: Document) -> str:
+        """从 metadata.raw_content 或 file:// URI 读取 HTML 文本。"""
         raw = doc.metadata.get("raw_content", "")
         if raw:
             return self._decode(raw)
@@ -131,6 +145,7 @@ class HtmlParser(DocumentParser):
 
     @staticmethod
     def _decode(raw: str | bytes) -> str:
+        """将字节或字符串解码为 UTF-8（尝试多种编码和回退策略）。"""
         if isinstance(raw, str):
             return raw
         for encoding in ("utf-8-sig", "utf-8", "gb18030"):
@@ -142,6 +157,10 @@ class HtmlParser(DocumentParser):
 
     @staticmethod
     def _content_root(soup: BeautifulSoup) -> Tag | BeautifulSoup:
+        """定位 HTML 文档的主要内容根节点。
+
+        优先使用 <main>，其次 <body>，再次 <article>。
+        """
         for selector in ("main", "body"):
             found = soup.find(selector)
             if isinstance(found, Tag):
@@ -153,6 +172,7 @@ class HtmlParser(DocumentParser):
 
     @staticmethod
     def _base_url(soup: BeautifulSoup, doc: Document) -> str:
+        """提取文档的基 URL（优先 <base> 标签，其次文档 source_uri）。"""
         base = soup.find("base", href=True)
         if isinstance(base, Tag):
             return str(base.get("href") or "")
@@ -165,6 +185,7 @@ class HtmlParser(DocumentParser):
         doc: Document,
         base_url: str,
     ) -> None:
+        """递归遍历父节点的子元素，跳过纯文本节点。"""
         for child in parent.children:
             if isinstance(child, NavigableString):
                 continue
@@ -179,6 +200,7 @@ class HtmlParser(DocumentParser):
         doc: Document,
         base_url: str,
     ) -> None:
+        """根据标签类型分发到对应的处理方法。"""
         name = (tag.name or "").lower()
         if name in self.SKIP_TAGS:
             return
@@ -205,6 +227,7 @@ class HtmlParser(DocumentParser):
         self._walk_children(tag, state, doc, base_url)
 
     def _add_title(self, tag: Tag, state: _HtmlParseState) -> None:
+        """添加标题元素（h1-h6）并按层级更新 section_path。"""
         text = self._text_without_nested_blocks(tag)
         if not text:
             return
@@ -232,6 +255,7 @@ class HtmlParser(DocumentParser):
         doc: Document,
         base_url: str,
     ) -> None:
+        """添加段落元素（p、blockquote），收集内嵌资源的 ID。"""
         text = self._text_without_nested_blocks(tag)
         asset_ids = self._assets_in_tag(tag, state, doc, base_url)
         if not text and not asset_ids:
@@ -257,6 +281,7 @@ class HtmlParser(DocumentParser):
         doc: Document,
         base_url: str,
     ) -> None:
+        """添加列表元素（ul、ol），支持嵌套列表递归。"""
         items = [child for child in tag.find_all("li", recursive=False)]
         if not items:
             return
@@ -297,6 +322,7 @@ class HtmlParser(DocumentParser):
                 self._add_list(nested, state, doc, base_url)
 
     def _add_code(self, tag: Tag, state: _HtmlParseState) -> None:
+        """添加代码块元素（pre、code），尝试从 class 属性推断编程语言。"""
         text = tag.get_text("\n", strip=False).strip("\n")
         if not text:
             return
@@ -321,6 +347,7 @@ class HtmlParser(DocumentParser):
         doc: Document,
         base_url: str,
     ) -> None:
+        """添加表格元素，支持嵌套表格递归、标题行检测和单元格资源提取。"""
         nested_tables = tag.find_all("table")
         for nested in nested_tables:
             nested.extract()
@@ -406,6 +433,7 @@ class HtmlParser(DocumentParser):
         doc: Document,
         base_url: str,
     ) -> None:
+        """为 <img>、<video>、<iframe> 等资源标签创建对应的元素。"""
         asset_ids = self._assets_from_resource_tag(tag, state, doc, base_url)
         if not asset_ids:
             return
@@ -434,6 +462,7 @@ class HtmlParser(DocumentParser):
         doc: Document,
         base_url: str,
     ) -> list[str]:
+        """收集指定标签及其子标签中所有资源标签的 Asset ID（含文本中的 URL）。"""
         asset_ids: list[str] = []
         for resource in tag.find_all(self.RESOURCE_TAGS):
             asset_ids.extend(self._assets_from_resource_tag(resource, state, doc, base_url))
@@ -451,6 +480,10 @@ class HtmlParser(DocumentParser):
         doc: Document,
         base_url: str,
     ) -> list[str]:
+        """从单个资源标签创建 Asset 并返回其 ID。
+
+        支持 img、video、source、a（附件链接）、iframe、embed、object 等标签。
+        """
         name = (tag.name or "").lower()
         attr = "href" if name == "a" else "data" if name == "object" else "src"
         raw_url = str(tag.get(attr) or "")
@@ -507,6 +540,7 @@ class HtmlParser(DocumentParser):
         doc: Document,
         metadata: dict[str, Any],
     ) -> Asset:
+        """创建或查找已有 Asset（按 URL + 类型去重）。"""
         key = (url, asset_type)
         existing = state.assets_by_key.get(key)
         if existing is not None:
@@ -527,6 +561,7 @@ class HtmlParser(DocumentParser):
 
     @staticmethod
     def _append_element(state: _HtmlParseState, element: ParsedElement) -> None:
+        """添加元素并回链 Asset 的 source_element_id。"""
         linked = set(element.asset_ids)
         for record in state.assets_by_key.values():
             if record.asset.asset_id in linked and not record.asset.source_element_id:
@@ -534,6 +569,10 @@ class HtmlParser(DocumentParser):
         state.elements.append(element)
 
     def _header_row_index(self, table: Tag, rows: list[list[dict[str, Any]]]) -> int:
+        """检测表格的标题行索引。
+
+        优先检查 <thead> 元素，其次检查第一行是否全为 <th> 单元格。
+        """
         thead = table.find("thead")
         if thead is not None:
             first_header = thead.find("tr")
@@ -548,6 +587,7 @@ class HtmlParser(DocumentParser):
         return 0
 
     def _text_without_nested_blocks(self, tag: Tag) -> str:
+        """提取标签的文本内容，排除嵌套的块级子标签。"""
         clone = BeautifulSoup(str(tag), "html.parser")
         clone_tag = clone.find(tag.name)
         if clone_tag is None:
@@ -558,16 +598,19 @@ class HtmlParser(DocumentParser):
 
     @staticmethod
     def _text(tag: Tag | None) -> str:
+        """提取标签的纯文本内容（经空白归一化处理）。"""
         if tag is None:
             return ""
         return HtmlParser._normalize_text(tag.get_text(" ", strip=True))
 
     @staticmethod
     def _normalize_text(text: str) -> str:
+        """将连续空白字符归一化为单个空格并去除首尾空白。"""
         return re.sub(r"\s+", " ", unescape(text)).strip()
 
     @staticmethod
     def _language_from_class(tag: Tag | None) -> str:
+        """从标签的 class 属性中推断编程语言（language-xx 或 lang-xx）。"""
         if not isinstance(tag, Tag):
             return ""
         classes = tag.get("class") or []
@@ -581,6 +624,7 @@ class HtmlParser(DocumentParser):
 
     @staticmethod
     def _int_attr(tag: Tag, name: str, default: int) -> int:
+        """安全地获取标签的整数属性值（最小为 1）。"""
         try:
             return max(1, int(str(tag.get(name) or default)))
         except ValueError:
@@ -588,6 +632,7 @@ class HtmlParser(DocumentParser):
 
     @staticmethod
     def _resolve_url(url: str, base_url: str) -> str:
+        """将相对 URL 解析为绝对 URL（仅在 base_url 为 http(s) 时）。"""
         if not url:
             return ""
         if urlparse(url).scheme:
@@ -597,6 +642,7 @@ class HtmlParser(DocumentParser):
         return url
 
     def _tag_is_video(self, tag: Tag) -> bool:
+        """判断标签是否为视频资源。"""
         name = (tag.name or "").lower()
         if name in {"video", "source"}:
             return True
@@ -606,15 +652,18 @@ class HtmlParser(DocumentParser):
         return False
 
     def _is_video_url(self, url: str) -> bool:
+        """判断 URL 是否为视频链接。"""
         return bool(self.VIDEO_URL_RE.search(url))
 
     def _is_attachment_url(self, url: str) -> bool:
+        """判断 URL 是否指向附件文件。"""
         path = urlparse(url).path or url
         suffix = PurePosixPath(path).suffix.lower()
         return suffix in self.ATTACHMENT_EXTENSIONS
 
     @staticmethod
     def _guess_mime(url: str, asset_type: AssetType) -> str:
+        """根据 URL 后缀和资源类型推断 MIME 类型。"""
         suffix = PurePosixPath(urlparse(url).path or url).suffix.lower()
         mime_map = {
             ".png": "image/png",
@@ -642,6 +691,7 @@ class HtmlParser(DocumentParser):
 
     @staticmethod
     def _resource_label(tag: Tag) -> str:
+        """为资源标签生成可读的替代文本标签。"""
         name = (tag.name or "").lower()
         attr = "href" if name == "a" else "data" if name == "object" else "src"
         url = str(tag.get(attr) or "")

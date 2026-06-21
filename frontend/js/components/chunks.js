@@ -19,6 +19,10 @@ const Chunks = (() => {
   /* -----------------------------------------------------------------------
      Render — 渲染主容器
      ----------------------------------------------------------------------- */
+
+  /**
+   * 渲染知识块管理页面（路由入口），加载筛选项并绘制表格框架
+   */
   async function render() {
     UI.setBreadcrumb([{ label: '仪表盘', path: '#/' }, { label: '知识块管理' }]);
 
@@ -106,6 +110,11 @@ const Chunks = (() => {
   /* -----------------------------------------------------------------------
      Tab — 标签页切换
      ----------------------------------------------------------------------- */
+
+  /**
+   * 切换知识块标签页（活跃/回收站），重置选中和分页状态
+   * @param {string} tab - 标签页标识: active | deleted
+   */
   function switchTab(tab) {
     if (currentTab === tab) return;
     currentTab = tab;
@@ -134,6 +143,11 @@ const Chunks = (() => {
   /* -----------------------------------------------------------------------
      Load — 加载知识块列表
      ----------------------------------------------------------------------- */
+
+  /**
+   * 根据当前筛选条件加载知识块分页列表
+   * @param {number} [page=1] - 页码
+   */
   async function load(page = 1) {
     currentPage = page;
     renderLoading();
@@ -283,6 +297,7 @@ const Chunks = (() => {
     );
   }
 
+  /** 清空所有筛选条件（关键词、分类、类型、排序），重置搜索模式并重新加载第一页 */
   function resetFilters() {
     ['chunkKeyword', 'chunkCategoryFilter', 'chunkTypeFilter'].forEach((id) => {
       const el = document.getElementById(id);
@@ -298,8 +313,10 @@ const Chunks = (() => {
   }
 
   /* -----------------------------------------------------------------------
-     Search mode — 搜索模式切换（联动文档分类/类型筛选）
+     Search mode — 搜索模式切换（可切换按"知识块标题"或"文档标题"搜索）
      ----------------------------------------------------------------------- */
+
+  /** 切换搜索模式，更新占位提示文本，有关键词时重新搜索 */
   function onSearchModeChange() {
     const modeEl = document.getElementById('chunkSearchMode');
     currentSearchMode = modeEl?.value || 'chunk_title';
@@ -320,7 +337,7 @@ const Chunks = (() => {
   }
 
   /* -----------------------------------------------------------------------
-     Detail — 知识块详情抽屉（仿文档详情风格）
+     Detail — 知识块详情抽屉
      ----------------------------------------------------------------------- */
   function _renderAssetSummary(assetRefs) {
     const list = assetRefs || [];
@@ -358,6 +375,10 @@ const Chunks = (() => {
       </div>`;
   }
 
+  /**
+   * 在右侧抽屉中显示知识块完整详情（内容、来源、资源等）
+   * @param {string} chunkId - 知识块 ID
+   */
   async function showDetail(chunkId) {
     UI.showDrawer('知识块详情', '<div class="loading-overlay" style="min-height:200px"><div class="loading-spinner"></div><span>加载中…</span></div>');
     try {
@@ -420,6 +441,10 @@ const Chunks = (() => {
     }
   }
 
+  /**
+   * 显示编辑知识块模态框（标题、分类、类型、内容），支持新增分类
+   * @param {string} chunkId - 知识块 ID
+   */
   async function showEditDialog(chunkId) {
     try {
       const res = await API.getChunk(chunkId);
@@ -549,6 +574,10 @@ const Chunks = (() => {
     if (counter) counter.textContent = `${content.length} 字`;
   }
 
+  /**
+   * 从编辑弹窗保存知识块修改（含表单校验和重新索引触发）
+   * @param {string} chunkId - 知识块 ID
+   */
   async function updateChunkFromDialog(chunkId) {
     const title = document.getElementById('editChunkTitle')?.value?.trim();
     const content = document.getElementById('editChunkContent')?.value?.trim();
@@ -593,6 +622,10 @@ const Chunks = (() => {
   /* -----------------------------------------------------------------------
      CRUD 操作
      ----------------------------------------------------------------------- */
+
+  /**
+   * 显示新建知识块模态框，支持挂到已有文档或创建新的手工文档
+   */
   async function showCreateDialog() {
     let documents = [];
     let docLoadError = '';
@@ -914,6 +947,10 @@ const Chunks = (() => {
     if (error) error.classList.add('is-hidden');
   }
 
+  /**
+   * 软删除知识块，二次确认后执行
+   * @param {string} chunkId - 知识块 ID
+   */
   async function deleteChunk(chunkId) {
     const ok = await UI.showConfirm('删除确认', '确认删除该知识块？', '确认删除');
     if (!ok) return;
@@ -926,6 +963,7 @@ const Chunks = (() => {
     }
   }
 
+  /** 从回收站恢复知识块 */
   async function restoreChunk(chunkId) {
     try {
       await API.restoreChunk(chunkId);
@@ -939,6 +977,10 @@ const Chunks = (() => {
   /* -----------------------------------------------------------------------
      Batch — 批量操作
      ----------------------------------------------------------------------- */
+
+  /**
+   * 全选/取消全选切换，异步拉取全部知识块 ID 实现跨页全选
+   */
   async function toggleSelectAll() {
     const selectAll = document.getElementById('chunkSelectAll');
     const checkboxes = document.querySelectorAll('.chunk-checkbox');
@@ -964,6 +1006,7 @@ const Chunks = (() => {
     }
   }
 
+  /** 单个复选框选中/取消切换，更新批量操作按钮状态 */
   function toggleSelect(e) {
     if (e.target.checked) selectedIds.add(e.target.value);
     else selectedIds.delete(e.target.value);
@@ -978,6 +1021,7 @@ const Chunks = (() => {
     if (selectAll) selectAll.checked = selectedIds.size > 0;
   }
 
+  /** 批量删除选中的知识块（调用 batch API） */
   async function batchDelete() {
     if (!selectedIds.size) return;
     const ok = await UI.showConfirm('批量删除确认', `确认批量删除 ${selectedIds.size} 个知识块？`, '确认删除');
@@ -992,6 +1036,7 @@ const Chunks = (() => {
     }
   }
 
+  /** 批量恢复选中的已删除知识块（调用 batch API） */
   async function batchRestore() {
     if (!selectedIds.size) return;
     const ok = await UI.showConfirm('批量恢复确认', `确认批量恢复 ${selectedIds.size} 个知识块？`, '确认恢复');

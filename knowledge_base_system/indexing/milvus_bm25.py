@@ -30,10 +30,12 @@ class MilvusBM25Index(BM25Index):
     """
 
     def __init__(self, manager: MilvusCollectionManager | None = None) -> None:
+        """初始化 BM25 索引，可注入共享的 MilvusCollectionManager。"""
         self._manager = manager or MilvusCollectionManager()
 
     @property
     def manager(self) -> MilvusCollectionManager:
+        """获取内部的 MilvusCollectionManager 实例。"""
         return self._manager
 
     def add(
@@ -42,6 +44,7 @@ class MilvusBM25Index(BM25Index):
         text: str,
         metadata: dict | None = None,
     ) -> None:
+        """添加单条 BM25 索引（转为批量调用）。"""
         self.add_batch([(chunk_id, text, metadata)])
 
     def add_batch(
@@ -72,6 +75,7 @@ class MilvusBM25Index(BM25Index):
         self._manager.upsert_fields_batch(fields_items)
 
     def delete(self, chunk_id: str) -> None:
+        """删除指定知识块的 BM25 索引。"""
         self._manager.delete(chunk_id)
 
     def upsert_fields(self, chunk_id: str, fields: dict[str, Any]) -> None:

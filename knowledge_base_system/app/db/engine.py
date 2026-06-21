@@ -1,3 +1,8 @@
+"""数据库引擎模块 — SQLAlchemy 引擎与会话工厂的惰性初始化。
+
+同时负责运行期 Schema 补齐（兼容无迁移环境的旧表结构）。
+"""
+
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, Session
 
@@ -9,7 +14,7 @@ _SessionFactory = None
 
 
 def get_engine():
-    """Return the SQLAlchemy engine, creating it lazily if needed."""
+    """惰性获取 SQLAlchemy 引擎实例（首次调用时创建）。"""
     global _engine
     if _engine is None:
         _engine = create_engine(
@@ -21,7 +26,7 @@ def get_engine():
 
 
 def create_session_factory() -> sessionmaker[Session]:
-    """Return a sessionmaker bound to the engine."""
+    """惰性创建绑定到引擎的 sessionmaker（autocommit=False, autoflush=False）。"""
     global _SessionFactory
     if _SessionFactory is None:
         _SessionFactory = sessionmaker(bind=get_engine(), autocommit=False, autoflush=False)
@@ -29,7 +34,12 @@ def create_session_factory() -> sessionmaker[Session]:
 
 
 def ensure_runtime_schema() -> None:
-    """补齐无迁移环境下运行期需要的新列。"""
+    """运行期补齐缺失的列和索引，兼容无 Alembic 迁移环境的旧表结构。
+
+    检测 knowledge_chunks 表中是否存在已废弃的旧列（index_status、
+    indexed_at、index_error），按需补建。同时为 documents 表创建
+    去重查询所需的部分唯一索引和 source_uri 索引。
+    """
     engine = get_engine()
     inspector = inspect(engine)
     if "knowledge_chunks" not in inspector.get_table_names():

@@ -1,10 +1,15 @@
+"""DOCX 文档解析器。
+
+使用 python-docx 将 .docx 文件解析为统一的 ParsedElement 和 Asset，
+支持标题、段落、列表、表格、图片和视频资源的提取。
+"""
+
 import hashlib
 import io
 import logging
 import re
 import zipfile
 from pathlib import Path
-from typing import Any
 
 from docx import Document as DocxDocument
 from docx.enum.style import WD_STYLE_TYPE
@@ -26,7 +31,11 @@ logger = logging.getLogger(__name__)
 
 
 class DocxParser(DocumentParser):
-    """Parse DOCX documents into ParsedElements and Assets."""
+    """将 DOCX 文档解析为 ParsedElement 和 Asset。
+
+    支持的 source_type：docx。
+    处理 Word 段落、标题、列表、表格和嵌入的图片/视频资源。
+    """
 
     SUPPORTED_TYPES = {"docx"}
     VIDEO_URL_RE = re.compile(
@@ -38,11 +47,12 @@ class DocxParser(DocumentParser):
         return source_type.lower() in self.SUPPORTED_TYPES
 
     def parse(self, doc: Document) -> ParseResult:
+        """主解析入口：解析 DOCX 文档的结构化内容。"""
         raw = self._read_content(doc)
         docx = DocxDocument(io.BytesIO(raw))
         state = _DocxParseState(doc.doc_id, doc.version)
 
-        # Walk body elements in order
+        # 按文档顺序遍历所有 body 元素
         for child in docx.element.body:
             tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
             if tag == "p":
@@ -52,7 +62,7 @@ class DocxParser(DocumentParser):
 
         elements = state.flush_elements()
 
-        # Extract images from zip
+        # 从 zip 归档中提取嵌入图片
         assets = self._extract_images(doc, state._image_counter, elements)
         assets.extend(self._extract_videos(doc, elements))
 
@@ -61,6 +71,7 @@ class DocxParser(DocumentParser):
         return ParseResult(doc=doc, elements=elements, assets=assets)
 
     def _read_content(self, doc: Document) -> bytes:
+        """从 metadata.raw_content 或 file:// URI 读取文档字节。"""
         raw = doc.metadata.get("raw_content", "")
         if raw:
             if isinstance(raw, str):
@@ -74,13 +85,16 @@ class DocxParser(DocumentParser):
 
         return b""
 
-    # ── paragraph processing ───────────────────────────────────────
+    # ── 段落处理 ──────────────────────────────────────────────
 
     def _process_paragraph(
         self, p_el, docx: DocxDocument, state: "_DocxParseState"
     ) -> None:
-        """Process a w:p element (paragraph)."""
-        # Get style name
+        """处理一个 w:p 元素（段落）。
+
+        根据段落样式判断其类型：标题、列表项或普通段落。
+        """
+        # 获取样式名称
         style_name = ""
         is_list = False
         pPr = p_el.find(qn("w:pPr"))
@@ -91,7 +105,7 @@ class DocxParser(DocumentParser):
                 is_list = style_name.lower().startswith("list")
             is_list = is_list or pPr.find(qn("w:numPr")) is not None
 
-        # Extract text
+        # 提取文本内容
         text = "".join(
             node.text or ""
             for node in p_el.iter()
@@ -101,11 +115,11 @@ class DocxParser(DocumentParser):
 
         if not text.strip():
             if has_unknown_object:
-                state.add_unknown("[Unsupported embedded DOCX object]")
-            # Empty paragraph — skip unless it's just whitespace
+                state.add_unknown("[不支持的嵌入 DOCX 对象]")
+            # 空段落（仅包含空格）跳过
             return
 
-        # Detect heading by style name
+        # 根据样式名判断是否为标题
         heading_match = None
         if style_name.startswith("Heading") or style_name.startswith("heading"):
             level_str = style_name.replace("Heading", "").replace("heading", "").strip()
@@ -117,7 +131,7 @@ class DocxParser(DocumentParser):
         if heading_match is not None:
             state.add_title(text, heading_match)
         else:
-            # Check paragraph style in docx styles
+            # 再通过 docx 样式表二次检查
             try:
                 for style in docx.styles:
                     if style.style_id == style_name and style.type == WD_STYLE_TYPE.PARAGRAPH:
@@ -138,14 +152,17 @@ class DocxParser(DocumentParser):
             state.add_paragraph(text)
 
         if has_unknown_object:
-            state.add_unknown("[Unsupported embedded DOCX object]")
+            state.add_unknown("[不支持的嵌入 DOCX 对象]")
 
-    # ── table processing ────────────────────────────────────────────
+    # ── 表格处理 ──────────────────────────────────────────────
 
     def _process_table(
         self, tbl_el, docx: DocxDocument, state: "_DocxParseState"
     ) -> None:
-        """Process a w:tbl element (table)."""
+        """处理一个 w:tbl 元素（表格）。
+
+        提取行列结构，处理合并单元格（含垂直合并），生成结构化表格数据。
+        """
         rows_data: list[list[str]] = []
         headers: list[str] = []
         vertical_merges: dict[int, str] = {}
@@ -174,6 +191,7 @@ class DocxParser(DocumentParser):
                     if vmerge is not None:
                         vmerge_val = vmerge.get(qn("w:val")) or "continue"
 
+                # 处理垂直合并单元格
                 if vmerge_val == "continue":
                     cell_text = vertical_merges.get(col_idx, cell_text)
                 elif vmerge_val == "restart":
@@ -211,7 +229,7 @@ class DocxParser(DocumentParser):
             }
         }
 
-        # Build flat text representation
+        # 构建纯文本表示
         flat_parts = []
         if headers:
             flat_parts.append(" | ".join(headers))
@@ -230,7 +248,7 @@ class DocxParser(DocumentParser):
         )
         state.elements.append(el)
 
-    # ── image extraction ────────────────────────────────────────────
+    # ── 图片提取 ──────────────────────────────────────────────
 
     def _extract_images(
         self,
@@ -238,7 +256,10 @@ class DocxParser(DocumentParser):
         image_counter: int,
         elements: list[ParsedElement],
     ) -> list[Asset]:
-        """Extract images from the docx zip's word/media/ directory."""
+        """从 docx 归档的 word/media/ 目录中提取嵌入图片。
+
+        为每张图片创建 Asset 和对应的 image 类型 ParsedElement。
+        """
         assets: list[Asset] = []
         raw = doc.metadata.get("raw_content", "")
         zip_source: bytes | Path | None = None
@@ -284,7 +305,7 @@ class DocxParser(DocumentParser):
                         metadata={"width": None, "height": None},
                     )
                     object.__setattr__(asset, "_data", data)
-                    # Create an image ParsedElement for each image
+                    # 为每张图片创建对应的 ParsedElement
                     el = ParsedElement(
                         doc_id=doc.doc_id,
                         doc_version=doc.version,
@@ -302,7 +323,7 @@ class DocxParser(DocumentParser):
                     assets.append(asset)
                     elements.append(el)
         except (zipfile.BadZipFile, KeyError) as exc:
-            logger.warning("Failed to extract images from docx: %s", exc)
+            logger.warning("从 docx 提取图片失败: %s", exc)
 
         return assets
 
@@ -311,7 +332,7 @@ class DocxParser(DocumentParser):
         doc: Document,
         elements: list[ParsedElement],
     ) -> list[Asset]:
-        """从段落文本中识别视频链接并创建 ready Asset。"""
+        """从段落文本中识别视频链接并创建 ready 状态的 Asset。"""
         assets: list[Asset] = []
         seen: set[str] = set()
         for el in list(elements):
@@ -354,6 +375,7 @@ class DocxParser(DocumentParser):
         return assets
 
     def _has_unsupported_object(self, p_el) -> bool:
+        """检查段落中是否包含不受支持的嵌入对象（OLE 等）。"""
         unsupported_tags = {"object", "oleobject", "control"}
         for node in p_el.iter():
             local = node.tag.split("}")[-1].lower() if "}" in node.tag else node.tag.lower()
@@ -362,11 +384,14 @@ class DocxParser(DocumentParser):
         return False
 
 
-# ── internal parse state ──────────────────────────────────────────
+# ── 内部解析状态 ────────────────────────────────────────────
 
 
 class _DocxParseState:
-    """Mutable state for building elements during DOCX traversal."""
+    """DOCX 解析过程中的可变状态，在遍历 body 元素时逐步构建元素。
+
+    维护当前标题路径、列表分组和序号等解析上下文。
+    """
 
     def __init__(self, doc_id: str, doc_version: int):
         self.doc_id = doc_id
@@ -378,13 +403,16 @@ class _DocxParseState:
         self._current_list_id: str | None = None
 
     def _next_seq(self) -> int:
+        """生成递增的序号。"""
         self._seq += 1
         return self._seq
 
     def flush_elements(self) -> list[ParsedElement]:
+        """完成解析，返回所有累积的元素。"""
         return self.elements
 
     def add_title(self, text: str, level: int) -> None:
+        """添加标题元素并按层级更新 section_path。"""
         if not text:
             return
         self._current_list_id = None
@@ -404,6 +432,7 @@ class _DocxParseState:
         )
 
     def add_paragraph(self, text: str) -> None:
+        """添加普通段落元素。"""
         self._current_list_id = None
         self.elements.append(
             ParsedElement(
@@ -417,6 +446,7 @@ class _DocxParseState:
         )
 
     def add_list_item(self, text: str) -> None:
+        """添加列表项，自动创建列表容器元素（如果尚未创建）。"""
         if self._current_list_id is None:
             list_el = ParsedElement(
                 doc_id=self.doc_id,
@@ -442,6 +472,7 @@ class _DocxParseState:
         )
 
     def add_unknown(self, text: str) -> None:
+        """添加未知类型元素（如不支持的内嵌对象）。"""
         self.elements.append(
             ParsedElement(
                 doc_id=self.doc_id,

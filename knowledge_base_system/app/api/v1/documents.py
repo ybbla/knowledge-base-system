@@ -6,11 +6,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi import status as http_status
 
 from app.api import upload as upload_api
@@ -23,7 +22,6 @@ from app.api.v1.schemas import (
     SearchParams,
     error_json,
 )
-from app.core import deps
 from app.api.v1.services import sync_index_metadata
 from app.core.deps import (
     asset_store,
@@ -38,7 +36,7 @@ from app.core.errors import (
     DocumentNotFoundError,
     DuplicateDocumentError,
 )
-from app.core.models import DocStatus, Document, compute_hash, new_id
+from app.core.models import DocStatus, Document, new_id
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 logger = logging.getLogger(__name__)
@@ -577,9 +575,6 @@ async def list_document_elements(
 
 # ── 4.4 软删除文档 ────────────────────────────────────────────────
 
-
-# ── 4.5 软删除文档 ────────────────────────────────────────────────
-
 @router.delete("/{doc_id}")
 async def delete_document(doc_id: str):
     """软删除文档，将关联活跃知识块状态设置为 deleted 并同步索引。"""
@@ -621,7 +616,7 @@ async def delete_document(doc_id: str):
     )
 
 
-# ── 4.6 恢复文档 ──────────────────────────────────────────────────
+# ── 4.5 恢复文档 ──────────────────────────────────────────────────
 
 @router.post("/{doc_id}/restore")
 async def restore_document(doc_id: str):
@@ -670,7 +665,7 @@ async def restore_document(doc_id: str):
     return APIResponse(data=_doc_to_item(doc)).model_dump(mode="json")
 
 
-# ── 4.6.1 重试失败文档 ─────────────────────────────────────────────
+# ── 4.5.1 重试失败文档 ─────────────────────────────────────────────
 
 @router.post("/{doc_id}/retry")
 async def retry_document(doc_id: str):
@@ -721,7 +716,7 @@ async def retry_document(doc_id: str):
     return APIResponse(data=_doc_to_item(doc)).model_dump(mode="json")
 
 
-# ── 4.7 版本历史 ──────────────────────────────────────────────────
+# ── 4.6 版本历史 ──────────────────────────────────────────────────
 
 @router.get("/{doc_id}/history")
 async def get_document_history(doc_id: str):

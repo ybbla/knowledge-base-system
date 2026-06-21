@@ -1,3 +1,13 @@
+"""语义抽取模块 — 通过 LLM 将解析元素转换为结构化的知识块。
+
+核心流程：
+1. 按 h2 标题切分窗口（windowing）
+2. 按 token 预算拆分超大窗口
+3. 每个窗口独立调用 LLM 进行语义抽取
+4. 构造 KnowledgeChunk 对象（含 source_refs、asset_refs、knowledge_type 等）
+5. LLM 失败时使用 fallback 兜底（保留可检索的原始文本）
+"""
+
 import json
 import logging
 from typing import Any
@@ -36,7 +46,11 @@ EXTRACT_SCHEMA = {"required": ["chunks"]}
 
 
 class SemanticExtractor:
-    """Convert ParsedElements into KnowledgeChunks via LLM."""
+    """语义抽取器 — 通过 LLM 将 ParsedElement 列表转换为 KnowledgeChunk 列表。
+
+    支持窗口切分（按 h2 标题 + token 预算）、LLM 调用与解析结果构建，
+    LLM 不可用或返回空结果时自动回退为 fallback chunk。
+    """
 
     def __init__(self) -> None:
         self._max_tokens = settings.max_window_tokens
@@ -48,7 +62,7 @@ class SemanticExtractor:
         ingest_job_id: str,
         category: str = "\u901a\u7528",
     ) -> list[KnowledgeChunk]:
-        """Main entry: window elements, call LLM, return KnowledgeChunks."""
+        """\u4e3b\u5165\u53e3\uff1a\u5207\u5206\u7a97\u53e3 \u2192 LLM \u62bd\u53d6 \u2192 \u8fd4\u56de KnowledgeChunk \u5217\u8868\u3002"""
         if not elements:
             return []
 

@@ -1,3 +1,14 @@
+"""Milvus 稠密向量索引与 Collection 管理器。
+
+MilvusCollectionManager 统一管理 Milvus 连接、Collection 创建、Schema 迁移和 upsert 合并。
+MilvusVectorIndex 基于 HNSW + COSINE 实现稠密向量相似度检索。
+
+辅助函数：
+- _json_dumps: 将 Python 值序列化为 JSON 字符串（Milvus VARCHAR 字段存储用）
+- _escape_expr_value: 转义 Milvus 布尔表达式中的特殊字符（反斜杠和双引号）
+- _default_entity: 构造 Milvus upsert 时的默认实体字段（用于缺失缓存的回退）
+"""
+
 import json
 import logging
 import time
@@ -13,14 +24,23 @@ JSON_TEXT_FIELDS = {"source_refs", "asset_refs", "metadata"}
 
 
 def _json_dumps(value: Any) -> str:
+    """将 Python 值序列化为 JSON 字符串，用于 Milvus VARCHAR 字段存储。
+
+    None 或缺失值默认序列化为空数组 "[]"。
+    """
     return json.dumps(value if value is not None else [], ensure_ascii=False)
 
 
 def _escape_expr_value(value: str) -> str:
+    """转义 Milvus 布尔表达式中的特殊字符（反斜杠和双引号）。
+
+    防止用户输入中的特殊字符破坏 Milvus expr 语法。
+    """
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _default_entity(chunk_id: str) -> dict[str, Any]:
+    """构造 Milvus upsert 的默认实体字典，用于缺失缓存时的回退填充。"""
     return {
         "chunk_id": chunk_id,
         "doc_id": "",
@@ -39,7 +59,16 @@ def _default_entity(chunk_id: str) -> dict[str, Any]:
 
 
 class MilvusCollectionManager:
-    """统一管理 Milvus 连接、Collection 创建与 upsert 合并。"""
+    """Milvus Collection 生命周期管理器。
+
+    统一管理：连接建立 / Collection 创建与 Schema 迁移 / 标量字段 upsert 合并 /
+    HNSW + BM25 双索引创建 / 实体缓存。
+
+    MilvusVectorIndex 和 MilvusBM25Index 共享同一个 Collection：
+    - dense_vector 字段：HNSW 索引（COSINE 度量），供向量检索
+    - sparse_vector 字段：BM25 Function 自动生成 + SPARSE_INVERTED_INDEX（BM25 度量）
+    - 其余 VARCHAR/INT64 字段：标量存储与过滤
+    """
 
     def __init__(
         self,
@@ -57,6 +86,7 @@ class MilvusCollectionManager:
         self._cache: dict[str, dict[str, Any]] = {}
 
     def connect(self) -> None:
+        """建立 Milvus 连接（幂等）。"""
         try:
             from pymilvus import connections
         except ImportError as exc:
@@ -65,6 +95,11 @@ class MilvusCollectionManager:
         connections.connect(alias=self.alias, host=self.host, port=str(self.port))
 
     def ensure_collection(self) -> None:
+        """确保 Collection 存在且 Schema 兼容，否则自动创建或重建。
+
+        Schema 兼容性检查：缺少 status 字段 / 缺少 title 字段 /
+        sparse_vector 索引非 BM25 度量 → 自动删除并重建。
+        """
         self.connect()
         from pymilvus import (Collection, CollectionSchema, DataType, FieldSchema,
                               Function, FunctionType, utility)
@@ -150,6 +185,7 @@ class MilvusCollectionManager:
         self.collection.load()
 
     def ensure_sparse_index(self) -> None:
+        """确保 sparse_vector 字段上存在 SPARSE_INVERTED_INDEX（BM25 度量）。"""
         if self.collection is None:
             return
         for index in getattr(self.collection, "indexes", []) or []:
@@ -174,6 +210,7 @@ class MilvusCollectionManager:
             logger.exception("断开 Milvus 连接失败")
 
     def upsert_fields(self, chunk_id: str, fields: dict[str, Any]) -> None:
+        """更新单条知识块的标量字段（转为批量调用）。"""
         self.upsert_fields_batch([(chunk_id, fields)])
 
     def upsert_fields_batch(self, items: list[tuple[str, dict[str, Any]]]) -> None:
@@ -208,22 +245,31 @@ class MilvusCollectionManager:
 
 
 class MilvusVectorIndex(VectorIndex):
-    """基于 Milvus 的 dense vector 索引实现。"""
+    """基于 Milvus 的稠密向量索引实现（HNSW + COSINE 相似度）。
+
+    与 MilvusBM25Index 共享同一 Collection，通过注入 MilvusCollectionManager
+    实现连接和集合生命周期的统一管理。
+    """
 
     def __init__(self, manager: MilvusCollectionManager | None = None) -> None:
+        """初始化向量索引，可注入共享的 MilvusCollectionManager。"""
         self._manager = manager or MilvusCollectionManager()
 
     @property
     def manager(self) -> MilvusCollectionManager:
+        """获取内部的 MilvusCollectionManager 实例。"""
         return self._manager
 
     def connect(self) -> None:
+        """建立 Milvus 连接（委托给 manager）。"""
         self._manager.connect()
 
     def ensure_collection(self) -> None:
+        """确保 Collection 存在且 Schema 兼容（委托给 manager）。"""
         self._manager.ensure_collection()
 
     def disconnect(self) -> None:
+        """断开 Milvus 连接（委托给 manager）。"""
         self._manager.disconnect()
 
     def add(
@@ -232,12 +278,14 @@ class MilvusVectorIndex(VectorIndex):
         vector: list[float],
         metadata: dict | None = None,
     ) -> None:
+        """添加单条稠密向量 + 标量字段（转为批量调用）。"""
         self.add_batch([(chunk_id, vector, metadata)])
 
     def add_batch(
         self,
         items: list[tuple[str, list[float], dict | None]],
     ) -> None:
+        """批量添加稠密向量 + 标量字段。"""
         fields_items = [
             (chunk_id, self._build_fields(vector, metadata))
             for chunk_id, vector, metadata in items
@@ -249,6 +297,7 @@ class MilvusVectorIndex(VectorIndex):
         vector: list[float],
         metadata: dict | None = None,
     ) -> dict[str, Any]:
+        """从向量和元数据构造 Milvus upsert 所需的标量字段字典。"""
         metadata = metadata or {}
         if len(vector) != DENSE_DIM:
             raise ValueError(f"dense vector dimension must be {DENSE_DIM}")
@@ -269,6 +318,7 @@ class MilvusVectorIndex(VectorIndex):
         return fields
 
     def delete(self, chunk_id: str) -> None:
+        """删除指定知识块的向量和标量字段（委托给 manager）。"""
         self._manager.delete(chunk_id)
 
     def upsert_fields(self, chunk_id: str, fields: dict[str, Any]) -> None:
@@ -279,7 +329,7 @@ class MilvusVectorIndex(VectorIndex):
         """批量更新 Milvus 中标量字段。"""
         self._manager.upsert_fields_batch(items)
 
-    # Milvus 检索返回的完整标量字段（跳过 PG 查询）
+    # Milvus 检索返回的完整标量字段列表（使 retrieval pipeline 无需查询 PG）
     _SEARCH_OUTPUT_FIELDS = [
         "chunk_id", "doc_id", "title", "content", "category",
         "knowledge_type", "status", "source_refs", "asset_refs",
@@ -293,6 +343,11 @@ class MilvusVectorIndex(VectorIndex):
         category: str | None = None,
         knowledge_type: str | None = None,
     ) -> list[tuple[str, float, dict]]:
+        """稠密向量相似度检索（HNSW + COSINE）。
+
+        返回 (chunk_id, score, fields_dict) 列表，按分数降序排列。
+        自动过滤 status!='active' 的记录。
+        """
         self._manager.ensure_collection()
         collection = self._manager.collection
         if collection is None:

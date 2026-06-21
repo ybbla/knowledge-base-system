@@ -1,8 +1,16 @@
+"""检索引擎抽象基类 — 定义 VectorIndex 和 BM25Index 的统一接口。
+
+具体实现：
+- MilvusVectorIndex: 基于 Milvus 的稠密向量索引（HNSW + COSINE）
+- MilvusBM25Index: 基于 Milvus 原生 BM25 Function 的稀疏向量索引
+- MemoryVectorIndex: 基于 numpy 余弦相似度的内存向量索引（仅供测试使用）
+"""
+
 from abc import ABC, abstractmethod
 
 
 class VectorIndex(ABC):
-    """Abstract vector index for similarity search."""
+    """稠密向量索引抽象基类 — 基于语义向量进行相似度检索。"""
 
     @abstractmethod
     def add(
@@ -10,7 +18,8 @@ class VectorIndex(ABC):
         chunk_id: str,
         vector: list[float],
         metadata: dict | None = None,
-    ) -> None: ...
+    ) -> None:
+        """添加单条向量记录。"""
 
     def add_batch(
         self,
@@ -21,7 +30,8 @@ class VectorIndex(ABC):
             self.add(chunk_id, vector, metadata)
 
     @abstractmethod
-    def delete(self, chunk_id: str) -> None: ...
+    def delete(self, chunk_id: str) -> None:
+        """删除指定知识块的向量索引。"""
 
     @abstractmethod
     def search(
@@ -30,11 +40,11 @@ class VectorIndex(ABC):
         top_k: int,
         category: str | None = None,
     ) -> list[tuple[str, float]]:
-        """Return list of (chunk_id, score) sorted by score descending."""
+        """向量相似度检索，返回 (chunk_id, score) 列表，按分数降序排列。"""
 
 
 class BM25Index(ABC):
-    """Abstract BM25 keyword index."""
+    """BM25 关键词索引抽象基类 — 基于分词进行全文检索。"""
 
     @abstractmethod
     def add(
@@ -42,7 +52,8 @@ class BM25Index(ABC):
         chunk_id: str,
         text: str,
         metadata: dict | None = None,
-    ) -> None: ...
+    ) -> None:
+        """添加单条文本索引。"""
 
     def add_batch(
         self,
@@ -53,7 +64,8 @@ class BM25Index(ABC):
             self.add(chunk_id, text, metadata)
 
     @abstractmethod
-    def delete(self, chunk_id: str) -> None: ...
+    def delete(self, chunk_id: str) -> None:
+        """删除指定知识块的文本索引。"""
 
     @abstractmethod
     def search(
@@ -62,4 +74,4 @@ class BM25Index(ABC):
         top_k: int,
         category: str | None = None,
     ) -> list[tuple[str, float]]:
-        """Return list of (chunk_id, score) sorted by score descending."""
+        """BM25 关键词检索，返回 (chunk_id, score) 列表，按分数降序排列。"""

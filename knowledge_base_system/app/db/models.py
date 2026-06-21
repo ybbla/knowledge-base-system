@@ -1,3 +1,15 @@
+"""数据库 ORM 模型定义 — SQLAlchemy declarative_base 映射。
+
+定义四张核心表的列结构：
+- documents: 文档主表
+- parsed_elements: 解析元素表
+- assets: 资源文件表
+- knowledge_chunks: 知识块表
+
+注意：knowledge_chunks 表中 index_status / indexed_at / index_error 三列已废弃，
+仅 engine.py 中的 ensure_runtime_schema() 会为旧表补建（向后兼容），代码层不再读写。
+"""
+
 from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, Text
@@ -9,13 +21,16 @@ JSONBType = JSON().with_variant(JSONB(), "postgresql")
 
 
 def _now() -> datetime:
+    """返回当前 UTC 时间，作为 created_at / updated_at 的默认值工厂函数。"""
     return datetime.now(timezone.utc)
 
 
-# ── DB Models ──────────────────────────────────────────────────────
+# ── 数据库模型 ──────────────────────────────────────────────────────
 
 
 class DbDocument(Base):
+    """文档 ORM 模型 — 对应 documents 表。"""
+
     __tablename__ = "documents"
 
     doc_id = Column(String(64), primary_key=True)
@@ -37,6 +52,12 @@ class DbDocument(Base):
 
 
 class DbParsedElement(Base):
+    """解析元素 ORM 模型 — 对应 parsed_elements 表。
+
+    记录文档解析后的结构化元素（标题、段落、表格、图片引用等），
+    按 sequence_order 保持原文顺序。
+    """
+
     __tablename__ = "parsed_elements"
 
     element_id = Column(String(64), primary_key=True)
@@ -54,6 +75,12 @@ class DbParsedElement(Base):
 
 
 class DbAsset(Base):
+    """资源文件 ORM 模型 — 对应 assets 表。
+
+    存储图片、视频等二进制资源的元数据与存储路径，
+    支持多模态视觉理解后的描述文本（extracted_text）。
+    """
+
     __tablename__ = "assets"
 
     asset_id = Column(String(64), primary_key=True)
@@ -73,6 +100,12 @@ class DbAsset(Base):
 
 
 class DbKnowledgeChunk(Base):
+    """知识块 ORM 模型 — 对应 knowledge_chunks 表。
+
+    知识块是语义抽取后的最小检索单元，按 knowledge_type 区分为陈述型、
+    关系型、流程型三种。通过 source_refs 和 asset_refs 关联到源元素和资源。
+    """
+
     __tablename__ = "knowledge_chunks"
 
     chunk_id = Column(String(64), primary_key=True)

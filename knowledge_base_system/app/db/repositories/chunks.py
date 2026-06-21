@@ -1,3 +1,8 @@
+"""知识块仓储 — KnowledgeChunk 的 PostgreSQL 持久化与查询。
+
+提供知识块的 CRUD、分页过滤、批量状态更新、软删除/恢复等功能。
+"""
+
 from __future__ import annotations
 
 import logging
@@ -19,9 +24,10 @@ logger = logging.getLogger(__name__)
 
 
 class PgChunkStore(BaseRepository):
-    """PostgreSQL-backed chunk store matching the ChunkStore interface."""
+    """知识块仓储 — 实现 PostgreSQL 下的 KnowledgeChunk 持久化存储。"""
 
     def _to_db(self, chunk: KnowledgeChunk) -> DbKnowledgeChunk:
+        """将领域模型 KnowledgeChunk 转换为 ORM 对象 DbKnowledgeChunk。"""
         return DbKnowledgeChunk(
             chunk_id=chunk.chunk_id,
             doc_id=chunk.doc_id,
@@ -39,6 +45,7 @@ class PgChunkStore(BaseRepository):
         )
 
     def _from_db(self, db_chunk: DbKnowledgeChunk) -> KnowledgeChunk:
+        """将 ORM 对象 DbKnowledgeChunk 还原为领域模型 KnowledgeChunk。"""
         asset_refs = []
         for raw in db_chunk.asset_refs or []:
             render_data = raw.get("render") or {}
@@ -143,8 +150,6 @@ class PgChunkStore(BaseRepository):
 
     def bulk_update_status_by_doc_id(self, doc_id: str, status: str) -> None:
         """将指定文档下所有 chunk 批量更新为目标状态（删/恢通用）。"""
-        from datetime import datetime, timezone
-
         with self._session() as session:
             rows = (
                 session.query(DbKnowledgeChunk)
@@ -157,8 +162,6 @@ class PgChunkStore(BaseRepository):
 
     def bulk_update_fields_by_doc_id(self, doc_id: str, fields: dict) -> list[KnowledgeChunk]:
         """批量更新指定文档下所有 chunk 的元数据字段（如 title、category），返回更新后的 chunk 列表。"""
-        from datetime import datetime, timezone
-
         with self._session() as session:
             rows = (
                 session.query(DbKnowledgeChunk)

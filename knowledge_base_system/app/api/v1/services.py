@@ -73,10 +73,16 @@ def sync_index_metadata_batch(
 
 
 def _sync_vector_metadata(chunk_id: str, metadata: dict, vector_index: "VectorIndex") -> None:
-    """同步 chunk 元数据到向量索引。Milvus 使用 upsert_fields，内存使用 _metadata dict。"""
+    """同步 chunk 元数据到向量索引。
+
+    生产环境统一使用 Milvus（via upsert_fields）。
+    下方 elif 分支为 MemoryVectorIndex 的内存 _metadata dict 回退——
+    当前仅在测试中使用，生产路径不会命中。
+    """
     if hasattr(vector_index, "upsert_fields"):
         vector_index.upsert_fields(chunk_id, metadata)
     elif hasattr(vector_index, "_metadata") and isinstance(getattr(vector_index, "_metadata"), dict):
+        # MemoryVectorIndex 内存回退分支（仅供测试使用，生产不会命中）
         meta_dict = getattr(vector_index, "_metadata")
         if chunk_id in meta_dict:
             meta_dict[chunk_id].update(metadata)

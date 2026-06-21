@@ -1,3 +1,9 @@
+"""LLM 重排序模块 — 对候选知识块逐条独立打分后按相关性降序排列。
+
+采用并发打分策略：每条 chunk 独立调用 LLM 获取 0~1 的相关性评分，
+代码层负责按分数排序。单条 LLM 失败不影响其他候选，失败条目回退使用 RRF 融合分。
+"""
+
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
@@ -9,12 +15,16 @@ from llm.volcengine_client import llm_client
 
 logger = logging.getLogger(__name__)
 
-# 并发打分线程数
+# 并发打分最大线程数
 _MAX_WORKERS = 15
 
 
 def _score_one(query: str, chunk: KnowledgeChunk) -> dict[str, Any]:
-    """对单条知识块调用 LLM 打分。失败返回不含 relevance_score 的条目。"""
+    """对单条知识块调用 LLM 进行相关性打分（0~1）。
+
+    LLM 调用失败时返回不含 relevance_score 的条目，
+    由 pipeline 层从 RRF 融合分数中取回退值。
+    """
     try:
         messages = build_rerank_message(query, chunk.content)
         result = llm_client.chat_json(messages, schema=RERANK_SCHEMA)
@@ -33,7 +43,12 @@ def _score_one(query: str, chunk: KnowledgeChunk) -> dict[str, Any]:
 
 
 class Reranker:
-    """LLM-based reranker — 单条并行打分，代码负责排序。"""
+    """LLM 重排序器 — 对候选知识块逐条并行打分，代码层负责降序排列。
+
+    并发策略：
+    - 候选数 = 1：串行打分
+    - 候选数 > 1：ThreadPoolExecutor 并发，最大 _MAX_WORKERS 个线程
+    """
 
     def rerank(
         self, query: str, candidates: list[KnowledgeChunk]

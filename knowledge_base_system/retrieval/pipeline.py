@@ -1,3 +1,15 @@
+"""检索流水线 — 编排查询改写、双路检索、RRF 融合、LLM 重排序的完整流程。
+
+检索流程（5 个阶段）：
+1. 查询改写：LLM 将用户查询改写为陈述句 + 关键词列表
+2. Embedding：对改写后的查询生成稠密向量
+3. 双路并行检索：向量检索（HNSW + COSINE）+ BM25 关键词检索
+4. RRF 融合：倒数排序融合两路结果
+5. LLM Rerank：对融合后的候选逐条打分，按相关性降序输出
+
+Milvus 返回全量标量字段，无需查询 PG 即可构建 SearchResult。
+"""
+
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -17,7 +29,11 @@ from app.core.models import (
 
 @dataclass
 class RetrievalDebugInfo:
-    """检索全链路调试信息。"""
+    """检索全链路调试信息数据类。
+
+    记录查询改写、各阶段候选列表、统计数据和错误信息，
+    仅在 search(debug=True) 时填充并返回。
+    """
     # 查询改写
     original_query: str
     rewritten_query: str
@@ -62,7 +78,11 @@ def _renderable_storage_uri(storage_uri: str | None) -> str | None:
 
 
 class RetrievalPipeline:
-    """Orchestrate the full retrieval flow."""
+    """检索流水线编排器 — 协调查询改写、双路检索、融合和重排序的完整流程。
+
+    依赖注入：vector_index、bm25_index、chunk_store、asset_store。
+    Milvus 返回完整标量字段，检索过程中无需查询 PG。
+    """
 
     def __init__(
         self,
@@ -86,14 +106,18 @@ class RetrievalPipeline:
         knowledge_type: str | None = None,
         debug: bool = False,
     ) -> SearchResult | tuple[SearchResult, RetrievalDebugInfo]:
-        """Execute full retrieval pipeline and return SearchResult.
+        """执行完整检索流水线。
 
-        Args:
-            query: 查询词
-            top_k: 返回结果数量
-            category: 分类过滤（Milvus expr）
+        参数:
+            query: 用户原始查询
+            top_k: 最终返回结果数量（默认从配置读取）
+            category: 知识块分类过滤（Milvus expr）
             knowledge_type: 知识类型过滤（Milvus expr）
-            debug: 是否返回调试信息，True 时返回 (result, debug_info)
+            debug: 为 True 时返回 (SearchResult, RetrievalDebugInfo) 元组
+
+        返回:
+            debug=False 时返回 SearchResult
+            debug=True 时返回 (SearchResult, RetrievalDebugInfo)
         """
         cfg = get_settings(reload_env=True)
         final_k = top_k or cfg.final_top_k

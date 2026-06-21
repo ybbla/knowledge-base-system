@@ -16,6 +16,9 @@ const Documents = (() => {
   let categoryOptions = [];  // 从后端动态加载的分类列表
   let pageSize = 15;  // 每页显示数量
 
+  /**
+   * 渲染文档列表页面（路由入口），从 URL 参数读取初始筛选状态
+   */
   async function renderList() {
     UI.setBreadcrumb([{ label: '仪表盘', path: '#/' }, { label: '文档管理' }]);
 
@@ -81,11 +84,12 @@ const Documents = (() => {
     `);
   }
 
+  /**
+   * 加载指定页码的文档列表，根据当前筛选条件请求后端
+   * @param {number} page - 页码
+   */
   async function loadPage(page) {
     currentPage = page;
-
-    // 只在首次加载时显示loading
-    const isFirstLoad = page === 1 && currentKeyword === '' && currentCategory === '' && currentStatus === '';
 
     try {
       const [sortBy, sortOrder] = currentSort.split(':');
@@ -104,25 +108,6 @@ const Documents = (() => {
       const message = friendlyErrorMessage(e);
       UI.toast(`加载文档失败：${message}`, 'error');
       renderDocListHtml(null, { errorMessage: message });
-    }
-  }
-
-  function showLoadingIndicator() {
-    const tableWrap = document.querySelector('.table-wrap');
-    if (tableWrap && !tableWrap.querySelector('.table-loading')) {
-      const loadingDiv = document.createElement('div');
-      loadingDiv.className = 'table-loading';
-      loadingDiv.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(255,255,255,0.8);display:flex;align-items:center;justify-content:center;z-index:10;';
-      loadingDiv.innerHTML = '<div class="loading-spinner"></div>';
-      tableWrap.style.position = 'relative';
-      tableWrap.appendChild(loadingDiv);
-    }
-  }
-
-  function hideLoadingIndicator() {
-    const loadingDiv = document.querySelector('.table-loading');
-    if (loadingDiv) {
-      loadingDiv.remove();
     }
   }
 
@@ -408,6 +393,8 @@ const Documents = (() => {
   /* -----------------------------------------------------------------------
      搜索与过滤
      ----------------------------------------------------------------------- */
+
+  /** 根据当前搜索栏和筛选框的值重新加载第一页 */
   function doSearch() {
     currentKeyword = document.getElementById('docSearchInput')?.value?.trim() || '';
     currentCategory = document.getElementById('docCategoryFilter')?.value || '';
@@ -415,6 +402,10 @@ const Documents = (() => {
     loadPage(1);
   }
 
+  /**
+   * 切换文档列表标签页（活跃/失败/处理中/回收站），重置筛选和选中状态
+   * @param {string} tab - 标签页标识: active | failed | processing | deleted
+   */
   function switchTab(tab) {
     currentTab = tab;
     currentStatus = tab;
@@ -427,6 +418,7 @@ const Documents = (() => {
     loadPage(1);
   }
 
+  /** 清空所有筛选条件并重新加载 */
   function resetFilters() {
     currentKeyword = '';
     currentCategory = '';
@@ -445,6 +437,11 @@ const Documents = (() => {
   /* -----------------------------------------------------------------------
      文档详情抽屉
      ----------------------------------------------------------------------- */
+
+  /**
+   * 在右侧抽屉中显示文档详情（元数据、状态、错误信息等）
+   * @param {string} docId - 文档 ID
+   */
   async function showDocDetail(docId) {
     UI.showDrawer('文档详情', '<div class="loading-overlay" style="min-height:200px"><div class="loading-spinner"></div><span>加载中…</span></div>');
     try {
@@ -599,6 +596,10 @@ const Documents = (() => {
   /* -----------------------------------------------------------------------
      CRUD 操作（v1）
      ----------------------------------------------------------------------- */
+  /**
+   * 软删除文档，二次确认后执行
+   * @param {string} docId - 文档 ID
+   */
   async function deleteDoc(docId) {
     const ok = await UI.showConfirm('删除确认', '确认删除该文档？（注意：如果有关联的知识块，将同步删除。）', '确认删除');
     if (!ok) return;
@@ -611,6 +612,7 @@ const Documents = (() => {
     }
   }
 
+  /** 从回收站恢复文档 */
   async function restoreDoc(docId) {
     try {
       await API.restoreDocument(docId);
@@ -621,6 +623,11 @@ const Documents = (() => {
     }
   }
 
+  /**
+   * 重新处理失败的文档，显示处理中弹条并开始轮询状态
+   * @param {string} docId - 文档 ID
+   * @param {string} docTitle - 文档标题（用于弹条显示）
+   */
   async function retryDoc(docId, docTitle) {
     try {
       showProcessingToast([{ title: docTitle || '文档', docId }]);
@@ -633,6 +640,7 @@ const Documents = (() => {
     }
   }
 
+  /** 批量重试选中的失败文档 */
   async function batchRetry() {
     if (!selectedIds.size) return;
     const ok = await UI.showConfirm('批量重试确认', `确认重新入库 ${selectedIds.size} 篇失败文档？`, '确认重试');
@@ -646,6 +654,7 @@ const Documents = (() => {
     loadPage(currentPage);
   }
 
+  /** 批量恢复选中的已删除文档 */
   async function batchRestore() {
     if (!selectedIds.size) return;
     const ok = await UI.showConfirm('批量恢复确认', `确认恢复 ${selectedIds.size} 篇已删除文档？`, '确认恢复');
@@ -663,6 +672,9 @@ const Documents = (() => {
   /* -----------------------------------------------------------------------
      批量操作
      ----------------------------------------------------------------------- */
+  /**
+   * 全选/取消全选切换，异步拉取全部文档 ID 以实现跨页全选
+   */
   async function toggleSelectAll() {
     const selectAll = document.getElementById('docSelectAll');
     const checkboxes = document.querySelectorAll('.doc-checkbox');
@@ -688,6 +700,7 @@ const Documents = (() => {
     }
   }
 
+  /** 单个复选框选中/取消切换 */
   function toggleSelect(e) {
     if (e.target.checked) selectedIds.add(e.target.value);
     else selectedIds.delete(e.target.value);
@@ -701,6 +714,7 @@ const Documents = (() => {
     if (retryBtn) retryBtn.disabled = selectedIds.size === 0;
   }
 
+  /** 批量删除选中文档（含二次确认） */
   async function batchDelete() {
     if (!selectedIds.size) return;
     const ok = await UI.showConfirm('批量删除确认', `确认批量删除 ${selectedIds.size} 篇文档？（注意：如果有关联的知识块，将同步删除。）`, '确认删除');
@@ -717,6 +731,11 @@ const Documents = (() => {
   /* -----------------------------------------------------------------------
      编辑文档元数据
      ----------------------------------------------------------------------- */
+
+  /**
+   * 显示编辑文档元数据的模态框（标题、分类），支持新增分类
+   * @param {string} docId - 文档 ID
+   */
   async function showEditDialog(docId) {
     try {
       const res = await API.getDocument(docId);
@@ -829,6 +848,10 @@ const Documents = (() => {
     UI.toast(`已添加分类: ${name}`, 'success');
   }
 
+  /**
+   * 保存文档编辑结果（标题和分类）
+   * @param {string} docId - 文档 ID
+   */
   async function saveEdit(docId) {
     const title = document.getElementById('editDocTitle')?.value?.trim();
     const categorySelect = document.getElementById('editDocCategorySelect');
@@ -866,6 +889,9 @@ const Documents = (() => {
      ----------------------------------------------------------------------- */
   let selectedFiles = [];
 
+  /**
+   * 显示上传文档模态框，支持拖拽、多文件选择，自动检测文件类型
+   */
   async function showUploadModal() {
     // 加载已有分类
     let existingCategories = [];
@@ -1029,6 +1055,11 @@ const Documents = (() => {
     renderSelectedFiles();
   }
 
+  /**
+   * 执行文档上传并自动入库，支持替换模式（同名文档覆盖）
+   * @param {string|null} [replaceDocId=null] - 要替换的文档 ID
+   * @param {boolean} [confirmReplace=false] - 是否已确认替换
+   */
   async function doUpload(replaceDocId = null, confirmReplace = false) {
     if (!selectedFiles.length) { UI.toast('请先选择文件', 'error'); return; }
     const title = selectedFiles.length === 1 ? (document.getElementById('docTitle')?.value?.trim() || '') : '';
@@ -1269,12 +1300,6 @@ const Documents = (() => {
     } catch (e) {
       UI.toast(`更新失败: ${e.message}`, 'error');
     }
-  }
-
-  function detectSourceType(filename) {
-    const ext = (filename || '').split('.').pop()?.toLowerCase();
-    const map = { md: 'markdown', txt: 'text', docx: 'docx', xlsx: 'xlsx', html: 'html', htm: 'html', pdf: 'pdf', pptx: 'pptx' };
-    return map[ext] || 'unknown';
   }
 
   return { renderList, showUploadModal, closeUploadModal, onCategorySelect, onEditCategoryFocus, onEditCategorySelect, showNewCategoryDialog, cancelNewCategory, confirmNewCategory, doSearch, switchTab, resetFilters, loadPage, deleteDoc, restoreDoc, retryDoc, batchRetry, batchRestore, showEditDialog, saveEdit, toggleSelectAll, toggleSelect, batchDelete, selectFile, clearFile, removeSelectedFile, doUpload, showUpdateModal, selectUpdateFile, clearUpdateFile, doUpdateUpload, confirmReplace, uploadAsNew, showDocDetail };
