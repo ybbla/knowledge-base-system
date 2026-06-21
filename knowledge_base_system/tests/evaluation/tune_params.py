@@ -98,7 +98,7 @@ def main() -> None:
     original_mode = settings.milvus_enabled
     # 调参只覆盖外部服务检索路径，避免切换到非 Milvus 模式。
     os.environ.pop("MILVUS_ENABLED", None)
-    modes = [("milvus_hybrid", True)]
+    modes = [("parallel_rrf", True)]
     try:
         for mode_name, enabled in modes:
             settings.milvus_enabled = enabled

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -224,11 +225,11 @@ class IngestionPipeline:
         """构造写入检索索引的知识块元数据。"""
         return {
             "doc_id": chunk.doc_id,
+            "title": chunk.title,
             "content": chunk.content,
             "category": chunk.category,
             "knowledge_type": chunk.knowledge_type.value,
             "status": chunk.status.value,
-            "title_path": chunk.metadata.get("title_path", []),
             "source_refs": [
                 ref.model_dump(mode="json")
                 for ref in chunk.source_refs
@@ -238,6 +239,8 @@ class IngestionPipeline:
                 for ref in chunk.asset_refs
             ],
             "metadata": chunk.metadata,
+            "created_at": int(chunk.created_at.timestamp()) if chunk.created_at else int(time.time()),
+            "updated_at": int(chunk.updated_at.timestamp()) if chunk.updated_at else int(time.time()),
         }
 
     def _trigger_eval_data_generation(self, doc: Document, chunks: list[KnowledgeChunk]) -> None:

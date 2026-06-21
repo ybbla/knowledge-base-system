@@ -21,9 +21,9 @@ class Settings(BaseSettings):
     request_timeout_seconds: float = Field(default=3.0, validation_alias="VOLCENGINE_TIMEOUT_SECONDS")
 
     # 检索默认参数。通过原始环境变量读取，便于评测脚本动态覆盖。
-    vector_top_k: int = Field(default=50, validation_alias="VECTOR_TOP_K")
-    bm25_top_k: int = Field(default=50, validation_alias="BM25_TOP_K")
-    fusion_top_k: int = Field(default=20, validation_alias="FUSION_TOP_K")
+    vector_top_k: int = Field(default=30, validation_alias="VECTOR_TOP_K")
+    bm25_top_k: int = Field(default=30, validation_alias="BM25_TOP_K")
+    fusion_top_k: int = Field(default=15, validation_alias="FUSION_TOP_K")
     final_top_k: int = Field(default=5, validation_alias="FINAL_TOP_K")
     rrf_k: int = Field(default=60, validation_alias="RRF_K")
 
@@ -52,9 +52,12 @@ class Settings(BaseSettings):
         default="knowledge_chunks", validation_alias="MILVUS_COLLECTION"
     )
     milvus_nlist: int = Field(default=128, validation_alias="MILVUS_NLIST")
-    milvus_sparse_max_vocab: int = Field(
-        default=100000, validation_alias="MILVUS_SPARSE_MAX_VOCAB"
-    )
+    # HNSW 索引参数
+    milvus_hnsw_M: int = Field(default=16, validation_alias="MILVUS_HNSW_M")
+    milvus_hnsw_ef_construction: int = Field(default=200, validation_alias="MILVUS_HNSW_EF_CONSTRUCTION")
+    milvus_hnsw_ef: int = Field(default=64, validation_alias="MILVUS_HNSW_EF")
+    # BM25 检索参数
+    milvus_sparse_ef: int = Field(default=16, validation_alias="MILVUS_SPARSE_EF")
 
     # MinIO：必须启用并可连接。
     minio_enabled: bool = Field(default=True, validation_alias="MINIO_ENABLED")

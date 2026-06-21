@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from indexing.milvus_sparse import MilvusSparseIndex
+from indexing.milvus_bm25 import MilvusBM25Index
 from indexing.milvus_vector import DENSE_DIM, MilvusCollectionManager, MilvusVectorIndex
 
 
@@ -32,7 +32,7 @@ class TestMilvusIndexing:
 
     def test_sparse_add_search_delete(self):
         manager = MilvusCollectionManager(collection_name="kb_test_chunks")
-        sparse_index = MilvusSparseIndex(manager)
+        sparse_index = MilvusBM25Index(manager)
 
         chunk_id = "chunk_milvus_sparse_test"
         sparse_index.add(chunk_id, "Milvus 稀疏向量 检索 测试", metadata={"category": "测试"})

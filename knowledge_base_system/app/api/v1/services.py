@@ -72,21 +72,40 @@ def sync_index_metadata_batch(
                 bm25_index.delete(cid)
             except Exception:
                 pass
+    else:
+        # 恢复或其他状态变更：批量同步元数据
+        try:
+            batch_items = []
+            for c in chunks:
+                meta = {
+                    "status": c.status.value if hasattr(c.status, "value") else str(c.status),
+                    "category": c.category,
+                    "knowledge_type": c.knowledge_type.value if hasattr(c.knowledge_type, "value") else str(c.knowledge_type),
+                }
+                batch_items.append((c.chunk_id, meta))
+            vector_index.upsert_fields_batch(batch_items)
+            bm25_index.upsert_fields_batch(batch_items)
+        except Exception:
+            logger.exception("批量同步索引元数据失败")
 
     return len(chunks)
 
 
 def _sync_vector_metadata(chunk_id: str, metadata: dict, vector_index: "VectorIndex") -> None:
-    """在内存向量索引中更新 chunk 的元数据（Milvus 索引暂不支持原地更新）。"""
-    if hasattr(vector_index, "_metadata") and isinstance(getattr(vector_index, "_metadata"), dict):
+    """同步 chunk 元数据到向量索引。Milvus 使用 upsert_fields，内存使用 _metadata dict。"""
+    if hasattr(vector_index, "upsert_fields"):
+        vector_index.upsert_fields(chunk_id, metadata)
+    elif hasattr(vector_index, "_metadata") and isinstance(getattr(vector_index, "_metadata"), dict):
         meta_dict = getattr(vector_index, "_metadata")
         if chunk_id in meta_dict:
             meta_dict[chunk_id].update(metadata)
 
 
 def _sync_bm25_metadata(chunk_id: str, metadata: dict, bm25_index: "BM25Index") -> None:
-    """在内存 BM25 索引中更新 chunk 的元数据（Milvus 索引暂不支持原地更新）。"""
-    if hasattr(bm25_index, "_metadata") and isinstance(getattr(bm25_index, "_metadata"), dict):
+    """同步 chunk 元数据到 BM25 索引。Milvus 使用 upsert_fields，内存使用 _metadata dict。"""
+    if hasattr(bm25_index, "upsert_fields"):
+        bm25_index.upsert_fields(chunk_id, metadata)
+    elif hasattr(bm25_index, "_metadata") and isinstance(getattr(bm25_index, "_metadata"), dict):
         meta_dict = getattr(bm25_index, "_metadata")
         if chunk_id in meta_dict:
             meta_dict[chunk_id].update(metadata)
@@ -128,13 +147,16 @@ def reindex_chunk(
                     vector,
                     metadata={
                         "doc_id": chunk.doc_id,
+                        "title": chunk.title,
+                        "content": chunk.content,
                         "category": chunk.category,
                         "knowledge_type": chunk.knowledge_type.value if hasattr(chunk.knowledge_type, "value") else str(chunk.knowledge_type),
                         "status": chunk.status.value if hasattr(chunk.status, "value") else str(chunk.status),
-                        "title_path": chunk.metadata.get("title_path", []),
                         "source_refs": [ref.model_dump(mode="json") for ref in chunk.source_refs],
                         "asset_refs": [ref.model_dump(mode="json") for ref in chunk.asset_refs],
                         "metadata": chunk.metadata,
+                        "created_at": int(chunk.created_at.timestamp()) if chunk.created_at else 0,
+                        "updated_at": int(chunk.updated_at.timestamp()) if chunk.updated_at else 0,
                     },
                 )
         except Exception:
@@ -146,8 +168,16 @@ def reindex_chunk(
         chunk.chunk_id,
         chunk.content,
         metadata={
+            "doc_id": chunk.doc_id,
+            "title": chunk.title,
             "category": chunk.category,
+            "knowledge_type": chunk.knowledge_type.value if hasattr(chunk.knowledge_type, "value") else str(chunk.knowledge_type),
             "status": chunk.status.value if hasattr(chunk.status, "value") else str(chunk.status),
+            "source_refs": [ref.model_dump(mode="json") for ref in chunk.source_refs],
+            "asset_refs": [ref.model_dump(mode="json") for ref in chunk.asset_refs],
+            "metadata": chunk.metadata,
+            "created_at": int(chunk.created_at.timestamp()) if chunk.created_at else 0,
+            "updated_at": int(chunk.updated_at.timestamp()) if chunk.updated_at else 0,
         },
     )
 

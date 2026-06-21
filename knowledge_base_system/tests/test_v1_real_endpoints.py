@@ -164,7 +164,6 @@ def test_debug_search_contains_stage_keys(monkeypatch):
             self.bm25_count = 0
             self.fused_count = 0
             self.rerank_count = 0
-            self.used_milvus_hybrid = False
             self.errors = []
 
     class FakePipeline:

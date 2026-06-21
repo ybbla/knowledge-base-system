@@ -16,7 +16,6 @@ from app.db.models import (
     Base,
     DbAsset,
     DbDocument,
-    DbIdfStat,
     DbKnowledgeChunk,
     DbParsedElement,
 )
@@ -803,37 +802,3 @@ class TestDbKnowledgeChunk:
         assert len(result.asset_refs) == 1
         assert len(result.source_refs) == 1
         assert result.meta["language"] == "zh-CN"
-
-
-# ── DbIdfStat ─────────────────────────────────────────────────────────
-
-class TestDbIdfStat:
-    def test_create_and_query(self, db_session):
-        stat = DbIdfStat(
-            token="产品",
-            token_id=1,
-            df=42,
-            total_docs=100,
-        )
-        db_session.add(stat)
-        db_session.commit()
-
-        result = db_session.get(DbIdfStat, "产品")
-        assert result is not None
-        assert result.df == 42
-        assert result.token_id == 1
-        assert result.total_docs == 100
-
-    def test_upsert(self, db_session):
-        stat = DbIdfStat(token="测试", token_id=2, df=10, total_docs=50)
-        db_session.add(stat)
-        db_session.commit()
-
-        result = db_session.get(DbIdfStat, "测试")
-        result.df = 20
-        result.total_docs = 60
-        db_session.commit()
-
-        result = db_session.get(DbIdfStat, "测试")
-        assert result.df == 20
-        assert result.total_docs == 60

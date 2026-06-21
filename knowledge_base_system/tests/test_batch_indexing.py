@@ -1,4 +1,4 @@
-from indexing.milvus_sparse import MilvusSparseIndex
+from indexing.milvus_bm25 import MilvusBM25Index
 from indexing.milvus_vector import DENSE_DIM, MilvusCollectionManager, MilvusVectorIndex
 from app.core.models import KnowledgeChunk
 from ingestion.pipeline import IngestionPipeline
@@ -108,7 +108,7 @@ def test_milvus_vector_add_batch_uses_single_manager_batch():
 
 def test_milvus_sparse_add_batch_uses_single_manager_batch():
     manager = _FakeManager()
-    index = MilvusSparseIndex(manager)
+    index = MilvusBM25Index(manager)
 
     index.add_batch(
         [

@@ -24,6 +24,7 @@ from app.api.v1.schemas import (
     error_json,
 )
 from app.core import deps
+from app.api.v1.services import sync_index_metadata
 from app.core.deps import (
     asset_store,
     bm25_index,
@@ -373,10 +374,9 @@ async def upload_document(
                 if chunks_to_sync:
                     for c in chunks_to_sync:
                         try:
-                            vector_index.upsert_fields(c.chunk_id, {"status": "deleted"})
-                            bm25_index.upsert_fields(c.chunk_id, {"status": "deleted"})
+                            sync_index_metadata(c, vector_index, bm25_index)
                         except Exception:
-                            pass
+                            logger.exception("同步删除状态失败: %s", c.chunk_id)
         except Exception:
             logger.exception("软删除旧文档失败")
 
@@ -592,10 +592,9 @@ async def delete_document(doc_id: str):
         if chunks_to_sync:
             for c in chunks_to_sync:
                 try:
-                    vector_index.upsert_fields(c.chunk_id, {"status": "deleted"})
-                    bm25_index.upsert_fields(c.chunk_id, {"status": "deleted"})
+                    sync_index_metadata(c, vector_index, bm25_index)
                 except Exception:
-                    pass
+                    logger.exception("同步删除状态失败: %s", c.chunk_id)
 
         return APIResponse(data=_doc_to_item(doc)).model_dump(mode="json")
 
@@ -610,43 +609,49 @@ async def delete_document(doc_id: str):
 
 @router.post("/{doc_id}/restore")
 async def restore_document(doc_id: str):
-    """恢复软删除的文档，处理关联知识块恢复策略。"""
-    if document_repo is not None:
-        try:
-            doc = document_repo.restore(doc_id)
-        except DocumentNotFoundError as e:
-            return error_json(
-                ErrorCode.DOCUMENT_NOT_FOUND,
-                str(e),
-    http_status.HTTP_404_NOT_FOUND,
-            )
+    """恢复软删除的文档。
 
-        # 恢复关联知识块状态
-        if hasattr(chunk_store, "bulk_update_status_by_doc_id"):
-            chunk_store.bulk_update_status_by_doc_id(doc_id, "active")
+    活跃文档删除后恢复：改状态即可。
+    失败文档删除后恢复：重走入库流程。
+    """
+    if document_repo is None:
+        return error_json(ErrorCode.SERVICE_UNAVAILABLE, "PostgreSQL 文档仓储不可用", 503)
 
-        # 在索引中将知识块状态恢复为 active
-        restored_chunks_count = 0
+    doc = document_repo.get(doc_id)
+    if doc is None:
+        return error_json(ErrorCode.DOCUMENT_NOT_FOUND, f"文档 {doc_id} 不存在", 404)
+
+    was_failed = bool(doc.error_message)
+
+    # 解决 source_hash 唯一约束
+    if doc.source_hash:
+        existing = document_repo.find_by_hash(doc.source_hash)
+        if existing and existing.doc_id != doc_id:
+            doc.source_hash = f"restored:{doc_id}"
+            document_repo.update(doc)
+
+    if was_failed:
+        # 失败文档：清理旧 chunks + 重走入库
         if hasattr(chunk_store, "list_by_doc_id"):
-            chunks = chunk_store.list_by_doc_id(doc_id)
-            restored_chunks_count = len(chunks)
-            for c in chunks:
+            for c in chunk_store.list_by_doc_id(doc_id):
                 try:
-                    vector_index.upsert_fields(c.chunk_id, {"status": "active"})
-                    bm25_index.upsert_fields(c.chunk_id, {"status": "active"})
+                    chunk_store.soft_delete(c.chunk_id)
                 except Exception:
                     pass
+        doc = ingestion_pipeline.ingest(doc)
+    else:
+        # 活跃文档：改状态 + chunks 回索引
+        doc = document_repo.restore(doc_id)
+        if hasattr(chunk_store, "bulk_update_status_by_doc_id"):
+            chunk_store.bulk_update_status_by_doc_id(doc_id, "active")
+        if hasattr(chunk_store, "list_by_doc_id"):
+            for c in chunk_store.list_by_doc_id(doc_id):
+                try:
+                    sync_index_metadata(c, vector_index, bm25_index)
+                except Exception:
+                    logger.exception("同步恢复状态失败: %s", c.chunk_id)
 
-        return APIResponse(
-            data=_doc_to_item(doc),
-            meta={"restored_chunks": restored_chunks_count},
-        ).model_dump(mode="json")
-
-    return error_json(
-        ErrorCode.SERVICE_UNAVAILABLE,
-        "PostgreSQL 文档仓储不可用",
-        http_status.HTTP_503_SERVICE_UNAVAILABLE,
-    )
+    return APIResponse(data=_doc_to_item(doc)).model_dump(mode="json")
 
 
 # ── 4.6.1 重试失败文档 ─────────────────────────────────────────────

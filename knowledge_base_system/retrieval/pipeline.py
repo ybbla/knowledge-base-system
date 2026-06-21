@@ -1,4 +1,5 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -28,13 +29,10 @@ class RetrievalDebugInfo:
     bm25_count: int = 0
     fused_count: int = 0
     rerank_count: int = 0
-    # 标志位
-    used_milvus_hybrid: bool = False
     errors: list[str] = field(default_factory=list)
 from assets.base import AssetStore
 from indexing.base import BM25Index, VectorIndex
 from indexing.fusion import rrf_fusion
-from indexing.milvus_hybrid import hybrid_search as milvus_hybrid_search
 from llm.query_rewriter import QueryRewriter
 from llm.reranker import Reranker
 from llm.volcengine_client import embedding_client
@@ -72,6 +70,7 @@ class RetrievalPipeline:
         query: str,
         top_k: int | None = None,
         category: str | None = None,
+        knowledge_type: str | None = None,
         debug: bool = False,
     ) -> SearchResult | tuple[SearchResult, RetrievalDebugInfo]:
         """Execute full retrieval pipeline and return SearchResult.
@@ -79,7 +78,8 @@ class RetrievalPipeline:
         Args:
             query: 查询词
             top_k: 返回结果数量
-            category: 分类过滤
+            category: 分类过滤（Milvus expr）
+            knowledge_type: 知识类型过滤（Milvus expr）
             debug: 是否返回调试信息，True 时返回 (result, debug_info)
         """
         cfg = get_settings(reload_env=True)
@@ -100,7 +100,7 @@ class RetrievalPipeline:
             debug_info.rewritten_query = rewritten
             debug_info.keywords = keywords
 
-        # 2. 双路检索：Milvus 可用时优先走原生 Hybrid Search。
+        # 2. Embedding
         query_vec: list[float] | None = None
         try:
             query_vecs = embedding_client.embed_text([rewritten])
@@ -112,87 +112,48 @@ class RetrievalPipeline:
                 debug_info.errors.append(err_msg)
             query_vec = None
 
-        hybrid_results: list[tuple[str, float]] = []
-        if query_vec is not None and cfg.milvus_enabled:
-            try:
-                manager = getattr(self._vector_index, "manager")
-                encode_query = getattr(self._bm25_index, "encode_query")
-                sparse_query = encode_query(keywords_str)
-                hybrid_results = milvus_hybrid_search(
-                    manager,
-                    query_vec,
-                    sparse_query,
-                    top_k=cfg.fusion_top_k,
-                    category=category,
-                    rrf_k=cfg.rrf_k,
-                )
-                if debug and debug_info:
-                    debug_info.used_milvus_hybrid = True
-            except Exception as e:
-                err_msg = f"Milvus hybrid retrieval failed: {e}"
-                logger.exception(err_msg)
-                if debug and debug_info:
-                    debug_info.errors.append(err_msg)
-
-        # 单路检索在 Hybrid 成功时用于补充分数明细；
-        # Hybrid 失败时则作为应用层 RRF fallback 的候选来源。
+        # 3. 并行双路检索
         vec_results: list[tuple[str, float]] = []
         bm25_results: list[tuple[str, float]] = []
-        if hybrid_results:
-            try:
-                vec_results = self._vector_index.search(
-                    query_vec,
-                    top_k=cfg.vector_top_k,
-                    category=category,
-                )
-            except Exception as e:
-                err_msg = f"Vector score detail retrieval failed: {e}"
-                logger.exception(err_msg)
-                if debug and debug_info:
-                    debug_info.errors.append(err_msg)
-                vec_results = []
+
+        def _search_vector():
+            if query_vec is None:
+                return []
+            return self._vector_index.search(
+                query_vec,
+                top_k=cfg.vector_top_k,
+                category=category,
+                knowledge_type=knowledge_type,
+            )
+
+        def _search_bm25():
+            return self._bm25_index.search(
+                keywords_str,
+                top_k=cfg.bm25_top_k,
+                category=category,
+                knowledge_type=knowledge_type,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_vec = executor.submit(_search_vector) if query_vec is not None else None
+            future_bm25 = executor.submit(_search_bm25)
 
             try:
-                bm25_results = self._bm25_index.search(
-                    keywords_str,
-                    top_k=cfg.bm25_top_k,
-                    category=category,
-                )
-            except Exception as e:
-                err_msg = f"BM25 score detail retrieval failed: {e}"
-                logger.exception(err_msg)
-                if debug and debug_info:
-                    debug_info.errors.append(err_msg)
-                bm25_results = []
-        else:
-            try:
-                if query_vec is None:
-                    vec_results = []
-                else:
-                    vec_results = self._vector_index.search(
-                        query_vec,
-                        top_k=cfg.vector_top_k,
-                        category=category,
-                    )
-            except Exception as e:
-                err_msg = f"Vector retrieval failed: {e}"
-                logger.exception(err_msg)
-                if debug and debug_info:
-                    debug_info.errors.append(err_msg)
-                vec_results = []
-
-            try:
-                bm25_results = self._bm25_index.search(
-                    keywords_str,
-                    top_k=cfg.bm25_top_k,
-                    category=category,
-                )
+                bm25_results = future_bm25.result()
             except Exception as e:
                 err_msg = f"BM25 retrieval failed: {e}"
                 logger.exception(err_msg)
                 if debug and debug_info:
                     debug_info.errors.append(err_msg)
-                bm25_results = []
+
+            if future_vec is not None:
+                try:
+                    vec_results = future_vec.result()
+                except Exception as e:
+                    err_msg = f"Vector retrieval failed: {e}"
+                    logger.exception(err_msg)
+                    if debug and debug_info:
+                        debug_info.errors.append(err_msg)
 
         # 记录召回结果
         if debug and debug_info:
@@ -201,12 +162,16 @@ class RetrievalPipeline:
             debug_info.vector_count = len(vec_results)
             debug_info.bm25_count = len(bm25_results)
 
-        if hybrid_results:
-            top_fused = hybrid_results[: cfg.fusion_top_k]
-        else:
-            fused = rrf_fusion(vec_results, bm25_results, k=cfg.rrf_k)
-            sorted_fused = sorted(fused.items(), key=lambda x: x[1], reverse=True)
-            top_fused = sorted_fused[: cfg.fusion_top_k]
+        # 4. 外部 RRF 融合（唯一路径）
+        if not vec_results and not bm25_results:
+            result = SearchResult(query=query, rewritten_query=rewritten)
+            if debug and debug_info:
+                return result, debug_info
+            return result
+
+        fused = rrf_fusion(vec_results, bm25_results, k=cfg.rrf_k)
+        sorted_fused = sorted(fused.items(), key=lambda x: x[1], reverse=True)
+        top_fused = sorted_fused[: cfg.fusion_top_k]
 
         # 记录融合结果
         if debug and debug_info:
@@ -219,11 +184,11 @@ class RetrievalPipeline:
                 return result, debug_info
             return result
 
-        # 4. Get chunk objects
+        # 5. Get chunk objects from PG
         top_chunk_ids = [cid for cid, _ in top_fused]
         candidates = self._chunk_store.get_batch(top_chunk_ids)
 
-        # 5. LLM Rerank
+        # 6. LLM Rerank
         reranked = self._reranker.rerank(query, candidates)
 
         # 记录 Rerank 结果
@@ -231,7 +196,7 @@ class RetrievalPipeline:
             debug_info.rerank_results = reranked
             debug_info.rerank_count = len(reranked)
 
-        # 6. Build result items
+        # 7. Build result items
         items: list[SearchResultItem] = []
         score_map: dict[str, float] = dict(top_fused)
         vec_map = {cid: score for cid, score in vec_results}
@@ -282,6 +247,7 @@ class RetrievalPipeline:
                     score_components=ScoreComponents(
                         vector=vec_map.get(cid, 0.0),
                         bm25=bm25_map.get(cid, 0.0),
+                        rrf=score_map.get(cid, 0.0),
                         rerank=rank_entry.get("relevance_score", 0.0),
                     ),
                     asset_refs=resolved_assets,

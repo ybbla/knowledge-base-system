@@ -20,12 +20,16 @@ from app.api.v1.schemas import (
     SearchParams,
     error_json,
 )
-from app.api.v1.services import reindex_chunk, sync_index_metadata
+from app.api.v1.services import (
+    reindex_chunk,
+    sync_index_metadata,
+    sync_index_metadata_batch,
+)
 from app.core.deps import (
+    asset_store,
     bm25_index,
     chunk_store,
     document_repo,
-    ingestion_pipeline,
     vector_index,
 )
 from app.core.models import (
@@ -51,13 +55,23 @@ def _get_doc_title(doc_id: str) -> str | None:
     return None
 
 
+def _get_doc_source_type(doc_id: str) -> str:
+    """获取文档来源类型，用于列表展示。"""
+    if document_repo is not None:
+        doc = document_repo.get(doc_id)
+        if doc:
+            return doc.source_type
+    return ""
+
+
 def _chunk_to_list_item(chunk: KnowledgeChunk) -> dict[str, Any]:
-    """将知识块转为列表条目（含内容摘要和展示字段）。"""
+    """将知识块转为列表条目（含内容摘要、时间等展示字段）。"""
     preview = chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content
     return {
         "chunk_id": chunk.chunk_id,
         "doc_id": chunk.doc_id,
         "doc_title": _get_doc_title(chunk.doc_id),
+        "doc_source_type": _get_doc_source_type(chunk.doc_id),
         "title": chunk.title,
         "content_preview": preview,
         "knowledge_type": chunk.knowledge_type.value if hasattr(chunk.knowledge_type, "value") else chunk.knowledge_type,
@@ -65,12 +79,32 @@ def _chunk_to_list_item(chunk: KnowledgeChunk) -> dict[str, Any]:
         "status": chunk.status.value if hasattr(chunk.status, "value") else chunk.status,
         "asset_count": len(chunk.asset_refs) if chunk.asset_refs else 0,
         "source_count": len(chunk.source_refs) if chunk.source_refs else 0,
+        "created_at": chunk.created_at.isoformat() if chunk.created_at else None,
+        "updated_at": chunk.updated_at.isoformat() if chunk.updated_at else None,
         "metadata": chunk.metadata if hasattr(chunk, "metadata") else {},
     }
 
 
 def _chunk_to_detail(chunk: KnowledgeChunk) -> dict[str, Any]:
-    """将知识块转为详情条目（含完整内容、来源、资源）。"""
+    """将知识块转为详情条目（含完整内容、来源、资源、时间）。
+
+    asset_refs 会附带资源的 asset_type（image/video/audio/attachment），
+    便于前端按类型分组展示。
+    """
+    enriched_assets: list[dict[str, Any]] = []
+    for r in (chunk.asset_refs or []):
+        item = r.model_dump(mode="json") if hasattr(r, "model_dump") else dict(r)
+        # 从资源存储中查找资源类型
+        if asset_store is not None and hasattr(asset_store, "get"):
+            asset = asset_store.get(r.asset_id)
+            if asset:
+                item["asset_type"] = asset.asset_type.value if hasattr(asset.asset_type, "value") else str(asset.asset_type)
+            else:
+                item["asset_type"] = "unknown"
+        else:
+            item["asset_type"] = "unknown"
+        enriched_assets.append(item)
+
     return {
         "chunk_id": chunk.chunk_id,
         "doc_id": chunk.doc_id,
@@ -81,8 +115,10 @@ def _chunk_to_detail(chunk: KnowledgeChunk) -> dict[str, Any]:
         "knowledge_type": chunk.knowledge_type.value if hasattr(chunk.knowledge_type, "value") else chunk.knowledge_type,
         "category": chunk.category,
         "status": chunk.status.value if hasattr(chunk.status, "value") else chunk.status,
-        "asset_refs": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in (chunk.asset_refs or [])],
+        "asset_refs": enriched_assets,
         "source_refs": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in (chunk.source_refs or [])],
+        "created_at": chunk.created_at.isoformat() if chunk.created_at else None,
+        "updated_at": chunk.updated_at.isoformat() if chunk.updated_at else None,
         "metadata": chunk.metadata if hasattr(chunk, "metadata") else {},
     }
 
@@ -101,6 +137,8 @@ async def list_chunks(
     pagination: PaginationParams = Depends(),
     search: SearchParams = Depends(),
     doc_id: str | None = Query(default=None),
+    source_type: str | None = Query(default=None, description="按来源文档类型筛选（markdown/pdf/docx/html/pptx/xlsx）"),
+    search_mode: str = Query(default="chunk_title", description="搜索模式: chunk_title 按知识块标题搜索, doc_title 按文档标题搜索"),
     category: str | None = Query(default=None),
     knowledge_type: str | None = Query(default=None),
     status: str | None = Query(default=None),
@@ -113,13 +151,15 @@ async def list_chunks(
             page=pagination.page,
             page_size=pagination.page_size,
             keyword=search.keyword,
+            search_mode=search_mode,
             doc_id=doc_id,
+            source_type=source_type,
             category=category,
             knowledge_type=knowledge_type,
             status=status,
             has_assets=has_assets,
             has_sources=has_sources,
-            sort_by=pagination.sort_by or "chunk_id",
+            sort_by=pagination.sort_by or "created_at",
             sort_order=pagination.sort_order,
         )
         items = [_chunk_to_list_item(c) for c in chunks]
@@ -175,6 +215,16 @@ async def create_chunk(
         metadata=meta_dict,
     )
 
+    # 重复内容检测
+    if chunk.content_hash and hasattr(chunk_store, "find_by_content_hash"):
+        dup = chunk_store.find_by_content_hash(chunk.content_hash)
+        if dup is not None:
+            return error_json(
+                ErrorCode.CHUNK_DUPLICATE,
+                f"内容与已有知识块「{dup.title or dup.chunk_id}」重复，请修改后重试。",
+                status.HTTP_409_CONFLICT,
+            )
+
     # 持久化
     if hasattr(chunk_store, "put"):
         chunk_store.put(chunk)
@@ -186,6 +236,46 @@ async def create_chunk(
             logger.exception("刷新知识块归属文档更新时间失败")
 
     return APIResponse(data=_chunk_to_detail(chunk)).model_dump(mode="json")
+
+
+# ── 5.2b 知识块 ID 列表（全选用） ─────────────────────────────────
+
+@router.get("/ids")
+async def list_chunk_ids(
+    search: SearchParams = Depends(),
+    search_mode: str = Query(default="chunk_title"),
+    doc_id: str | None = Query(default=None),
+    source_type: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    knowledge_type: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+):
+    """返回当前筛选条件下的全部知识块 ID，用于批量全选操作。"""
+    if hasattr(chunk_store, "list_paginated"):
+        chunk_ids: list[str] = []
+        page = 1
+        page_size = 2000
+        while True:
+            chunks, total = chunk_store.list_paginated(
+                page=page, page_size=page_size,
+                keyword=search.keyword,
+                search_mode=search_mode,
+                doc_id=doc_id,
+                source_type=source_type,
+                category=category,
+                knowledge_type=knowledge_type,
+                status=status,
+                sort_by="chunk_id",
+                sort_order="asc",
+            )
+            for c in chunks:
+                chunk_ids.append(c.chunk_id)
+            if page * page_size >= total or not chunks:
+                break
+            page += 1
+        return APIResponse(data=chunk_ids, meta={"total": len(chunk_ids)}).model_dump(mode="json")
+
+    return error_json(ErrorCode.SERVICE_UNAVAILABLE, "PostgreSQL 知识块存储不可用", 503)
 
 
 # ── 5.3 知识块详情 ──────────────────────────────────────────────────
@@ -213,14 +303,10 @@ async def update_chunk(
     content: str | None = Query(default=None),
     category: str | None = Query(default=None),
     knowledge_type: str | None = Query(default=None),
-    chunk_status: str | None = Query(default=None, alias="status"),
-    metadata: str | None = Query(default=None),
     reindex: bool = Query(default=True, description="内容变化时是否重建索引"),
 ):
-    """更新知识块字段。内容变化时强制重新计算 content_hash 并触发/排队重建索引。
-
-    注意: chunk_status 参数通过 alias="status" 接收前端传递的 status 字段，
-    避免参数名遮蔽 `from fastapi import status` 模块。
+    """更新知识块字段。内容变化时重新计算 content_hash 并触发重建索引。
+    若新内容哈希与已有知识块重复，返回 409 冲突提示。
     """
     from fastapi import status as http_status
 
@@ -233,7 +319,6 @@ async def update_chunk(
         )
 
     content_changed = False
-    status_changed = False
 
     if title is not None:
         chunk.title = title
@@ -252,24 +337,16 @@ async def update_chunk(
                 f"无效的知识类型: {knowledge_type}，有效值为 {[k.value for k in KnowledgeType]}",
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
-    if chunk_status is not None:
-        try:
-            new_status = ChunkStatus(chunk_status)
-        except ValueError:
+
+    # ── 重复内容检测：新哈希与已有知识块冲突 ──
+    if content_changed and chunk.content_hash:
+        dup = chunk_store.find_by_content_hash(chunk.content_hash, exclude_chunk_id=chunk_id)
+        if dup is not None:
             return error_json(
-                ErrorCode.VALIDATION_ERROR,
-                f"无效的知识块状态: {chunk_status}，有效值为 {[s.value for s in ChunkStatus]}",
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                ErrorCode.CHUNK_DUPLICATE,
+                f"内容与已有知识块「{dup.title or dup.chunk_id}」重复，请修改后重试。",
+                http_status.HTTP_409_CONFLICT,
             )
-        if new_status != chunk.status:
-            status_changed = True
-        chunk.status = new_status
-    if metadata is not None:
-        try:
-            meta_update = json.loads(metadata)
-            chunk.metadata.update(meta_update)
-        except json.JSONDecodeError:
-            pass
 
     # 持久化
     if hasattr(chunk_store, "put"):
@@ -278,10 +355,12 @@ async def update_chunk(
     # 内容变化 → 重建索引
     if content_changed and reindex:
         reindex_chunk(chunk, vector_index, bm25_index, embedding_client)
-
-    # 状态变化 → 同步索引元数据
-    if status_changed and not content_changed:
-        sync_index_metadata(chunk, vector_index, bm25_index)
+    elif not content_changed:
+        # 仅元数据变化 → 同步 Milvus
+        try:
+            sync_index_metadata(chunk, vector_index, bm25_index)
+        except Exception:
+            logger.exception("同步元数据到索引失败: %s", chunk_id)
 
     return APIResponse(data=_chunk_to_detail(chunk)).model_dump(mode="json")
 
@@ -290,7 +369,7 @@ async def update_chunk(
 
 @router.delete("/{chunk_id}")
 async def delete_chunk(chunk_id: str):
-    """软删除知识块，同步检索索引状态。"""
+    """软删除知识块，仅修改状态字段。"""
     chunk = _resolve_chunk(chunk_id)
     if chunk is None:
         return error_json(
@@ -303,15 +382,18 @@ async def delete_chunk(chunk_id: str):
     if hasattr(chunk_store, "put"):
         chunk_store.put(chunk)
 
-    # 同步索引
-    sync_index_metadata(chunk, vector_index, bm25_index)
+    # 同步 Milvus 索引
+    try:
+        sync_index_metadata(chunk, vector_index, bm25_index)
+    except Exception:
+        logger.exception("同步删除状态到索引失败: %s", chunk_id)
 
     return APIResponse(data=_chunk_to_detail(chunk)).model_dump(mode="json")
 
 
 @router.post("/{chunk_id}/restore")
 async def restore_chunk(chunk_id: str):
-    """恢复软删除的知识块。"""
+    """恢复软删除的知识块，仅修改状态字段。"""
     chunk = _resolve_chunk(chunk_id)
     if chunk is None:
         return error_json(
@@ -321,11 +403,14 @@ async def restore_chunk(chunk_id: str):
         )
 
     chunk.status = ChunkStatus.active
-
     if hasattr(chunk_store, "put"):
         chunk_store.put(chunk)
 
-    ingestion_pipeline.index_existing_chunks([chunk])
+    # 同步 Milvus 索引
+    try:
+        sync_index_metadata(chunk, vector_index, bm25_index)
+    except Exception:
+        logger.exception("同步恢复状态到索引失败: %s", chunk_id)
 
     return APIResponse(data=_chunk_to_detail(chunk)).model_dump(mode="json")
 
@@ -334,10 +419,9 @@ async def restore_chunk(chunk_id: str):
 
 @router.post("/batch")
 async def batch_chunk_operation(body: dict[str, Any] = Body(...)):
-    """对多个知识块执行批量状态操作。"""
+    """对多个知识块执行批量状态操作（delete / restore）。"""
     action = body.get("action", "")
     chunk_ids = body.get("chunk_ids", [])
-    new_status = body.get("status")
 
     if not chunk_ids:
         return error_json(
@@ -346,106 +430,44 @@ async def batch_chunk_operation(body: dict[str, Any] = Body(...)):
             status.HTTP_400_BAD_REQUEST,
         )
 
+    target_status: str | None = None
     if action == "delete":
-        # 批量软删除
-        if hasattr(chunk_store, "bulk_update_status_by_chunk_ids"):
-            updated = chunk_store.bulk_update_status_by_chunk_ids(chunk_ids, "deleted")
-        else:
-            updated = 0
-            for cid in chunk_ids:
-                chunk = _resolve_chunk(cid)
-                if chunk:
-                    chunk.status = ChunkStatus.deleted
-                    if hasattr(chunk_store, "put"):
-                        chunk_store.put(chunk)
-                    updated += 1
-
-        # 从索引中移除
-        for cid in chunk_ids:
-            try:
-                vector_index.delete(cid)
-                bm25_index.delete(cid)
-            except Exception:
-                pass
-
-        return APIResponse(
-            data={"action": action, "updated": updated},
-            meta={"total_submitted": len(chunk_ids)},
-        ).model_dump(mode="json")
-
+        target_status = "deleted"
     elif action == "restore":
-        if hasattr(chunk_store, "bulk_update_status_by_chunk_ids"):
-            updated = chunk_store.bulk_update_status_by_chunk_ids(chunk_ids, "active")
-        else:
-            updated = 0
-            for cid in chunk_ids:
-                chunk = _resolve_chunk(cid)
-                if chunk:
-                    chunk.status = ChunkStatus.active
-                    if hasattr(chunk_store, "put"):
-                        chunk_store.put(chunk)
-                    updated += 1
-
-        # 重新索引恢复的知识块
-        try:
-            chunks_to_reindex = [c for c in (chunk_store.get_batch(chunk_ids) if hasattr(chunk_store, "get_batch") else []) if c]
-            if chunks_to_reindex:
-                ingestion_pipeline.index_existing_chunks(chunks_to_reindex)
-        except Exception:
-            pass
-
-        return APIResponse(
-            data={"action": action, "updated": updated},
-            meta={"total_submitted": len(chunk_ids)},
-        ).model_dump(mode="json")
-
-    elif action == "update_status" and new_status is not None:
-        # 校验新状态是否合法
-        try:
-            ChunkStatus(new_status)
-        except ValueError:
-            return error_json(
-                ErrorCode.VALIDATION_ERROR,
-                f"无效的知识块状态: {new_status}，有效值为 {[s.value for s in ChunkStatus]}",
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
-            )
-
-        if hasattr(chunk_store, "bulk_update_status_by_chunk_ids"):
-            updated = chunk_store.bulk_update_status_by_chunk_ids(chunk_ids, new_status)
-        else:
-            updated = 0
-            for cid in chunk_ids:
-                chunk = _resolve_chunk(cid)
-                if chunk:
-                    chunk.status = ChunkStatus(new_status)
-                    if hasattr(chunk_store, "put"):
-                        chunk_store.put(chunk)
-                    updated += 1
-
-        # 同步索引：deleted → 移除，active → 重新索引
-        if new_status == "deleted":
-            for cid in chunk_ids:
-                try:
-                    vector_index.delete(cid)
-                    bm25_index.delete(cid)
-                except Exception:
-                    pass
-        elif new_status == "active":
-            try:
-                chunks_to_reindex = [c for c in (chunk_store.get_batch(chunk_ids) if hasattr(chunk_store, "get_batch") else []) if c]
-                if chunks_to_reindex:
-                    ingestion_pipeline.index_existing_chunks(chunks_to_reindex)
-            except Exception:
-                pass
-
-        return APIResponse(
-            data={"action": action, "new_status": new_status, "updated": updated},
-            meta={"total_submitted": len(chunk_ids)},
-        ).model_dump(mode="json")
-
+        target_status = "active"
     else:
         return error_json(
             ErrorCode.VALIDATION_ERROR,
             f"不支持的操作: {action}",
             status.HTTP_400_BAD_REQUEST,
         )
+
+    resolved_chunks = []
+    if hasattr(chunk_store, "bulk_update_status_by_chunk_ids"):
+        updated = chunk_store.bulk_update_status_by_chunk_ids(chunk_ids, target_status)
+        for cid in chunk_ids:
+            c = _resolve_chunk(cid)
+            if c:
+                resolved_chunks.append(c)
+    else:
+        updated = 0
+        for cid in chunk_ids:
+            chunk = _resolve_chunk(cid)
+            if chunk:
+                chunk.status = ChunkStatus(target_status)
+                if hasattr(chunk_store, "put"):
+                    chunk_store.put(chunk)
+                updated += 1
+                resolved_chunks.append(chunk)
+
+    # 同步 Milvus 索引
+    if resolved_chunks:
+        try:
+            sync_index_metadata_batch(resolved_chunks, vector_index, bm25_index)
+        except Exception:
+            logger.exception("批量同步索引状态失败")
+
+    return APIResponse(
+        data={"action": action, "updated": updated},
+        meta={"total_submitted": len(chunk_ids)},
+    ).model_dump(mode="json")

@@ -69,13 +69,18 @@ async def _execute_search(request: SearchRequest) -> dict[str, Any]:
     filters = request.filters
     retrieval_top_k = max(request.top_k * 10, 50)
 
-    # 确定需要检索的 category 列表
+    # 确定需要检索的 category 和 knowledge_type 列表
     if filters.categories and len(filters.categories) >= 2:
         categories = filters.categories
     elif filters.categories and len(filters.categories) == 1:
         categories = [filters.categories[0]]
     else:
         categories = [None]
+
+    # knowledge_type：多值保持 Python 侧过滤，单值传入 Milvus expr
+    kt = None
+    if filters.knowledge_types and len(filters.knowledge_types) == 1:
+        kt = filters.knowledge_types[0]
 
     # 对每个 category 分别检索，合并结果
     all_results: dict[str, dict[str, Any]] = {}
@@ -84,6 +89,7 @@ async def _execute_search(request: SearchRequest) -> dict[str, Any]:
             request.query,
             top_k=retrieval_top_k,
             category=cat,
+            knowledge_type=kt,
         )
         result_dict = result.model_dump(mode="json")
         for item in result_dict.get("results", []):
@@ -291,12 +297,14 @@ async def search_debug(request: SearchRequest):
         filters = request.filters
         retrieval_top_k = max(request.top_k * 10, 50)
         category = filters.categories[0] if filters.categories and len(filters.categories) == 1 else None
+        kt = filters.knowledge_types[0] if filters.knowledge_types and len(filters.knowledge_types) == 1 else None
 
         # 调用 debug 模式的 pipeline，拿到 (result, debug_info)
         result_tuple = retrieval_pipeline.search(
             request.query,
             top_k=retrieval_top_k,
             category=category,
+            knowledge_type=kt,
             debug=True,
         )
         result, debug_info = result_tuple  # type: ignore
@@ -330,7 +338,6 @@ async def search_debug(request: SearchRequest):
                 "bm25_count": debug_info.bm25_count,
                 "fused_count": debug_info.fused_count,
                 "rerank_count": debug_info.rerank_count,
-                "used_milvus_hybrid": debug_info.used_milvus_hybrid,
             },
             "errors": debug_info.errors,
         }

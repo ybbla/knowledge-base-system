@@ -89,13 +89,13 @@ if not settings.milvus_enabled:
     raise RuntimeError("必须设置 MILVUS_ENABLED=true，检索索引仅允许写入 Milvus")
 
 try:
-    from indexing.milvus_sparse import MilvusSparseIndex
+    from indexing.milvus_bm25 import MilvusBM25Index
     from indexing.milvus_vector import MilvusCollectionManager, MilvusVectorIndex
 
     milvus_manager = MilvusCollectionManager()
     milvus_manager.ensure_collection()
     vector_index = MilvusVectorIndex(milvus_manager)
-    bm25_index = MilvusSparseIndex(milvus_manager, session_factory=session_factory)
+    bm25_index = MilvusBM25Index(milvus_manager)
 except Exception as exc:
     logger.exception("Milvus 初始化失败")
     raise RuntimeError("Milvus 不可用，服务启动失败") from exc
@@ -130,31 +130,48 @@ def rebuild_retrieval_indexes_from_chunks(category: str | None = None) -> int:
 
     # 仅索引活跃知识块。
     chunks = [c for c in chunks if c.status.value == "active"]
+    if not chunks:
+        return 0
 
-    for chunk in chunks:
-        bm25_index.add(chunk.chunk_id, chunk.content, metadata={"category": chunk.category, "status": "active"})
+    import time
 
-    if chunks:
-        vectors = embedding_client.embed_text([chunk.content for chunk in chunks])
-        for chunk, vector in zip(chunks, vectors):
-            vector_index.add(
-                chunk.chunk_id,
-                vector,
-                metadata={
-                    "doc_id": chunk.doc_id,
-                    "category": chunk.category,
-                    "knowledge_type": chunk.knowledge_type.value,
-                    "status": chunk.status.value,
-                    "title_path": chunk.metadata.get("title_path", []),
-                    "source_refs": [
-                        ref.model_dump(mode="json") for ref in chunk.source_refs
-                    ],
-                    "asset_refs": [
-                        ref.model_dump(mode="json") for ref in chunk.asset_refs
-                    ],
-                    "metadata": chunk.metadata,
-                },
-            )
+    # 批量写入 BM25 索引
+    bm25_items = []
+    for c in chunks:
+        metadata = {
+            "doc_id": c.doc_id,
+            "title": c.title,
+            "category": c.category,
+            "knowledge_type": c.knowledge_type.value,
+            "status": "active",
+            "source_refs": [ref.model_dump(mode="json") for ref in c.source_refs],
+            "asset_refs": [ref.model_dump(mode="json") for ref in c.asset_refs],
+            "metadata": c.metadata,
+            "created_at": int(c.created_at.timestamp()) if c.created_at else int(time.time()),
+            "updated_at": int(c.updated_at.timestamp()) if c.updated_at else int(time.time()),
+        }
+        bm25_items.append((c.chunk_id, c.content, metadata))
+    bm25_index.add_batch(bm25_items)
+
+    # 批量写入向量索引
+    vectors = embedding_client.embed_text([c.content for c in chunks])
+    vector_items = []
+    for chunk, vector in zip(chunks, vectors):
+        metadata = {
+            "doc_id": chunk.doc_id,
+            "title": chunk.title,
+            "content": chunk.content,
+            "category": chunk.category,
+            "knowledge_type": chunk.knowledge_type.value,
+            "status": chunk.status.value,
+            "source_refs": [ref.model_dump(mode="json") for ref in chunk.source_refs],
+            "asset_refs": [ref.model_dump(mode="json") for ref in chunk.asset_refs],
+            "metadata": chunk.metadata,
+            "created_at": int(chunk.created_at.timestamp()) if chunk.created_at else int(time.time()),
+            "updated_at": int(chunk.updated_at.timestamp()) if chunk.updated_at else int(time.time()),
+        }
+        vector_items.append((chunk.chunk_id, vector, metadata))
+    vector_index.add_batch(vector_items)
 
     return len(chunks)
 

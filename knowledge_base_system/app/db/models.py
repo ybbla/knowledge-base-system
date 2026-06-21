@@ -77,26 +77,15 @@ class DbKnowledgeChunk(Base):
 
     chunk_id = Column(String(64), primary_key=True)
     doc_id = Column(String(64), ForeignKey("documents.doc_id"), nullable=False)
-    doc_version = Column(Integer, default=1)  # 已废弃 — 不再在代码层读写
+    doc_version = Column(Integer, default=1)
     title = Column(String(512), default="")
     content = Column(Text, nullable=False)
     content_hash = Column(String(128), default="")
     knowledge_type = Column(String(32), default="declarative")
     category = Column(String(128), default="通用")
     status = Column(String(32), default="active")
-    index_status = Column(String(32), default="pending")  # 已废弃 — 不再在代码层读写
-    indexed_at = Column(DateTime(timezone=True), nullable=True)  # 已废弃 — 不再在代码层读写
-    index_error = Column(Text, nullable=True)  # 已废弃 — 不再在代码层读写
     asset_refs = Column(JSONBType, default=list)
     source_refs = Column(JSONBType, default=list)
-    ingest_job_id = Column(String(64), default="")  # 已废弃 — 不再在代码层读写
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
     meta = Column("metadata", JSONBType, default=dict)
-
-
-class DbIdfStat(Base):
-    __tablename__ = "idf_stats"
-
-    token = Column(String(256), primary_key=True)
-    token_id = Column(Integer, nullable=False)
-    df = Column(Integer, default=0)
-    total_docs = Column(Integer, default=0)
