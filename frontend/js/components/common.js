@@ -71,7 +71,6 @@ const UI = (() => {
       { path: '/documents',    icon: '▦', label: '文档管理' },
       { path: '/chunks',       icon: '⊞', label: '知识块管理' },
       { path: '/search',       icon: '⌕', label: '知识搜索' },
-      { path: '/search-debug', icon: '⚙', label: '检索调试' },
     ];
 
     nav.innerHTML = items.map(item => `
@@ -215,7 +214,13 @@ const UI = (() => {
   }
 
   /* -----------------------------------------------------------------------
-     服务状态指示器
+     服务状态指示器 — 顶部 banner 的 ◉ 状态灯
+
+     三态显示，由 GET /api/v1/health 驱动：
+       - ok       → ◉ 服务在线（全部外部依赖正常）
+       - degraded → ◉ 服务异常（进程存活，部分依赖不可用）
+       - 请求失败  → ◉ 服务离线（进程未存活）
+     每 10 秒轮询一次。
      ----------------------------------------------------------------------- */
   const ServiceStatus = {
     timer: null,
@@ -229,13 +234,16 @@ const UI = (() => {
 
     async check() {
       try {
-        const res = await API.healthLive();
+        const res = await API.health();
         if (res?.data?.status === 'ok') {
+          // 全部外部依赖正常
           this.update('ok', '服务在线');
         } else {
-          this.update('warning', '状态异常');
+          // degraded：进程存活但部分外部依赖不可用（如 LLM 超时）
+          this.update('warning', '服务异常');
         }
       } catch (e) {
+        // 请求失败：后端进程未存活或网络不可达
         this.update('error', '服务离线');
       }
     },

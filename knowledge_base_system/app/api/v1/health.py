@@ -1,12 +1,14 @@
 """系统健康检查 API — GET /api/v1/health/*
 
 提供两级健康检查：
-- /live：进程存活
-- /    ：整体状态 + 外部依赖详情（PostgreSQL、Milvus、MinIO、LLM）
+- /live：进程存活探针（供 K8s liveness probe 等外部监控使用，前端不使用）
+- /    ：整体状态 + 外部依赖详情（前端仪表盘 + banner 状态灯使用）
+         PostgreSQL、Milvus、MinIO、LLM 逐一真实探测，任一异常返回 degraded
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -18,35 +20,55 @@ router = APIRouter(prefix="/health", tags=["health"])
 
 logger = logging.getLogger(__name__)
 
+# 单个外部服务检查的超时时间（秒），防止某个服务卡死阻塞整个 /health 接口
+_CHECK_TIMEOUT = 10.0
 
-# ── 存活检查 ────────────────────────────────────────────────────────
+
+# ── 存活探针 /live ───────────────────────────────────────────────────
+# 仅验证进程可响应，不触碰任何外部依赖。
+# 前端不再调用此端点（改用 /health），保留供 K8s liveness probe 使用。
 
 
 @router.get("/live")
 async def health_live():
-    """返回进程是否可响应。"""
+    """进程存活探针 — 仅返回 ok，不检查任何外部服务。"""
     return APIResponse(
         data={"status": "ok"},
         meta={"service": "knowledge-base-system", "version": "0.3.0"},
     ).model_dump(mode="json")
 
 
-# ── 整体状态 + 外部依赖 ──────────────────────────────────────────────
+# ── 整体健康检查 / ───────────────────────────────────────────────────
+# 真实探测四个外部服务，每个有 _CHECK_TIMEOUT 秒超时保护。
+# 前端仪表盘和顶部 banner 状态灯均使用此端点。
 
 
 @router.get("")
 async def health():
     """返回系统整体状态和外部依赖详情。
 
-    仅显示外部服务：PostgreSQL、Milvus、MinIO、LLM。
+    逐一探测 PostgreSQL、Milvus、MinIO、LLM。
     隐藏敏感信息：不暴露密钥、连接密码或完整堆栈。
     任一依赖 error 时 data.status 为 degraded，HTTP 仍返回 200。
     """
+    loop = asyncio.get_running_loop()
+
+    async def _run_check(name: str, check_fn) -> dict[str, Any]:
+        """在线程池中运行同步检查，带超时保护。"""
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, check_fn),
+                timeout=_CHECK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("%s 健康检查超时（%s 秒）", name, _CHECK_TIMEOUT)
+            return {"status": "error", "name": name, "summary": "健康检查超时"}
+
     deps: dict[str, dict[str, Any]] = {
-        "postgresql": _check_postgresql(),
-        "milvus": _check_milvus(),
-        "minio": _check_minio(),
-        "llm": _check_llm(),
+        "postgresql": await _run_check("PostgreSQL", _check_postgresql),
+        "milvus": await _run_check("Milvus", _check_milvus),
+        "minio": await _run_check("MinIO", _check_minio),
+        "llm": await _run_check("LLM", _check_llm),
     }
 
     error_deps = [k for k, v in deps.items() if v.get("status") == "error"]
@@ -70,7 +92,7 @@ def _safe_summary(exc: Exception) -> str:
 
 
 def _check_postgresql() -> dict[str, Any]:
-    """检查 PostgreSQL 数据库连接。"""
+    """检查 PostgreSQL 数据库连接 — 执行 SELECT 1 验证连接可用。"""
     try:
         from sqlalchemy import text
         from app.db.engine import get_engine
@@ -85,12 +107,15 @@ def _check_postgresql() -> dict[str, Any]:
 
 
 def _check_milvus() -> dict[str, Any]:
-    """检查 Milvus 向量数据库连接。"""
+    """检查 Milvus 向量数据库连接 — 连接并验证 collection 可查询。"""
     try:
         from app.core.deps import milvus_manager
 
         if milvus_manager is not None:
             milvus_manager.ensure_collection()
+            # 验证 collection 确实可用（不只是连接成功）
+            if milvus_manager.collection is not None:
+                _ = milvus_manager.collection.num_entities
             return {"status": "ok", "name": "Milvus"}
         return {"status": "not_configured", "name": "Milvus"}
     except Exception as e:
@@ -99,7 +124,7 @@ def _check_milvus() -> dict[str, Any]:
 
 
 def _check_minio() -> dict[str, Any]:
-    """检查 MinIO 对象存储连接。"""
+    """检查 MinIO 对象存储连接 — 调用 list_buckets 验证 API 可达。"""
     try:
         from app.core.deps import minio_asset_store
 
@@ -113,12 +138,23 @@ def _check_minio() -> dict[str, Any]:
 
 
 def _check_llm() -> dict[str, Any]:
-    """检查 LLM 服务。"""
+    """检查 LLM 服务 — 发送真实 API 请求验证连通性和 API Key 有效性。"""
     try:
-        from app.core.deps import extractor
-        if extractor is not None:
-            return {"status": "ok", "name": "LLM"}
-        return {"status": "not_configured", "name": "LLM"}
+        from app.core.config import get_settings
+        from llm.volcengine_client import _create_ark_client
+
+        settings = get_settings(reload_env=True)
+        if not settings.api_key:
+            return {"status": "not_configured", "name": "LLM"}
+
+        client = _create_ark_client(settings)
+        # 发送最轻量的请求，仅验证服务可达、API Key 有效
+        client.chat.completions.create(
+            model=settings.llm_model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=5,
+        )
+        return {"status": "ok", "name": "LLM"}
     except Exception as e:
-        logger.warning("LLM 服务健康检查失败: %s", e)
+        logger.warning("LLM 健康检查失败: %s", e)
         return {"status": "error", "name": "LLM", "summary": _safe_summary(e)}

@@ -223,7 +223,7 @@ class DocumentRepository(BaseRepository):
     # ── 软删除与恢复（2.2） ───────────────────────────────────────
 
     def soft_delete(self, doc_id: str) -> Document:
-        """将文档软删除，设置 status='deleted'。
+        """软删除文档，保存原状态到 meta.previous_status 供恢复时还原。
 
         Raises:
             DocumentNotFoundError: 文档不存在
@@ -232,22 +232,28 @@ class DocumentRepository(BaseRepository):
             db_doc = session.get(DbDocument, doc_id)
             if db_doc is None:
                 raise DocumentNotFoundError(f"文档 {doc_id} 不存在")
+            meta = db_doc.meta or {}
+            meta["previous_status"] = db_doc.status
+            db_doc.meta = meta
             db_doc.status = "deleted"
             db_doc.updated_at = datetime.now(timezone.utc)
             session.commit()
             return self._from_db(db_doc)
 
     def restore(self, doc_id: str) -> Document:
-        """恢复软删除的文档，将状态设置为 'active'。
+        """恢复软删除的文档到 active 状态（仅活跃文档删除后恢复使用）。
 
-        Raises:
-            DocumentNotFoundError: 文档不存在
+        failed / processing 文档的恢复由 API 层走 ingestion_pipeline.ingest()，
+        不经过此方法。
         """
         with self._session() as session:
             db_doc = session.get(DbDocument, doc_id)
             if db_doc is None:
                 raise DocumentNotFoundError(f"文档 {doc_id} 不存在")
+            meta = db_doc.meta or {}
+            meta.pop("previous_status", None)  # 清除临时标记
             db_doc.status = "active"
+            db_doc.meta = meta
             db_doc.updated_at = datetime.now(timezone.utc)
             session.commit()
             return self._from_db(db_doc)

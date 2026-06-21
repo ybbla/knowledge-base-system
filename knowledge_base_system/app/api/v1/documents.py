@@ -486,7 +486,7 @@ async def update_document(
     title: str | None = Query(default=None),
     category: str | None = Query(default=None),
 ):
-    """更新文档的标题和分类等元数据。"""
+    """更新文档的标题和分类等元数据，并同步到关联知识块的 PG 和 Milvus。"""
     if document_repo is None:
         return error_json(
             ErrorCode.SERVICE_UNAVAILABLE,
@@ -502,10 +502,14 @@ async def update_document(
             http_status.HTTP_404_NOT_FOUND,
         )
 
+    # ── 构建变更字段 ──
+    chunk_updates: dict = {}
     if title is not None:
         doc.title = title
+        chunk_updates["title"] = title
     if category is not None:
         doc.category = category
+        chunk_updates["category"] = category
 
     try:
         updated = document_repo.update(doc)
@@ -515,6 +519,18 @@ async def update_document(
             str(e),
             http_status.HTTP_404_NOT_FOUND,
         )
+
+    # ── 同步关联知识块：PG 批量更新 + Milvus 逐条同步 ──
+    if chunk_updates and hasattr(chunk_store, "bulk_update_fields_by_doc_id"):
+        try:
+            synced_chunks = chunk_store.bulk_update_fields_by_doc_id(doc_id, chunk_updates)
+            for c in synced_chunks:
+                try:
+                    sync_index_metadata(c, vector_index, bm25_index)
+                except Exception:
+                    logger.exception("同步 chunk 元数据到索引失败: %s", c.chunk_id)
+        except Exception:
+            logger.exception("批量更新 chunk 元数据失败")
 
     return APIResponse(data=_doc_to_item(updated)).model_dump(mode="json")
 
@@ -609,10 +625,10 @@ async def delete_document(doc_id: str):
 
 @router.post("/{doc_id}/restore")
 async def restore_document(doc_id: str):
-    """恢复软删除的文档。
+    """恢复软删除的文档到删前状态。
 
-    活跃文档删除后恢复：改状态即可。
-    失败文档删除后恢复：重走入库流程。
+    - active → 改状态 + 知识块回索引（轻量）
+    - failed / processing → 重走入库流程（全量重建）
     """
     if document_repo is None:
         return error_json(ErrorCode.SERVICE_UNAVAILABLE, "PostgreSQL 文档仓储不可用", 503)
@@ -621,7 +637,8 @@ async def restore_document(doc_id: str):
     if doc is None:
         return error_json(ErrorCode.DOCUMENT_NOT_FOUND, f"文档 {doc_id} 不存在", 404)
 
-    was_failed = bool(doc.error_message)
+    # 读取删前状态（由 soft_delete 写入 metadata）
+    previous_status = (doc.metadata or {}).get("previous_status", "active")
 
     # 解决 source_hash 唯一约束
     if doc.source_hash:
@@ -630,17 +647,8 @@ async def restore_document(doc_id: str):
             doc.source_hash = f"restored:{doc_id}"
             document_repo.update(doc)
 
-    if was_failed:
-        # 失败文档：清理旧 chunks + 重走入库
-        if hasattr(chunk_store, "list_by_doc_id"):
-            for c in chunk_store.list_by_doc_id(doc_id):
-                try:
-                    chunk_store.soft_delete(c.chunk_id)
-                except Exception:
-                    pass
-        doc = ingestion_pipeline.ingest(doc)
-    else:
-        # 活跃文档：改状态 + chunks 回索引
+    if previous_status == "active":
+        # 活跃删除恢复：只改状态 + 知识块回索引（轻量，不重入库）
         doc = document_repo.restore(doc_id)
         if hasattr(chunk_store, "bulk_update_status_by_doc_id"):
             chunk_store.bulk_update_status_by_doc_id(doc_id, "active")
@@ -650,6 +658,14 @@ async def restore_document(doc_id: str):
                     sync_index_metadata(c, vector_index, bm25_index)
                 except Exception:
                     logger.exception("同步恢复状态失败: %s", c.chunk_id)
+
+    elif previous_status == "failed":
+        # 失败删除恢复：重走入库（ingest 内部清理旧 chunks → 解析 → 抽取 → 索引）
+        doc = ingestion_pipeline.ingest(doc)
+
+    elif previous_status == "processing":
+        # 处理中删除恢复：同上，重走入库
+        doc = ingestion_pipeline.ingest(doc)
 
     return APIResponse(data=_doc_to_item(doc)).model_dump(mode="json")
 
@@ -691,18 +707,7 @@ async def retry_document(doc_id: str):
                 details={"existing_doc_id": active_dup.doc_id},
             )
 
-    # 清理旧知识块和索引，避免重试重复
-    if hasattr(chunk_store, "list_by_doc_id"):
-        old_chunks = chunk_store.list_by_doc_id(doc_id)
-        for c in old_chunks:
-            try:
-                chunk_store.soft_delete(c.chunk_id)
-                vector_index.delete(c.chunk_id)
-                bm25_index.delete(c.chunk_id)
-            except Exception:
-                pass
-
-    # 重新入库（同步）
+    # 重新入库（ingest 内部清理旧 chunks：PG hard_delete + Milvus/BM25 delete）
     try:
         doc = ingestion_pipeline.ingest(doc)
     except Exception:

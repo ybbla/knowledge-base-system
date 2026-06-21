@@ -22,14 +22,27 @@ const Router = (() => {
   }
 
   /**
-   * 解析当前 hash
+   * 解析当前 hash，支持 query 参数（如 /documents?status=failed）
    */
   function resolve() {
-    const hash = window.location.hash.slice(1) || '/';
-    // 尝试匹配精确路径
-    if (routes[hash]) return { handler: routes[hash], params: {} };
+    let hash = window.location.hash.slice(1) || '/';
 
-    // 尝试匹配带参数路径 (如 /documents/:id)
+    // 剥离 query 参数用于路由匹配
+    const qIdx = hash.indexOf('?');
+    const query = {};
+    if (qIdx !== -1) {
+      const qs = hash.slice(qIdx + 1);
+      hash = hash.slice(0, qIdx);
+      qs.split('&').forEach(pair => {
+        const [k, v] = pair.split('=');
+        if (k) query[decodeURIComponent(k)] = decodeURIComponent(v || '');
+      });
+    }
+
+    // 尝试匹配精确路径
+    if (routes[hash]) return { handler: routes[hash], params: {}, query };
+
+    // 尝试匹配带路径参数路由 (如 /documents/:id)
     for (const [pattern, handler] of Object.entries(routes)) {
       const paramNames = [];
       const regexStr = pattern.replace(/:([^/]+)/g, (_, name) => {
@@ -41,7 +54,7 @@ const Router = (() => {
       if (match) {
         const params = {};
         paramNames.forEach((name, i) => { params[name] = match[i + 1]; });
-        return { handler, params };
+        return { handler, params, query };
       }
     }
 
@@ -71,8 +84,10 @@ const Router = (() => {
       if (allowed === false) return;
     }
 
-    currentRoute = { path: window.location.hash.slice(1) || '/', params: resolved.params };
-    await resolved.handler(resolved.params);
+    const rawHash = window.location.hash.slice(1) || '/';
+    currentRoute = { path: rawHash.split('?')[0], params: resolved.params, query: resolved.query };
+    // 将 query 合并到 params 中传给 handler，方便组件读取
+    await resolved.handler({ ...resolved.params, _query: resolved.query });
   }
 
   /**
@@ -82,9 +97,24 @@ const Router = (() => {
     return currentRoute;
   }
 
+  /**
+   * 从 hash 中解析 query 参数（供组件调用）
+   */
+  function getQuery() {
+    const hash = window.location.hash.slice(1) || '';
+    const qIdx = hash.indexOf('?');
+    if (qIdx === -1) return {};
+    const query = {};
+    hash.slice(qIdx + 1).split('&').forEach(pair => {
+      const [k, v] = pair.split('=');
+      if (k) query[decodeURIComponent(k)] = decodeURIComponent(v || '');
+    });
+    return query;
+  }
+
   // 监听 hash 变化
   window.addEventListener('hashchange', run);
   window.addEventListener('DOMContentLoaded', run);
 
-  return { on, navigate, run, current, beforeEach };
+  return { on, navigate, run, current, beforeEach, getQuery };
 })();

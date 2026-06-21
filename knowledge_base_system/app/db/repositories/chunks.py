@@ -33,6 +33,8 @@ class PgChunkStore(BaseRepository):
             status=chunk.status.value,
             asset_refs=[ref.model_dump(mode="json") for ref in chunk.asset_refs],
             source_refs=[ref.model_dump(mode="json") for ref in chunk.source_refs],
+            created_at=chunk.created_at,
+            updated_at=chunk.updated_at,
             meta=chunk.metadata,
         )
 
@@ -77,13 +79,31 @@ class PgChunkStore(BaseRepository):
             status=db_chunk.status,
             asset_refs=asset_refs,
             source_refs=source_refs,
+            created_at=db_chunk.created_at or datetime.now(timezone.utc),
+            updated_at=db_chunk.updated_at or datetime.now(timezone.utc),
             metadata=db_chunk.meta or {},
         )
 
     def put(self, chunk: KnowledgeChunk) -> None:
+        """保存知识块。已存在则更新（刷新 updated_at），不存在则新建。"""
         with self._session() as session:
-            db_chunk = self._to_db(chunk)
-            session.merge(db_chunk)
+            existing = session.get(DbKnowledgeChunk, chunk.chunk_id)
+            if existing is not None:
+                # 更新已有记录 — 保留原始 created_at，刷新 updated_at
+                existing.doc_id = chunk.doc_id
+                existing.title = chunk.title
+                existing.content = chunk.content
+                existing.content_hash = chunk.content_hash
+                existing.knowledge_type = chunk.knowledge_type.value
+                existing.category = chunk.category
+                existing.status = chunk.status.value
+                existing.asset_refs = [ref.model_dump(mode="json") for ref in chunk.asset_refs]
+                existing.source_refs = [ref.model_dump(mode="json") for ref in chunk.source_refs]
+                existing.updated_at = datetime.now(timezone.utc)
+                existing.meta = chunk.metadata
+            else:
+                db_chunk = self._to_db(chunk)
+                session.add(db_chunk)
             session.commit()
 
     def get(self, chunk_id: str) -> KnowledgeChunk | None:
@@ -122,21 +142,36 @@ class PgChunkStore(BaseRepository):
             return [self._from_db(c) for c in db_chunks]
 
     def bulk_update_status_by_doc_id(self, doc_id: str, status: str) -> None:
-        """将指定文档下所有活跃 chunk 批量更新为新状态（如 deleted）。"""
+        """将指定文档下所有 chunk 批量更新为目标状态（删/恢通用）。"""
         from datetime import datetime, timezone
 
         with self._session() as session:
             rows = (
                 session.query(DbKnowledgeChunk)
-                .filter(
-                    DbKnowledgeChunk.doc_id == doc_id,
-                    DbKnowledgeChunk.status == "active",
-                )
+                .filter(DbKnowledgeChunk.doc_id == doc_id)
                 .all()
             )
             for row in rows:
                 row.status = status
             session.commit()
+
+    def bulk_update_fields_by_doc_id(self, doc_id: str, fields: dict) -> list[KnowledgeChunk]:
+        """批量更新指定文档下所有 chunk 的元数据字段（如 title、category），返回更新后的 chunk 列表。"""
+        from datetime import datetime, timezone
+
+        with self._session() as session:
+            rows = (
+                session.query(DbKnowledgeChunk)
+                .filter(DbKnowledgeChunk.doc_id == doc_id)
+                .all()
+            )
+            for row in rows:
+                for key, value in fields.items():
+                    if hasattr(row, key):
+                        setattr(row, key, value)
+            session.commit()
+        # 返回更新后的 domain 对象，供后续 Milvus 同步
+        return self.list_by_doc_id(doc_id)
 
     def count(self) -> int:
         with self._session() as session:
@@ -150,43 +185,64 @@ class PgChunkStore(BaseRepository):
         page: int = 1,
         page_size: int = 20,
         keyword: str | None = None,
+        search_mode: str = "chunk_title",  # "chunk_title" | "doc_title"
         doc_id: str | None = None,
+        source_type: str | None = None,
         category: str | None = None,
         knowledge_type: str | None = None,
         status: str | None = None,
         has_assets: bool | None = None,
         has_sources: bool | None = None,
-        sort_by: str = "chunk_id",
+        sort_by: str = "created_at",
         sort_order: str = "desc",
     ) -> tuple[list[KnowledgeChunk], int]:
         """分页、关键词、多条件过滤查询知识块列表。
+
+        search_mode:
+            - "chunk_title": 关键词匹配知识块标题和内容（默认）
+            - "doc_title": 关键词匹配来源文档标题（需 JOIN documents 表）
 
         Returns:
             (知识块列表, 总条数)
         """
         with self._session() as session:
+            from app.db.models import DbDocument
+
             query = session.query(DbKnowledgeChunk)
+
+            # ── 按文档标题搜索 / 按文档来源类型筛选需要 JOIN documents 表 ──
+            need_join = (keyword and search_mode == "doc_title") or (source_type is not None)
+            if need_join:
+                query = query.join(
+                    DbDocument,
+                    DbKnowledgeChunk.doc_id == DbDocument.doc_id,
+                )
 
             # ── 关键词搜索 ──
             if keyword:
                 kw_pattern = f"%{keyword}%"
                 from sqlalchemy import or_
-                query = query.filter(
-                    or_(
-                        DbKnowledgeChunk.title.ilike(kw_pattern),
-                        DbKnowledgeChunk.content.ilike(kw_pattern),
+                if search_mode == "doc_title":
+                    query = query.filter(DbDocument.title.ilike(kw_pattern))
+                else:
+                    query = query.filter(
+                        or_(
+                            DbKnowledgeChunk.title.ilike(kw_pattern),
+                            DbKnowledgeChunk.content.ilike(kw_pattern),
+                        )
                     )
-                )
 
             # ── 条件过滤 ──
+            if source_type is not None:
+                query = query.filter(DbDocument.source_type == source_type)
             if doc_id is not None:
-                query = query.filter_by(doc_id=doc_id)
+                query = query.filter(DbKnowledgeChunk.doc_id == doc_id)
             if category is not None:
-                query = query.filter_by(category=category)
+                query = query.filter(DbKnowledgeChunk.category == category)
             if knowledge_type is not None:
-                query = query.filter_by(knowledge_type=knowledge_type)
+                query = query.filter(DbKnowledgeChunk.knowledge_type == knowledge_type)
             if status is not None:
-                query = query.filter_by(status=status)
+                query = query.filter(DbKnowledgeChunk.status == status)
 
             # ── 有关联资源/来源过滤（JSON 数组非空） ──
             if has_assets is True:
@@ -227,7 +283,7 @@ class PgChunkStore(BaseRepository):
             total = query.count()
 
             # ── 排序 ──
-            sort_column = getattr(DbKnowledgeChunk, sort_by, DbKnowledgeChunk.chunk_id)
+            sort_column = getattr(DbKnowledgeChunk, sort_by, DbKnowledgeChunk.created_at)
             if sort_order == "asc":
                 query = query.order_by(sort_column.asc())
             else:
@@ -277,6 +333,14 @@ class PgChunkStore(BaseRepository):
             session.commit()
             return self._from_db(db_chunk)
 
+    def hard_delete(self, chunk_id: str) -> None:
+        """硬删除知识块（物理删除，用于重入库前清理旧块）。"""
+        with self._session() as session:
+            db_chunk = session.get(DbKnowledgeChunk, chunk_id)
+            if db_chunk is not None:
+                session.delete(db_chunk)
+                session.commit()
+
     def restore(self, chunk_id: str) -> KnowledgeChunk:
         """恢复软删除的知识块。"""
         with self._session() as session:
@@ -295,3 +359,16 @@ class PgChunkStore(BaseRepository):
                 .filter_by(doc_id=doc_id)
                 .count()
             )
+
+    def find_by_content_hash(self, content_hash: str, exclude_chunk_id: str = "") -> KnowledgeChunk | None:
+        """按内容哈希查找知识块，用于重复内容检测。可排除指定 chunk_id。"""
+        if not content_hash:
+            return None
+        with self._session() as session:
+            query = session.query(DbKnowledgeChunk).filter_by(content_hash=content_hash)
+            if exclude_chunk_id:
+                query = query.filter(DbKnowledgeChunk.chunk_id != exclude_chunk_id)
+            db_chunk = query.first()
+            if db_chunk is None:
+                return None
+            return self._from_db(db_chunk)

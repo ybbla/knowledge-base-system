@@ -90,10 +90,9 @@ const API = (() => {
   function post(path, body, opts) { return request('POST', path, { ...opts, body }); }
 
   /* =======================================================================
-     API v1 — 健康检查（主版本）
+     API v1 — 健康检查
      ======================================================================= */
-  async function healthLive() { return get('/api/v1/health/live'); }
-  async function health()     { return get('/api/v1/health'); }
+  async function health() { return get('/api/v1/health'); }
 
   /* =======================================================================
      API v1 — 文档管理（主版本）
@@ -145,6 +144,7 @@ const API = (() => {
      API v1 — 知识块管理（主版本）
      ======================================================================= */
   async function listChunks(params = {}) { return get('/api/v1/chunks', { params }); }
+  async function listChunkIds(params = {}) { return get('/api/v1/chunks/ids', { params }); }
   async function createChunk(params)     { return post('/api/v1/chunks', null, { params }); }
   async function getChunk(chunkId)       { return get(`/api/v1/chunks/${chunkId}`); }
   async function updateChunk(chunkId, params) {
@@ -166,9 +166,6 @@ const API = (() => {
   async function search(query, topK = 10, filters = {}, options = {}) {
     return post('/api/v1/search', { query, top_k: topK, filters, options }, { timeout: 60000 });
   }
-  async function searchDebug(query, topK = 10, filters = {}) {
-    return post('/api/v1/search/debug', { query, top_k: topK, filters }, { timeout: 60000 });
-  }
   async function searchFilters() { return get('/api/v1/search/filters'); }
 
   /* =======================================================================
@@ -176,15 +173,15 @@ const API = (() => {
      ======================================================================= */
   return {
     // ── v1 健康检查 ──
-    healthLive, health,
+    health,
     // ── v1 文档 ──
     listDocuments, listDocumentIds, createDocument, getDocument, listDocumentElements, updateDocument,
     deleteDocument, restoreDocument, retryDocument, uploadDocument, getDocumentHistory,
     // ── v1 知识块 ──
-    listChunks, createChunk, getChunk, updateChunk,
+    listChunks, listChunkIds, createChunk, getChunk, updateChunk,
     deleteChunk, restoreChunk,
     batchChunkOperation,
     // ── v1 检索 ──
-    search, searchDebug, searchFilters,
+    search, searchFilters,
   };
 })();

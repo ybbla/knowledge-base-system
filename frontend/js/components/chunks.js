@@ -1,7 +1,8 @@
 /* ==========================================================================
    Chunks — 知识块管理页面（v1 API）
 
-   功能：筛选、分页列表、详情抽屉、编辑、删除、恢复、重建索引
+   功能：标签页筛选（活跃/回收站）、搜索（支持按知识块标题/文档标题切换）、
+         文档类型筛选、知识类型筛选、排序、分页列表、详情抽屉、编辑、删除、恢复
    样式：与仪表盘设计令牌一致（绢本 Silk Scroll）
    ========================================================================== */
 
@@ -10,7 +11,10 @@ const Chunks = (() => {
   let currentPage = 1;
   let selectedIds = new Set();
   let filterOptions = {};  // 从后端动态加载的筛选项
+  let currentTab = 'active';  // 当前标签页: active | deleted
+  let currentSearchMode = 'chunk_title';  // chunk_title | doc_title
   let previousCreateDocCategory = '通用';
+  let _selectAllAbort = 0;  // 取消异步全选
 
   /* -----------------------------------------------------------------------
      Render — 渲染主容器
@@ -18,61 +22,53 @@ const Chunks = (() => {
   async function render() {
     UI.setBreadcrumb([{ label: '仪表盘', path: '#/' }, { label: '知识块管理' }]);
 
-    // 动态加载筛选项：分类、类型、状态、索引状态
+    // 动态加载筛选项
     try {
       const res = await API.searchFilters();
       filterOptions = res?.data || {};
     } catch (e) { filterOptions = {}; }
-
-    // 加载文档列表用于文档筛选
-    let docOptions = [];
-    try {
-      const docsRes = await API.listDocuments({ page_size: 200, status: 'active' });
-      docOptions = docsRes?.data || [];
-    } catch (e) { docOptions = []; }
 
     UI.render(`
       <div class="page-header">
         <div class="page-header-row">
           <div>
             <h1 class="page-title">知识块管理</h1>
-            <p class="page-subtitle">浏览和管理所有已抽取的知识块，支持筛选、编辑、重建索引</p>
+            <p class="page-subtitle">浏览和管理所有已抽取的知识块，支持筛选、编辑、删除与恢复</p>
           </div>
           <div class="page-actions">
-            <button class="btn btn-outline btn-sm" onclick="Chunks.batchReindex()" id="batchReindexChunkBtn" disabled>批量重建索引</button>
             <button class="btn btn-outline btn-sm" onclick="Chunks.batchDelete()" id="batchDeleteChunkBtn" disabled>批量删除</button>
             <button class="btn btn-primary" onclick="Chunks.showCreateDialog()">+ 新建知识块</button>
           </div>
         </div>
       </div>
 
+      <!-- 标签页：活跃 / 回收站 -->
+      <div class="doc-tabs">
+        <button class="doc-tab active" data-tab="active" onclick="Chunks.switchTab('active')">活跃</button>
+        <button class="doc-tab" data-tab="deleted" onclick="Chunks.switchTab('deleted')">回收站</button>
+      </div>
+
       <!-- 筛选工具栏 -->
       <div class="doc-toolbar kb-filter-bar chunk-filter-bar">
-        <input class="input kb-toolbar-search" type="text" id="chunkKeyword" placeholder="搜索标题 / 内容…"
-               onkeydown="if(event.key==='Enter')Chunks.load()">
-        <select class="select select-sm" id="chunkDocFilter" onchange="Chunks.load()">
-          <option value="">全部文档</option>
-          ${docOptions.map(d => `<option value="${UI.escapeHtml(d.doc_id)}">${UI.escapeHtml(d.title || d.doc_id)}</option>`).join('')}
-        </select>
-        <select class="select select-sm" id="chunkIndexFilter" onchange="Chunks.load()">
-          <option value="">全部索引状态</option>
-          ${(filterOptions.index_statuses || []).map(s => `<option value="${UI.escapeHtml(s.value)}">${indexStatusLabel(s.value)} (${s.count || 0})</option>`).join('')}
-        </select>
-        <select class="select select-sm" id="chunkStatusFilter" onchange="Chunks.load()">
-          <option value="">全部状态</option>
-          ${(filterOptions.chunk_statuses || []).map(s => `<option value="${UI.escapeHtml(s.value)}">${chunkStatusLabel(s.value)} (${s.count || 0})</option>`).join('')}
-        </select>
+        <div class="chunk-search-box">
+          <input class="input kb-toolbar-search" type="text" id="chunkKeyword" placeholder="搜索知识块标题 / 内容…"
+                 onkeydown="if(event.key==='Enter')Chunks.load()">
+          <select class="select select-sm chunk-search-mode" id="chunkSearchMode" onchange="Chunks.onSearchModeChange()">
+            <option value="chunk_title">知识块</option>
+            <option value="doc_title">文档</option>
+          </select>
+        </div>
         <select class="select select-sm" id="chunkCategoryFilter" onchange="Chunks.load()">
-          <option value="">全部分类</option>
-          ${(filterOptions.categories || []).map(c => `<option value="${UI.escapeHtml(c.value)}">${UI.escapeHtml(c.value)} (${c.count || 0})</option>`).join('')}
+          <option value="">全部文档分类</option>
+          ${(filterOptions.categories || []).map(c => `<option value="${UI.escapeHtml(c.value)}">${UI.escapeHtml(c.value)}</option>`).join('')}
         </select>
         <select class="select select-sm" id="chunkTypeFilter" onchange="Chunks.load()">
           <option value="">全部类型</option>
-          ${(filterOptions.knowledge_types || []).map(k => `<option value="${UI.escapeHtml(k.value)}">${UI.ktypeLabel(k.value)} (${k.count || 0})</option>`).join('')}
+          ${(filterOptions.knowledge_types || []).map(k => `<option value="${UI.escapeHtml(k.value)}">${UI.ktypeLabel(k.value)}</option>`).join('')}
         </select>
         <select class="select select-sm" id="chunkSortFilter" onchange="Chunks.load()">
-          <option value="chunk_id:desc">最近写入</option>
-          <option value="indexed_at:desc">最近索引</option>
+          <option value="updated_at:desc">更新时间</option>
+          <option value="created_at:desc">创建时间</option>
           <option value="title:asc">标题 A-Z</option>
         </select>
         <button class="btn btn-ghost btn-sm" onclick="Chunks.resetFilters()">清空筛选</button>
@@ -85,14 +81,14 @@ const Chunks = (() => {
           <thead>
             <tr>
               <th style="width: 3%;"><input type="checkbox" id="chunkSelectAll" onclick="Chunks.toggleSelectAll()" /></th>
-              <th style="width: 27%;">知识内容</th>
-              <th style="width: 14%;">来源文档</th>
-              <th style="width: 9%;">分类</th>
+              <th style="width: 28%;">知识内容</th>
+              <th style="width: 13%;">来源文档</th>
+              <th style="width: 8%;">分类</th>
               <th style="width: 8%;">类型</th>
-              <th style="width: 8%;">状态</th>
-              <th style="width: 11%;">索引</th>
-              <th style="width: 9%;">索引时间</th>
-              <th style="width: 11%;">操作</th>
+              <th style="width: 7%;">状态</th>
+              <th style="width: 10%;">创建时间</th>
+              <th style="width: 10%;">更新时间</th>
+              <th style="width: 13%;">操作</th>
             </tr>
           </thead>
           <tbody id="chunkTableBody">
@@ -102,21 +98,37 @@ const Chunks = (() => {
       </div>
 
       <div id="chunkPagination" class="pagination"></div>
-
-      <!-- 详情抽屉 -->
-      <div id="chunkDetailDrawer" class="drawer" style="display:none">
-        <div class="drawer-overlay" onclick="Chunks.closeDrawer()"></div>
-        <div class="drawer-content">
-          <div class="drawer-header">
-            <h2 id="chunkDetailTitle">知识块详情</h2>
-            <button class="btn-close" onclick="Chunks.closeDrawer()">&times;</button>
-          </div>
-          <div id="chunkDetailBody" class="drawer-body"></div>
-        </div>
-      </div>
     `);
 
     await load();
+  }
+
+  /* -----------------------------------------------------------------------
+     Tab — 标签页切换
+     ----------------------------------------------------------------------- */
+  function switchTab(tab) {
+    if (currentTab === tab) return;
+    currentTab = tab;
+    document.querySelectorAll('.doc-tab').forEach(el => {
+      el.classList.toggle('active', el.getAttribute('data-tab') === tab);
+    });
+    currentPage = 1;
+    selectedIds.clear();
+    _selectAllAbort++;
+    updateBatchBtnLabel();
+    load();
+  }
+
+  function updateBatchBtnLabel() {
+    const btn = document.getElementById('batchDeleteChunkBtn');
+    if (!btn) return;
+    if (currentTab === 'deleted') {
+      btn.textContent = '批量恢复';
+      btn.setAttribute('onclick', 'Chunks.batchRestore()');
+    } else {
+      btn.textContent = '批量删除';
+      btn.setAttribute('onclick', 'Chunks.batchDelete()');
+    }
   }
 
   /* -----------------------------------------------------------------------
@@ -126,23 +138,19 @@ const Chunks = (() => {
     currentPage = page;
     renderLoading();
     const keyword = document.getElementById('chunkKeyword')?.value?.trim() || '';
-    const docId = document.getElementById('chunkDocFilter')?.value || '';
-    const knowledgeType = document.getElementById('chunkTypeFilter')?.value || '';
     const category = document.getElementById('chunkCategoryFilter')?.value || '';
-    const status = document.getElementById('chunkStatusFilter')?.value || '';
-    const indexStatus = document.getElementById('chunkIndexFilter')?.value || '';
-    const [sortBy, sortOrder] = (document.getElementById('chunkSortFilter')?.value || 'chunk_id:desc').split(':');
+    const knowledgeType = document.getElementById('chunkTypeFilter')?.value || '';
+    const [sortBy, sortOrder] = (document.getElementById('chunkSortFilter')?.value || 'updated_at:desc').split(':');
 
     try {
       const res = await API.listChunks({
         page, page_size: 20,
         keyword: keyword || undefined,
-        doc_id: docId || undefined,
+        search_mode: currentSearchMode,
         category: category || undefined,
         knowledge_type: knowledgeType || undefined,
-        status: status || undefined,
-        index_status: indexStatus || undefined,
-        sort_by: sortBy || 'chunk_id',
+        status: currentTab,
+        sort_by: sortBy || 'created_at',
         sort_order: sortOrder || 'desc',
       });
       if (!isChunkPageMounted()) return;
@@ -186,10 +194,11 @@ const Chunks = (() => {
   }
 
   function renderTable(res) {
-    selectedIds.clear();
+    const data = res?.data || [];
+    const selectAll = document.getElementById('chunkSelectAll');
+    if (selectAll) { selectAll.checked = false; selectAll.disabled = data.length === 0; }
     const tbody = document.getElementById('chunkTableBody');
     if (!tbody) return;
-    const data = res?.data || [];
     const meta = res?.meta || {};
     const total = meta.total || 0;
     const countEl = document.getElementById('chunkCountText');
@@ -200,18 +209,18 @@ const Chunks = (() => {
       tbody.innerHTML = `<tr class="empty-row"><td colspan="9">
         <div class="empty-state">
           <div class="empty-state-icon">⊞</div>
-          <div class="empty-state-title">${hasFilters ? '未找到匹配知识块' : '暂无知识块'}</div>
-          <div class="empty-state-desc">${hasFilters ? '当前筛选条件下没有知识块。可以调整关键词、文档、类型或索引状态后再试。' : '上传文档并完成入库后，知识块将自动出现在这里。'}</div>
+          <div class="empty-state-title">${hasFilters ? '未找到匹配知识块' : (currentTab === 'deleted' ? '回收站为空' : '暂无知识块')}</div>
+          <div class="empty-state-desc">${hasFilters ? '当前筛选条件下没有知识块。可以调整关键词、文档类型或知识类型后再试。' : (currentTab === 'deleted' ? '被删除的知识块会出现在这里。' : '上传文档并完成入库后，知识块将自动出现在这里。')}</div>
           <div class="empty-actions">
             ${hasFilters ? '<button class="btn btn-secondary" onclick="Chunks.resetFilters()">清空筛选</button>' : ''}
-            <button class="btn btn-primary" onclick="Documents.showUploadModal()">上传文档</button>
+            ${currentTab === 'active' ? '<button class="btn btn-primary" onclick="Documents.showUploadModal()">上传文档</button>' : ''}
           </div>
         </div>
       </td></tr>`;
     } else {
       tbody.innerHTML = data.map(c => `
         <tr>
-          <td><input type="checkbox" value="${c.chunk_id}" class="chunk-checkbox" onclick="Chunks.toggleSelect(event)" /></td>
+          <td><input type="checkbox" value="${c.chunk_id}" class="chunk-checkbox" onclick="Chunks.toggleSelect(event)" ${selectedIds.has(c.chunk_id) ? 'checked' : ''} /></td>
           <td>
             <div class="chunk-title-cell">
               <span class="doc-title-link" onclick="Chunks.showDetail('${c.chunk_id}')">${UI.escapeHtml(c.title || '(无标题)')}</span>
@@ -223,20 +232,20 @@ const Chunks = (() => {
           <td>${UI.escapeHtml(c.category || '通用')}</td>
           <td>${UI.ktypeBadge(c.knowledge_type)}</td>
           <td>${UI.statusBadge(c.status || 'active')}</td>
-          <td>
-            <div class="index-cell">
-              ${UI.statusBadge(c.index_status || 'pending')}
-              ${c.index_error ? `<span class="index-error">${UI.escapeHtml(c.index_error)}</span>` : ''}
-            </div>
-          </td>
-          <td>${UI.formatTime(c.indexed_at)}</td>
+          <td>${UI.formatTime(c.created_at)}</td>
+          <td>${UI.formatTime(c.updated_at)}</td>
           <td class="actions-cell">
-            <button class="btn btn-sm btn-ghost" onclick="Chunks.showDetail('${c.chunk_id}')">详情</button>
             ${c.status === 'deleted'
-              ? `<button class="btn btn-sm btn-success" onclick="Chunks.restoreChunk('${c.chunk_id}')">恢复</button>`
+              ? `<button class="btn btn-sm btn-success doc-action-btn" onclick="Chunks.restoreChunk('${c.chunk_id}')" title="恢复知识块">
+                   <span class="action-icon">↶</span>恢复
+                 </button>`
               : `
-                <button class="btn btn-sm btn-ghost" onclick="Chunks.reindexChunk('${c.chunk_id}')">重建索引</button>
-                <button class="btn btn-sm btn-danger" onclick="Chunks.deleteChunk('${c.chunk_id}')">删除</button>
+                <button class="btn btn-sm btn-outline doc-action-btn" onclick="Chunks.showEditDialog('${c.chunk_id}')" title="编辑知识块">
+                  <span class="action-icon">✎</span>编辑
+                </button>
+                <button class="btn btn-sm btn-danger doc-action-btn" onclick="Chunks.deleteChunk('${c.chunk_id}')" title="删除知识块">
+                  <span class="action-icon">🗑</span>删除
+                </button>
               `}
           </td>
         </tr>
@@ -269,120 +278,145 @@ const Chunks = (() => {
   function hasActiveFilters() {
     return Boolean(
       document.getElementById('chunkKeyword')?.value?.trim()
-      || document.getElementById('chunkDocFilter')?.value
-      || document.getElementById('chunkTypeFilter')?.value
       || document.getElementById('chunkCategoryFilter')?.value
-      || document.getElementById('chunkStatusFilter')?.value
-      || document.getElementById('chunkIndexFilter')?.value
+      || document.getElementById('chunkTypeFilter')?.value
     );
   }
 
   function resetFilters() {
-    ['chunkKeyword', 'chunkDocFilter', 'chunkTypeFilter', 'chunkCategoryFilter', 'chunkStatusFilter', 'chunkIndexFilter'].forEach((id) => {
+    ['chunkKeyword', 'chunkCategoryFilter', 'chunkTypeFilter'].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.value = '';
     });
     const sortEl = document.getElementById('chunkSortFilter');
-    if (sortEl) sortEl.value = 'chunk_id:desc';
+    if (sortEl) sortEl.value = 'updated_at:desc';
+    const modeEl = document.getElementById('chunkSearchMode');
+    if (modeEl) modeEl.value = 'chunk_title';
+    currentSearchMode = 'chunk_title';
+    updateSearchPlaceholder();
     load(1);
   }
 
-  async function refreshFilterControls(selectedDocId = '') {
-    const docSelect = document.getElementById('chunkDocFilter');
-    const previousDocId = docSelect?.value || '';
-    try {
-      const docsRes = await API.listDocuments({ page_size: 200, status: 'active' });
-      const docs = docsRes?.data || [];
-      if (docSelect) {
-        docSelect.innerHTML = `
-          <option value="">全部文档</option>
-          ${docs.map(d => `<option value="${UI.escapeHtml(d.doc_id)}">${UI.escapeHtml(d.title || d.doc_id)}</option>`).join('')}
-        `;
-        const nextDocId = selectedDocId || previousDocId;
-        if ([...docSelect.options].some((option) => option.value === nextDocId)) {
-          docSelect.value = nextDocId;
-        }
-      }
-    } catch (e) {
-      // 文档下拉刷新失败不影响已创建的知识块展示。
-    }
-
-    try {
-      const res = await API.searchFilters();
-      filterOptions = res?.data || filterOptions;
-      refreshFilterSelect('chunkIndexFilter', '全部索引状态', filterOptions.index_statuses || [], (s) => `${indexStatusLabel(s.value)} (${s.count || 0})`);
-      refreshFilterSelect('chunkStatusFilter', '全部状态', filterOptions.chunk_statuses || [], (s) => `${chunkStatusLabel(s.value)} (${s.count || 0})`);
-      refreshFilterSelect('chunkCategoryFilter', '全部分类', filterOptions.categories || [], (c) => `${c.value} (${c.count || 0})`);
-      refreshFilterSelect('chunkTypeFilter', '全部类型', filterOptions.knowledge_types || [], (k) => `${UI.ktypeLabel(k.value)} (${k.count || 0})`);
-    } catch (e) {
-      // 筛选计数可稍后随页面刷新更新。
-    }
+  /* -----------------------------------------------------------------------
+     Search mode — 搜索模式切换（联动文档分类/类型筛选）
+     ----------------------------------------------------------------------- */
+  function onSearchModeChange() {
+    const modeEl = document.getElementById('chunkSearchMode');
+    currentSearchMode = modeEl?.value || 'chunk_title';
+    updateSearchPlaceholder();
+    // 有关键词时重新搜索（切换匹配范围），无关键词时只更新 placeholder 不请求
+    const keyword = document.getElementById('chunkKeyword')?.value?.trim();
+    if (keyword) load(1);
   }
 
-  function refreshFilterSelect(id, defaultLabel, options, labelFn) {
-    const select = document.getElementById(id);
-    if (!select) return;
-    const previousValue = select.value;
-    select.innerHTML = `
-      <option value="">${defaultLabel}</option>
-      ${options.map((option) => `<option value="${UI.escapeHtml(option.value)}">${UI.escapeHtml(labelFn(option))}</option>`).join('')}
-    `;
-    if ([...select.options].some((option) => option.value === previousValue)) {
-      select.value = previousValue;
+  function updateSearchPlaceholder() {
+    const input = document.getElementById('chunkKeyword');
+    if (!input) return;
+    if (currentSearchMode === 'doc_title') {
+      input.placeholder = '输入文档标题关键词…';
+    } else {
+      input.placeholder = '输入知识块标题 / 内容关键词…';
     }
-  }
-
-  function chunkStatusLabel(status) {
-    const map = {
-      active: '活跃',
-      deleted: '已删除',
-      superseded: '已替换',
-    };
-    return map[status] || status || '未知';
-  }
-
-  function indexStatusLabel(status) {
-    const map = {
-      pending: '待索引',
-      indexed: '已索引',
-      failed: '索引失败',
-    };
-    return map[status] || status || '未知';
   }
 
   /* -----------------------------------------------------------------------
-     Detail — 知识块详情抽屉
+     Detail — 知识块详情抽屉（仿文档详情风格）
      ----------------------------------------------------------------------- */
+  function _renderAssetSummary(assetRefs) {
+    const list = assetRefs || [];
+    const typeLabel = { image: 'image', video: 'video', audio: 'audio', attachment: 'attachment', unknown: 'unknown' };
+    const counts = {};
+    list.forEach((a) => {
+      const t = a.asset_type || 'unknown';
+      counts[t] = (counts[t] || 0) + 1;
+    });
+    const lines = Object.entries(counts).map(([t, n]) => `${typeLabel[t] || t} ×${n}`).join(' &emsp; ');
+    return `
+      <div class="detail-field" style="grid-column: span 2;">
+        <label>关联资源（${list.length}）</label>
+        <span>${lines || '—'}</span>
+      </div>`;
+  }
+
+  function _renderSourceRefs(sourceRefs) {
+    if (!sourceRefs || !sourceRefs.length) return '';
+    const rows = sourceRefs.map((s) => {
+      const loc = s.source_location || {};
+      const path = loc.section_path?.length ? loc.section_path.join(' › ') : '';
+      const page = loc.page != null ? `第 ${loc.page} 页` : '';
+      const desc = [page, path].filter(Boolean).join(' · ');
+      return `
+        <div class="detail-ref-item">
+          <span class="detail-ref-text">${UI.escapeHtml(desc || s.element_id)}</span>
+        </div>
+      `;
+    }).join('');
+    return `
+      <div class="detail-section">
+        <h3>来源引用（${sourceRefs.length}）</h3>
+        <div class="detail-ref-list">${rows}</div>
+      </div>`;
+  }
+
   async function showDetail(chunkId) {
+    UI.showDrawer('知识块详情', '<div class="loading-overlay" style="min-height:200px"><div class="loading-spinner"></div><span>加载中…</span></div>');
     try {
       const res = await API.getChunk(chunkId);
       const c = res?.data || {};
-      document.getElementById('chunkDetailTitle').textContent = c.title || '知识块详情';
-      document.getElementById('chunkDetailBody').innerHTML = `
+      const bodyHtml = `
         <div class="detail-grid">
-          <div class="detail-field"><label>ID</label><span style="font-family: var(--font-mono); font-size: var(--text-xs);">${UI.escapeHtml(c.chunk_id)}</span></div>
-          <div class="detail-field"><label>文档</label><span>${UI.escapeHtml(c.doc_title || c.doc_id || '—')}</span></div>
-          <div class="detail-field"><label>类型</label><span>${UI.ktypeBadge(c.knowledge_type)}</span></div>
-          <div class="detail-field"><label>分类</label><span>${UI.escapeHtml(c.category || '未分类')}</span></div>
-          <div class="detail-field"><label>状态</label><span>${UI.statusBadge(c.status || 'active')}</span></div>
-          <div class="detail-field"><label>索引状态</label><span>${UI.statusBadge(c.index_status || 'pending')} ${c.index_error ? `<span style="color: var(--cinnabar); font-size: var(--text-xs);">(${UI.escapeHtml(c.index_error)})</span>` : ''}</span></div>
-          <div class="detail-field"><label>内容哈希</label><span style="font-family: var(--font-mono); font-size: var(--text-xs);">${UI.escapeHtml(c.content_hash || '—')}</span></div>
+          <div class="detail-field">
+            <label>知识块标题</label>
+            <span>${UI.escapeHtml(c.title || '(无标题)')}</span>
+          </div>
+          <div class="detail-field">
+            <label>来源文档</label>
+            <span>${UI.escapeHtml(c.doc_title || c.doc_id || '—')}</span>
+          </div>
+          <div class="detail-field">
+            <label>类型</label>
+            <span>${UI.ktypeBadge(c.knowledge_type)}</span>
+          </div>
+          <div class="detail-field">
+            <label>分类</label>
+            <span>${UI.escapeHtml(c.category || '通用')}</span>
+          </div>
+          <div class="detail-field">
+            <label>状态</label>
+            <span>${UI.statusBadge(c.status || 'active')}</span>
+          </div>
+          <div class="detail-field">
+            <label>创建时间</label>
+            <span>${UI.formatTime(c.created_at)}</span>
+          </div>
+          <div class="detail-field">
+            <label>更新时间</label>
+            <span>${UI.formatTime(c.updated_at)}</span>
+          </div>
+          ${_renderAssetSummary(c.asset_refs)}
         </div>
+
+        ${_renderSourceRefs(c.source_refs)}
+
         <div class="detail-content">
           <h3>内容</h3>
           <pre>${UI.escapeHtml(c.content || '(无内容)')}</pre>
         </div>
-        <div class="detail-actions" style="display: flex; gap: var(--space-2); margin-top: var(--space-6);">
-          <button class="btn btn-secondary btn-sm" onclick="Chunks.showEditDialog('${c.chunk_id}')">编辑</button>
-          <button class="btn btn-primary btn-sm" onclick="Chunks.reindexChunk('${c.chunk_id}')">⟳ 重建索引</button>
-          ${c.status === 'deleted'
-            ? `<button class="btn btn-success btn-sm" onclick="Chunks.restoreChunk('${c.chunk_id}')">恢复</button>`
-            : `<button class="btn btn-danger btn-sm" onclick="Chunks.deleteChunk('${c.chunk_id}')">删除</button>`}
-        </div>
+
       `;
-      document.getElementById('chunkDetailDrawer').style.display = 'block';
+
+      const drawerBody = document.querySelector('.drawer-body');
+      if (drawerBody) drawerBody.innerHTML = bodyHtml;
     } catch (e) {
-      UI.toast(`获取知识块详情失败: ${e.message}`, 'error');
+      const drawerBody = document.querySelector('.drawer-body');
+      if (drawerBody) {
+        drawerBody.innerHTML = `
+          <div class="empty-state empty-state-error">
+            <div class="empty-state-icon">!</div>
+            <div class="empty-state-title">加载失败</div>
+            <div class="empty-state-desc">${UI.escapeHtml(e.message)}</div>
+          </div>`;
+      }
     }
   }
 
@@ -390,10 +424,22 @@ const Chunks = (() => {
     try {
       const res = await API.getChunk(chunkId);
       const c = res?.data || {};
+
+      let existingCategories = [];
+      try {
+        const filtersRes = await API.searchFilters();
+        existingCategories = (filtersRes?.data?.categories || []).map(cat => cat.value);
+      } catch (e) { /* ignore */ }
+
+      const currentCategory = c.category || '通用';
+      const catOptions = [...new Set(['通用', ...existingCategories, currentCategory])]
+        .map(cat => `<option value="${UI.escapeHtml(cat)}" ${currentCategory === cat ? 'selected' : ''}>${UI.escapeHtml(cat)}</option>`)
+        .join('');
+
       UI.showModal(
         '编辑知识块',
         `
-          <div class="form-stack create-chunk-form">
+          <div class="form-stack">
             <div id="editChunkFormError" class="form-error is-hidden"></div>
             <div>
               <label class="field-label">标题 <span>*</span></label>
@@ -401,27 +447,27 @@ const Chunks = (() => {
             </div>
             <div>
               <label class="field-label">分类</label>
-              <input id="editChunkCategory" class="input" style="width: 100%;" value="${UI.escapeHtml(c.category || '通用')}" />
+              <select class="select" id="editChunkCategory" onfocus="Chunks.onEditCategoryFocus()" onchange="Chunks.onEditCategorySelect()" style="width: 100%;">
+                ${catOptions}
+                <option value="__custom__">✚ 新增分类…</option>
+              </select>
             </div>
             <div>
               <label class="field-label">类型</label>
               <select id="editChunkType" class="select" style="width: 100%;">
-                <option value="declarative" ${c.knowledge_type === 'declarative' ? 'selected' : ''}>陈述型：事实、定义、说明</option>
-                <option value="procedural" ${c.knowledge_type === 'procedural' ? 'selected' : ''}>流程型：步骤、操作方法</option>
-                <option value="relational" ${c.knowledge_type === 'relational' ? 'selected' : ''}>关系型：实体关系、对应关系</option>
+                <option value="declarative" ${c.knowledge_type === 'declarative' ? 'selected' : ''}>陈述型</option>
+                <option value="procedural" ${c.knowledge_type === 'procedural' ? 'selected' : ''}>流程型</option>
+                <option value="relational" ${c.knowledge_type === 'relational' ? 'selected' : ''}>关系型</option>
               </select>
             </div>
             <div>
-              <label class="field-label">内容 <span>*</span></label>
-              <textarea id="editChunkContent" class="textarea create-chunk-content" rows="8" style="width: 100%;">${UI.escapeHtml(c.content || '')}</textarea>
+              <div class="field-label-row">
+                <label class="field-label">内容 <span>*</span></label>
+                <span id="editChunkContentCount" class="field-counter">${(c.content || '').length} 字</span>
+              </div>
+              <textarea id="editChunkContent" class="textarea create-chunk-content" rows="8" style="width: 100%;"
+                        oninput="Chunks.updateEditFormState()">${UI.escapeHtml(c.content || '')}</textarea>
             </div>
-            <label class="check-control create-chunk-index-option">
-              <input type="checkbox" id="editChunkReindex" checked />
-              <span>
-                保存后重建索引
-                <small>内容变化后建议保持勾选，确保检索结果同步更新。</small>
-              </span>
-            </label>
           </div>
         `,
         `
@@ -434,12 +480,80 @@ const Chunks = (() => {
     }
   }
 
+  let _editCategoryPrevious = '';
+
+  function onEditCategoryFocus() {
+    const select = document.getElementById('editChunkCategory');
+    if (select && select.value !== '__custom__') {
+      _editCategoryPrevious = select.value;
+    }
+  }
+
+  function onEditCategorySelect() {
+    const select = document.getElementById('editChunkCategory');
+    if (!select || select.value !== '__custom__') return;
+    showEditCategoryDialog();
+  }
+
+  function showEditCategoryDialog() {
+    UI.showModal(
+      '新增分类',
+      `
+        <div class="form-stack">
+          <div>
+            <label class="field-label">分类名称 <span>*</span></label>
+            <input class="input" type="text" id="editNewCategoryInput" placeholder="输入新分类名称" style="width:100%" autofocus>
+          </div>
+        </div>
+      `,
+      `
+        <button class="btn btn-secondary" onclick="Chunks.cancelEditCategory()">取消</button>
+        <button class="btn btn-primary" onclick="Chunks.confirmEditCategory()">确认添加</button>
+      `
+    );
+    setTimeout(() => document.getElementById('editNewCategoryInput')?.focus(), 100);
+  }
+
+  function cancelEditCategory() {
+    const select = document.getElementById('editChunkCategory');
+    if (select && _editCategoryPrevious) {
+      select.value = _editCategoryPrevious;
+    }
+    document.querySelector('.modal-backdrop:last-child')?.remove();
+  }
+
+  function confirmEditCategory() {
+    const name = document.getElementById('editNewCategoryInput')?.value?.trim();
+    if (!name) { UI.toast('请输入分类名称', 'error'); return; }
+
+    const select = document.getElementById('editChunkCategory');
+    if (select) {
+      const customOpt = select.querySelector('option[value="__custom__"]');
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      opt.selected = true;
+      if (customOpt) {
+        select.insertBefore(opt, customOpt);
+      } else {
+        select.appendChild(opt);
+      }
+    }
+    document.querySelector('.modal-backdrop:last-child')?.remove();
+    UI.toast(`已添加分类: ${name}`, 'success');
+  }
+
+  function updateEditFormState() {
+    const content = document.getElementById('editChunkContent')?.value || '';
+    const counter = document.getElementById('editChunkContentCount');
+    if (counter) counter.textContent = `${content.length} 字`;
+  }
+
   async function updateChunkFromDialog(chunkId) {
     const title = document.getElementById('editChunkTitle')?.value?.trim();
     const content = document.getElementById('editChunkContent')?.value?.trim();
     const category = document.getElementById('editChunkCategory')?.value?.trim() || '通用';
     const knowledgeType = document.getElementById('editChunkType')?.value || 'declarative';
-    const reindex = Boolean(document.getElementById('editChunkReindex')?.checked);
     const errorEl = document.getElementById('editChunkFormError');
     if (!title || !content || content.length < 10) {
       if (errorEl) {
@@ -455,23 +569,25 @@ const Chunks = (() => {
         content,
         category,
         knowledge_type: knowledgeType,
-        reindex,
+        reindex: true,
       });
       UI.toast('知识块已更新', 'success');
       document.querySelector('.modal-backdrop:last-child')?.remove();
-      closeDrawer();
+      document.querySelector('#modalContainer .drawer')?.remove();
       await load(currentPage);
     } catch (e) {
-      if (errorEl) {
-        errorEl.textContent = e.message || '保存失败';
-        errorEl.classList.remove('is-hidden');
+      const msg = e.message || '保存失败';
+      if (msg.includes('重复')) {
+        // 内容重复：toast 提示，弹窗不关闭，保留已填内容
+        UI.toast(msg, 'warning');
+      } else {
+        if (errorEl) {
+          errorEl.textContent = msg;
+          errorEl.classList.remove('is-hidden');
+        }
+        UI.toast(`保存失败: ${msg}`, 'error');
       }
-      UI.toast(`保存失败: ${e.message}`, 'error');
     }
-  }
-
-  function closeDrawer() {
-    document.getElementById('chunkDetailDrawer').style.display = 'none';
   }
 
   /* -----------------------------------------------------------------------
@@ -525,7 +641,7 @@ const Chunks = (() => {
               ${docOptions}
             </select>
             <div class="${docLoadError ? 'field-warning' : 'field-help'}">
-              ${docLoadError ? `${UI.escapeHtml(docLoadError)}，仍可切换到“新建文档”继续创建。` : '知识块会挂到所选文档下，用于后续筛选、溯源和版本管理。'}
+              ${docLoadError ? `${UI.escapeHtml(docLoadError)}，仍可切换到"新建文档"继续创建。` : '知识块会挂到所选文档下，用于后续筛选、溯源和版本管理。'}
             </div>
           </div>
 
@@ -547,7 +663,7 @@ const Chunks = (() => {
           </div>
 
           <div>
-            <label class="field-label">标题 <span>*</span></label>
+            <label class="field-label">知识块标题 <span>*</span></label>
             <input id="newChunkTitle" class="input" style="width: 100%;" placeholder="例如：退货申请条件" />
           </div>
 
@@ -571,19 +687,11 @@ const Chunks = (() => {
           <div>
             <label class="field-label">类型</label>
             <select id="newChunkType" class="select" style="width: 100%;">
-              <option value="declarative">陈述型：事实、定义、说明</option>
-              <option value="procedural">流程型：步骤、操作方法</option>
-              <option value="relational">关系型：实体关系、对应关系</option>
+              <option value="declarative">陈述型</option>
+              <option value="procedural">流程型</option>
+              <option value="relational">关系型</option>
             </select>
           </div>
-
-          <label class="check-control create-chunk-index-option">
-            <input type="checkbox" id="newChunkIndexAfterCreate" />
-            <span>
-              创建后立即加入检索索引
-              <small>需要 embedding 配置可用；不勾选时可稍后手动重建索引。</small>
-            </span>
-          </label>
 
           <div id="newChunkCategoryDialog" class="mini-dialog-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="newChunkCategoryDialogTitle">
             <div class="mini-dialog">
@@ -628,7 +736,6 @@ const Chunks = (() => {
         const title = document.getElementById('newChunkTitle')?.value?.trim();
         const content = document.getElementById('newChunkContent')?.value?.trim();
         const chunkCategory = document.getElementById('newChunkCategory')?.value?.trim() || docCategory || '通用';
-        const indexAfterCreate = Boolean(document.getElementById('newChunkIndexAfterCreate')?.checked);
         const error = validateCreateForm({ useNewDoc, docId, docTitle, docCategory, title, content });
         if (error) {
           showCreateFormError(error);
@@ -641,6 +748,8 @@ const Chunks = (() => {
           btn.textContent = '创建中...';
         }
 
+        let createdDocId = null;  // 追踪新建文档，用于失败回滚
+
         try {
           if (useNewDoc) {
             const docRes = await API.createDocument({
@@ -652,6 +761,7 @@ const Chunks = (() => {
             });
             docId = docRes?.data?.doc_id;
             if (!docId) throw new Error('新文档创建成功，但未返回文档 ID');
+            createdDocId = docId;
           }
 
           await API.createChunk({
@@ -660,15 +770,23 @@ const Chunks = (() => {
             content,
             knowledge_type: document.getElementById('newChunkType')?.value,
             category: chunkCategory,
-            index_after_create: indexAfterCreate,
           });
           UI.toast('知识块创建成功', 'success');
           document.querySelector('.modal-backdrop')?.remove();
-          await refreshFilterControls(useNewDoc ? docId : '');
           await load(1);
         } catch (e) {
-          showCreateFormError(e.message || '创建失败');
-          UI.toast(`创建失败: ${e.message}`, 'error');
+          const msg = e.message || '创建失败';
+          // 新建文档模式下创建知识块失败 → 清理孤儿文档
+          if (createdDocId) {
+            try { await API.deleteDocument(createdDocId); } catch (_) { /* 静默清理 */ }
+          }
+          // 内容重复 → toast 提示，弹窗不关闭，保留已填内容
+          if (msg.includes('重复')) {
+            UI.toast(msg, 'warning');
+          } else {
+            showCreateFormError(msg);
+            UI.toast(`创建失败: ${msg}`, 'error');
+          }
         } finally {
           if (btn) {
             btn.disabled = false;
@@ -797,7 +915,8 @@ const Chunks = (() => {
   }
 
   async function deleteChunk(chunkId) {
-    if (!confirm('确认软删除该知识块？')) return;
+    const ok = await UI.showConfirm('删除确认', '确认删除该知识块？', '确认删除');
+    if (!ok) return;
     try {
       await API.deleteChunk(chunkId);
       UI.toast('知识块已删除', 'success');
@@ -817,28 +936,32 @@ const Chunks = (() => {
     }
   }
 
-  async function reindexChunk(chunkId) {
-    try {
-      await API.reindexChunk(chunkId);
-      UI.toast('重建索引成功', 'success');
-      await load();
-    } catch (e) {
-      UI.toast(`重建索引失败: ${e.message}`, 'error');
-    }
-  }
-
   /* -----------------------------------------------------------------------
      Batch — 批量操作
      ----------------------------------------------------------------------- */
-  function toggleSelectAll() {
-    const checkboxes = document.querySelectorAll('.chunk-checkbox');
+  async function toggleSelectAll() {
     const selectAll = document.getElementById('chunkSelectAll');
-    checkboxes.forEach(cb => {
-      cb.checked = selectAll.checked;
-      if (selectAll.checked) selectedIds.add(cb.value);
-      else selectedIds.delete(cb.value);
-    });
-    updateBatchBtn();
+    const checkboxes = document.querySelectorAll('.chunk-checkbox');
+    if (selectAll.checked) {
+      checkboxes.forEach(cb => { cb.checked = true; selectedIds.add(cb.value); });
+      const token = ++_selectAllAbort;
+      try {
+        const res = await API.listChunkIds({
+          keyword: document.getElementById('chunkKeyword')?.value?.trim() || undefined,
+          search_mode: currentSearchMode,
+          category: document.getElementById('chunkCategoryFilter')?.value || undefined,
+          knowledge_type: document.getElementById('chunkTypeFilter')?.value || undefined,
+          status: currentTab,
+        });
+        if (token !== _selectAllAbort) return;
+        (res?.data || []).forEach(id => selectedIds.add(id));
+      } catch (e) { /* skip */ }
+      if (token === _selectAllAbort) updateBatchBtn();
+    } else {
+      selectedIds.clear();
+      checkboxes.forEach(cb => { cb.checked = false; });
+      updateBatchBtn();
+    }
   }
 
   function toggleSelect(e) {
@@ -848,28 +971,17 @@ const Chunks = (() => {
   }
 
   function updateBatchBtn() {
-    const deleteBtn = document.getElementById('batchDeleteChunkBtn');
-    const reindexBtn = document.getElementById('batchReindexChunkBtn');
-    if (deleteBtn) deleteBtn.disabled = selectedIds.size === 0;
-    if (reindexBtn) reindexBtn.disabled = selectedIds.size === 0;
-  }
-
-  async function batchReindex() {
-    if (!selectedIds.size) return;
-    if (!confirm(`确认为 ${selectedIds.size} 个知识块重建索引？`)) return;
-    try {
-      await API.batchReindexChunks([...selectedIds]);
-      UI.toast(`已提交 ${selectedIds.size} 个知识块重建索引`, 'success');
-      selectedIds.clear();
-      await load();
-    } catch (e) {
-      UI.toast(`批量重建索引失败: ${e.message}`, 'error');
-    }
+    const batchBtn = document.getElementById('batchDeleteChunkBtn');
+    if (!batchBtn) return;
+    batchBtn.disabled = selectedIds.size === 0;
+    const selectAll = document.getElementById('chunkSelectAll');
+    if (selectAll) selectAll.checked = selectedIds.size > 0;
   }
 
   async function batchDelete() {
     if (!selectedIds.size) return;
-    if (!confirm(`确认批量删除 ${selectedIds.size} 个知识块？`)) return;
+    const ok = await UI.showConfirm('批量删除确认', `确认批量删除 ${selectedIds.size} 个知识块？`, '确认删除');
+    if (!ok) return;
     try {
       await API.batchChunkOperation('delete', [...selectedIds]);
       UI.toast(`批量删除完成: ${selectedIds.size} 个知识块`, 'success');
@@ -880,5 +992,19 @@ const Chunks = (() => {
     }
   }
 
-  return { render, load, showDetail, closeDrawer, showEditDialog, updateChunkFromDialog, showCreateDialog, toggleCreateDocMode, onCreateDocCategorySelect, cancelCreateDocCategory, confirmCreateDocCategory, updateCreateFormState, deleteChunk, restoreChunk, reindexChunk, toggleSelectAll, toggleSelect, batchReindex, batchDelete, resetFilters };
+  async function batchRestore() {
+    if (!selectedIds.size) return;
+    const ok = await UI.showConfirm('批量恢复确认', `确认批量恢复 ${selectedIds.size} 个知识块？`, '确认恢复');
+    if (!ok) return;
+    try {
+      await API.batchChunkOperation('restore', [...selectedIds]);
+      UI.toast(`批量恢复完成: ${selectedIds.size} 个知识块`, 'success');
+      selectedIds.clear();
+      await load();
+    } catch (e) {
+      UI.toast(`批量恢复失败: ${e.message}`, 'error');
+    }
+  }
+
+  return { render, load, switchTab, onSearchModeChange, showDetail, showEditDialog, updateEditFormState, updateChunkFromDialog, onEditCategoryFocus, onEditCategorySelect, cancelEditCategory, confirmEditCategory, showCreateDialog, toggleCreateDocMode, onCreateDocCategorySelect, cancelCreateDocCategory, confirmCreateDocCategory, updateCreateFormState, deleteChunk, restoreChunk, toggleSelectAll, toggleSelect, batchDelete, batchRestore, resetFilters };
 })();

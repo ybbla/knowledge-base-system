@@ -91,19 +91,28 @@ def build_extraction_messages(title_path: list[str], elements_json: str) -> list
 
 # ── Query Rewrite Prompt ─────────────────────────────────────────
 
-QUERY_REWRITE_SYSTEM = """你是知识库检索查询改写助手。请把用户问题改写为适合向量检索和关键词检索的查询。
+QUERY_REWRITE_SYSTEM = """你是知识库检索查询改写助手。将用户问题改写为适合向量检索和关键词检索的形式。
 
-要求：
-1. 保留用户原意。
-2. 补全省略的主语、动作和对象。
-3. 提取重要关键词。
-4. 不要回答问题。
-5. 输出合法 JSON。
+## rewritten_query 要求（用于语义向量检索）
+- 用一句完整的陈述句概括用户想查的内容，不是问句
+- 补全省略的主语、对象、条件，使其脱离上下文也能独立理解
+- 将口语化表达转为正式表述（如"怎么退"→"退款申请条件和操作流程"）
+- 展开缩写和简称（如"K8s"→"Kubernetes"）
+- 长度控制在 20-80 字
+
+## keywords 要求（用于 BM25 关键词检索）
+- 提取 3-8 个核心关键词，按重要性排列
+- 必须包含同义词和相关概念（如查"退款"时加上"退货""返款""售后"）
+- 同时提供短词和完整短语（如"退款"+"退款申请流程"）
+- 包含用户问题中的关键实体名称
+
+## intent 要求
+用一个词归类查询意图：fact_lookup（查事实）、how_to（问操作）、definition（问定义）、comparison（对比）、policy（政策规则）
 
 输出格式：
 {
   "rewritten_query": "...",
-  "keywords": ["..."],
+  "keywords": ["...", "..."],
   "intent": "..."
 }"""
 
@@ -119,31 +128,32 @@ def build_rewrite_messages(query: str) -> list[dict]:
 
 # ── Rerank Prompt ────────────────────────────────────────────────
 
-RERANK_SYSTEM = """你是检索结果重排助手。请根据用户问题判断候选知识块的相关性。
+RERANK_SYSTEM = """你是检索结果打分助手。请根据用户问题，判断给定知识块内容的相关性并打分。
 
-要求：
-1. 只判断候选块是否能回答或支持回答用户问题。
-2. 不要补充候选块以外的信息。
-3. 返回从高到低排序的 chunk_id。
-4. 输出合法 JSON。
+打分标准（0~1，保留两位小数）：
+- 0.80 ~ 1.00：内容直接、完整地回答了用户问题，或提供了核心支撑信息
+- 0.50 ~ 0.79：内容部分相关，涉及同类主题但未直接命中问题要点
+- 0.20 ~ 0.49：内容仅在关键词上表面匹配，实质与问题无关
+- 0.01 ~ 0.19：内容几乎不相关
+- 0.00：完全无关
+
+要求：只根据知识块内容判断，不编造信息。输出合法 JSON。
 
 输出格式：
 {
-  "ranked_results": [
-    {
-      "chunk_id": "...",
-      "relevance_score": 0.0,
-      "reason": "..."
-    }
-  ]
+  "relevance_score": 0.00,
+  "reason": "一句话说明相关程度"
 }"""
 
+RERANK_SCHEMA = {"required": ["relevance_score", "reason"]}
 
-def build_rerank_messages(query: str, candidates_json: str) -> list[dict]:
+
+def build_rerank_message(query: str, content: str) -> list[dict]:
+    """构造单条知识块的打分消息。"""
     return [
         {"role": "system", "content": RERANK_SYSTEM},
         {
             "role": "user",
-            "content": f"用户问题：{query}\n\n候选知识块：\n{candidates_json}",
+            "content": f"用户问题：{query}\n\n知识块内容：\n{content}",
         },
     ]

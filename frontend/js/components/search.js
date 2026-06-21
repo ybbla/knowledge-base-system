@@ -20,45 +20,46 @@ const SearchPage = (() => {
 
     UI.render(`
       <div class="page-header">
-        <h1 class="page-title">知识搜索</h1>
-        <p class="page-subtitle">按问题检索知识块，支持分类和知识类型过滤</p>
+        <div class="page-header-row">
+          <div>
+            <h1 class="page-title">知识搜索</h1>
+            <p class="page-subtitle">按问题检索知识块，支持分类、知识类型过滤与混合检索</p>
+          </div>
+        </div>
       </div>
 
-      <div class="search-panel kb-query-panel">
-        <div class="kb-query-main">
-          <div class="search-input-wrap">
-            <span class="search-input-icon">⌕</span>
-            <input class="input input-lg" type="text" id="searchInput" placeholder="输入问题，检索最相关的知识块…" autofocus
-                   onkeydown="if(event.key==='Enter')SearchPage.doSearch()">
-          </div>
-          <button class="btn btn-primary" onclick="SearchPage.doSearch()">搜索</button>
+      <!-- 搜索筛选工具栏 -->
+      <div class="doc-toolbar kb-filter-bar search-filter-bar">
+        <div class="search-input-wrap">
+          <span class="search-input-icon">⌕</span>
+          <input class="input kb-toolbar-search" type="text" id="searchInput" placeholder="输入问题，检索最相关的知识块…" autofocus
+                 onkeydown="if(event.key==='Enter')SearchPage.doSearch()">
         </div>
-
-        <div class="search-filters kb-filter-bar">
-          <select id="searchCategory" class="select select-sm">
-            <option value="">全部分类</option>
-            ${(filterOptions.categories || []).map(c => `<option value="${UI.escapeHtml(c.value)}">${UI.escapeHtml(c.value)} (${c.count || 0})</option>`).join('')}
-          </select>
-          <select id="searchKnowledgeType" class="select select-sm">
-            <option value="">全部类型</option>
-            ${(filterOptions.knowledge_types || []).map(k => `<option value="${UI.escapeHtml(k.value)}">${UI.escapeHtml(UI.ktypeLabel(k.value))} (${k.count || 0})</option>`).join('')}
-          </select>
-          <select id="searchTopK" class="select select-sm" data-current-value="3" onchange="SearchPage.handleTopKChange('searchTopK')">
-            <option value="3" selected>Top 3</option>
-            <option value="5">Top 5</option>
-            <option value="10">Top 10</option>
-            <option value="20">Top 20</option>
-            <option value="__custom__">自定义...</option>
-          </select>
-        </div>
+        <button class="btn btn-primary" onclick="SearchPage.doSearch()">搜索</button>
+        <select id="searchCategory" class="select select-sm" onchange="SearchPage.doSearch()">
+          <option value="">全部文档分类</option>
+          ${(filterOptions.categories || []).map(c => `<option value="${UI.escapeHtml(c.value)}">${UI.escapeHtml(c.value)}</option>`).join('')}
+        </select>
+        <select id="searchKnowledgeType" class="select select-sm" onchange="SearchPage.doSearch()">
+          <option value="">全部类型</option>
+          ${(filterOptions.knowledge_types || []).map(k => `<option value="${UI.escapeHtml(k.value)}">${UI.escapeHtml(UI.ktypeLabel(k.value))}</option>`).join('')}
+        </select>
+        <select id="searchTopK" class="select select-sm" data-current-value="3" onchange="SearchPage.handleTopKChange('searchTopK')">
+          <option value="3" selected>Top 3</option>
+          <option value="5">Top 5</option>
+          <option value="8">Top 8</option>
+          <option value="__custom__">自定义...</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" onclick="SearchPage.resetFilters()">清除筛选</button>
+        <span class="doc-count" id="searchCountText"></span>
       </div>
 
       <!-- 搜索结果 -->
-      <div id="searchResults" style="margin-top: var(--space-6);">
+      <div id="searchResults" style="margin-top: var(--space-4);">
         <div class="empty-state">
           <div class="empty-state-icon">⌕</div>
           <div class="empty-state-title">输入查询开始搜索</div>
-          <div class="empty-state-desc">支持自然语言问题，系统将自动改写查询并执行混合检索</div>
+          <div class="empty-state-desc">支持自然语言问题，系统将自动改写查询并执行混合检索（向量 + BM25 + Rerank）</div>
         </div>
       </div>
     `);
@@ -106,10 +107,39 @@ const SearchPage = (() => {
     return filters;
   }
 
+  /* -----------------------------------------------------------------------
+     清除筛选 — 清空分类、类型，保留搜索词和 TopK
+     ----------------------------------------------------------------------- */
+  function resetFilters() {
+    const category = document.getElementById('searchCategory');
+    const type = document.getElementById('searchKnowledgeType');
+    if (category) category.value = '';
+    if (type) type.value = '';
+    // 不修改搜索词和 TopK
+    // 如果搜索框中有内容则重新搜索
+    const query = document.getElementById('searchInput')?.value?.trim();
+    if (query) {
+      doSearch();
+    } else {
+      document.getElementById('searchResults').innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state-icon">⌕</div>
+          <div class="empty-state-title">输入查询开始搜索</div>
+          <div class="empty-state-desc">支持自然语言问题，系统将自动改写查询并执行混合检索（向量 + BM25 + Rerank）</div>
+        </div>`;
+      const countEl = document.getElementById('searchCountText');
+      if (countEl) countEl.textContent = '';
+    }
+  }
+
   function renderResults(data, query) {
     const results = data.results || [];
     const total = data.total_count || results.length;
     const rewritten = data.rewritten_query || '';
+
+    // 更新工具栏计数
+    const countEl = document.getElementById('searchCountText');
+    if (countEl) countEl.textContent = `共 ${total} 条结果`;
 
     if (results.length === 0) {
       document.getElementById('searchResults').innerHTML = `
@@ -121,21 +151,32 @@ const SearchPage = (() => {
       return;
     }
 
-    const itemsHtml = results.map((item, i) => `
+    const itemsHtml = results.map((item, i) => {
+      const sc = item.score_components || {};
+      const rerankLabel = sc.rerank != null ? sc.rerank.toFixed(4) : '—';
+      const rerankCls = sc.rerank != null ? '' : 'score-na';
+      return `
       <div class="result-card" onclick="SearchPage.showResultDetail('${item.chunk_id}')">
         <div class="result-card-header">
           <span class="result-card-title">#${i + 1} ${UI.escapeHtml(item.title || '未命名知识块')}</span>
-          <span class="result-card-score">${(item.score || 0).toFixed(4)}</span>
+          <span class="result-card-score" title="Vec ${sc.vector?.toFixed(4) || '0'} / BM25 ${sc.bm25?.toFixed(4) || '0'} / RRF ${sc.rrf?.toFixed(4) || '0'} / LLM ${rerankLabel}">
+            ${(item.score || 0).toFixed(4)}
+            <span class="score-detail">
+              <span>Vec  ${sc.vector?.toFixed(4) || '0.0000'}</span>
+              <span>BM25 ${sc.bm25?.toFixed(4) || '0.0000'}</span>
+              <span>RRF  ${sc.rrf?.toFixed(4) || '0.0000'}</span>
+              <span class="${rerankCls}">LLM  ${rerankLabel}</span>
+            </span>
+          </span>
         </div>
         <div class="result-card-content">${UI.escapeHtml((item.content || '').substring(0, 250))}${item.content?.length > 250 ? '…' : ''}</div>
-        ${item.highlight ? `<div style="font-size: var(--text-xs); color: var(--celadon-deep); margin-top: var(--space-2);">🔍 ${UI.escapeHtml(item.highlight)}</div>` : ''}
         <div class="result-card-meta">
           ${UI.ktypeBadge(item.knowledge_type)}
           <span class="tag">${UI.escapeHtml(item.category || '')}</span>
-          ${item.doc_title ? `<span class="tag">来源：${UI.escapeHtml(item.doc_title)}</span>` : ''}
+          ${item.doc_title ? `<span class="tag">来源文档：${UI.escapeHtml(item.doc_title)}</span>` : ''}
         </div>
       </div>
-    `).join('');
+    `}).join('');
 
     document.getElementById('searchResults').innerHTML = `
       <div class="search-stats">
@@ -533,7 +574,7 @@ const SearchPage = (() => {
     const select = document.getElementById(selectId);
     const raw = select?.value === '__custom__' ? select.dataset.currentValue : select?.value;
     const value = parseInt(raw || `${fallback}`, 10);
-    return Number.isFinite(value) ? Math.min(100, Math.max(1, value)) : fallback;
+    return Number.isFinite(value) ? Math.min(15, Math.max(1, value)) : fallback;
   }
 
   function handleTopKChange(selectId) {
@@ -556,11 +597,11 @@ const SearchPage = (() => {
         <div class="form-stack">
           <div>
             <label class="field-label">检索数量 <span>*</span></label>
-            <input id="customTopKInput" class="input input-number" type="number" min="1" max="100" step="1"
+            <input id="customTopKInput" class="input input-number" type="number" min="1" max="15" step="1"
                    value="" placeholder="请输入检索数量" style="width: 100%; text-align: left;"
                    onkeydown="if(event.key==='Enter')SearchPage.confirmCustomTopK();if(event.key==='Escape')SearchPage.cancelCustomTopK();">
-            <div class="field-help">请输入 1 到 100 之间的整数。</div>
-            <div id="customTopKError" class="field-warning is-hidden">请输入 1 到 100 之间的整数。</div>
+            <div class="field-help">请输入 1 到 15 之间的整数。</div>
+            <div id="customTopKError" class="field-warning is-hidden">请输入 1 到 15 之间的整数。</div>
           </div>
         </div>
       `,
@@ -583,7 +624,7 @@ const SearchPage = (() => {
     const input = document.getElementById('customTopKInput');
     const error = document.getElementById('customTopKError');
     const value = parseInt(input?.value || '', 10);
-    if (!Number.isFinite(value) || value < 1 || value > 100) {
+    if (!Number.isFinite(value) || value < 1 || value > 15) {
       if (error) error.classList.remove('is-hidden');
       input?.focus();
       return;
@@ -621,7 +662,7 @@ const SearchPage = (() => {
   }
 
   return {
-    render, doSearch, showResultDetail, renderDebug, doDebugSearch,
-    handleTopKChange, cancelCustomTopK, confirmCustomTopK,
+    render, doSearch, showResultDetail,
+    handleTopKChange, cancelCustomTopK, confirmCustomTopK, resetFilters,
   };
 })();

@@ -60,16 +60,40 @@ class IngestionPipeline:
         self._element_repo = element_repo
         self._minio_store = asset_store if isinstance(asset_store, MinioAssetStore) else None
 
+    def _cleanup_old_chunks(self, doc_id: str) -> None:
+        """重入库前清理旧知识块：PG 硬删除 + Milvus 真删。"""
+        if not self._chunk_store or not hasattr(self._chunk_store, "list_by_doc_id"):
+            return
+        old_chunks = self._chunk_store.list_by_doc_id(doc_id)
+        if not old_chunks:
+            return
+        for c in old_chunks:
+            try:
+                self._chunk_store.hard_delete(c.chunk_id)
+                self._vector_index.delete(c.chunk_id)
+            except Exception:
+                logger.exception("清理旧知识块失败: %s", c.chunk_id)
+
     def ingest(
         self,
         doc: Document,
         raw_content: str = "",
         options: dict[str, Any] | None = None,
     ) -> Document:
-        """同步执行文档入库，返回更新后的 Document（status=active 或 failed）。"""
+        """同步执行文档入库，返回更新后的 Document（status=active 或 failed）。
+
+        重入库场景：先清理旧知识块（PG 软删除 + Milvus 真删），再走完整流水线。
+        """
         try:
             doc.status = DocStatus.processing
             doc.updated_at = datetime.now(timezone.utc)
+
+            # ── 清除删除前状态标记（恢复流程写入，重入库后失效） ──
+            if doc.metadata and "previous_status" in doc.metadata:
+                del doc.metadata["previous_status"]
+
+            # ── 重入库前清理旧知识块（PG + Milvus + BM25） ──
+            self._cleanup_old_chunks(doc.doc_id)
 
             self._run_create(doc, raw_content, options or {})
 

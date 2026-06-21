@@ -1,3 +1,4 @@
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -6,6 +7,8 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.core.models import (
+    KnowledgeChunk,
+    KnowledgeType,
     ScoreComponents,
     SearchResult,
     SearchResultItem,
@@ -38,6 +41,16 @@ from llm.reranker import Reranker
 from llm.volcengine_client import embedding_client
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_json_field(raw: Any, default: Any = None) -> Any:
+    """解析 Milvus VARCHAR 存储的 JSON 字符串字段。"""
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return default
+    return raw if raw is not None else default
 
 
 def _renderable_storage_uri(storage_uri: str | None) -> str | None:
@@ -112,9 +125,9 @@ class RetrievalPipeline:
                 debug_info.errors.append(err_msg)
             query_vec = None
 
-        # 3. 并行双路检索
-        vec_results: list[tuple[str, float]] = []
-        bm25_results: list[tuple[str, float]] = []
+        # 3. 并行双路检索（返回 (chunk_id, score, fields) — Milvus 全量标量字段）
+        vec_results: list[tuple[str, float, dict]] = []
+        bm25_results: list[tuple[str, float, dict]] = []
 
         def _search_vector():
             if query_vec is None:
@@ -155,25 +168,33 @@ class RetrievalPipeline:
                     if debug and debug_info:
                         debug_info.errors.append(err_msg)
 
-        # 记录召回结果
+        # 从 Milvus 返回字段构建 chunk 数据（无需查 PG）
+        fields_map: dict[str, dict] = {}
+        for cid, score, fields in vec_results + bm25_results:
+            fields_map[cid] = fields
+
+        # 记录召回结果（debug 用）
         if debug and debug_info:
-            debug_info.vector_candidates = vec_results
-            debug_info.bm25_candidates = bm25_results
+            debug_info.vector_candidates = [(c, s) for c, s, _ in vec_results]
+            debug_info.bm25_candidates = [(c, s) for c, s, _ in bm25_results]
             debug_info.vector_count = len(vec_results)
             debug_info.bm25_count = len(bm25_results)
 
-        # 4. 外部 RRF 融合（唯一路径）
+        # 4. RRF 融合
         if not vec_results and not bm25_results:
             result = SearchResult(query=query, rewritten_query=rewritten)
             if debug and debug_info:
                 return result, debug_info
             return result
 
-        fused = rrf_fusion(vec_results, bm25_results, k=cfg.rrf_k)
+        fused = rrf_fusion(
+            [(c, s) for c, s, _ in vec_results],
+            [(c, s) for c, s, _ in bm25_results],
+            k=cfg.rrf_k,
+        )
         sorted_fused = sorted(fused.items(), key=lambda x: x[1], reverse=True)
         top_fused = sorted_fused[: cfg.fusion_top_k]
 
-        # 记录融合结果
         if debug and debug_info:
             debug_info.fused_candidates = top_fused
             debug_info.fused_count = len(top_fused)
@@ -184,77 +205,68 @@ class RetrievalPipeline:
                 return result, debug_info
             return result
 
-        # 5. Get chunk objects from PG
+        # 5. LLM Rerank（用 Milvus 字段构建轻量 chunk 对象）
         top_chunk_ids = [cid for cid, _ in top_fused]
-        candidates = self._chunk_store.get_batch(top_chunk_ids)
-
-        # 6. LLM Rerank
+        candidates = [
+            KnowledgeChunk(
+                chunk_id=cid,
+                doc_id=fields_map.get(cid, {}).get("doc_id", ""),
+                title=fields_map.get(cid, {}).get("title", ""),
+                content=fields_map.get(cid, {}).get("content", ""),
+                knowledge_type=KnowledgeType(fields_map.get(cid, {}).get("knowledge_type", "declarative")),
+                category=fields_map.get(cid, {}).get("category", "通用"),
+            )
+            for cid in top_chunk_ids if cid in fields_map
+        ]
         reranked = self._reranker.rerank(query, candidates)
 
-        # 记录 Rerank 结果
         if debug and debug_info:
             debug_info.rerank_results = reranked
             debug_info.rerank_count = len(reranked)
 
-        # 7. Build result items
+        # Rerank 全部成功才用 LLM 分排序，否则统一回退 RRF 分（避免不同量纲混排）
+        all_reranked = all("relevance_score" in r for r in reranked) if reranked else False
+
+        # 6. 构建结果（直接用 Milvus 字段，不查 PG）
         items: list[SearchResultItem] = []
         score_map: dict[str, float] = dict(top_fused)
-        vec_map = {cid: score for cid, score in vec_results}
-        bm25_map = {cid: score for cid, score in bm25_results}
+        vec_map = {c: s for c, s, _ in vec_results}
+        bm25_map = {c: s for c, s, _ in bm25_results}
 
-        # Follow reranked order
-        for rank_entry in reranked[:final_k]:
+        # 排序：Rerank 全成功按 LLM 分降序，否则按 RRF 分降序
+        sorted_items = sorted(
+            reranked,
+            key=lambda r: r.get("relevance_score", score_map.get(r["chunk_id"], 0.0)) if all_reranked
+                     else score_map.get(r["chunk_id"], 0.0),
+            reverse=True,
+        )
+
+        for rank_entry in sorted_items[:final_k]:
             cid = rank_entry["chunk_id"]
-            chunk = self._chunk_store.get(cid)
-            if not chunk:
+            fields = fields_map.get(cid)
+            if not fields:
                 continue
 
-            # Resolve asset refs for SearchResult (add storage_uri)
-            resolved_assets: list[dict[str, Any]] = []
-            for ref in chunk.asset_refs:
-                asset = self._asset_store.get(ref.asset_id) if self._asset_store else None
-                storage_uri = _renderable_storage_uri(asset.storage_uri if asset else None)
-                if (
-                    storage_uri
-                    and storage_uri.startswith("minio://")
-                    and self._asset_store
-                    and hasattr(self._asset_store, "presign_uri")
-                ):
-                    storage_uri = self._asset_store.presign_uri(storage_uri)
-                resolved_assets.append(
-                    {
-                        "asset_id": ref.asset_id,
-                        "relation": ref.relation.value,
-                        "storage_uri": storage_uri,
-                        "original_uri": asset.original_uri if asset else None,
-                        "linked_text": ref.linked_text or "",
-                        "caption": ref.caption or "",
-                        "render": {
-                            "mode": ref.render.mode,
-                            "position": ref.render.position,
-                        },
-                    }
-                )
+            # Milvus VARCHAR 字段需解析 JSON
+            src_refs = _parse_json_field(fields.get("source_refs"), [])
+            meta = _parse_json_field(fields.get("metadata"), {})
 
             items.append(
                 SearchResultItem(
-                    chunk_id=chunk.chunk_id,
-                    title=chunk.title,
-                    content=chunk.content,
-                    score=rank_entry.get("relevance_score", score_map.get(cid, 0.0)),
-                    category=chunk.category,
-                    knowledge_type=chunk.knowledge_type,
+                    chunk_id=cid,
+                    title=fields.get("title", ""),
+                    content=fields.get("content", ""),
+                    score=rank_entry.get("relevance_score") if all_reranked else score_map.get(cid, 0.0),
+                    category=fields.get("category", "通用"),
+                    knowledge_type=KnowledgeType(fields.get("knowledge_type", "declarative")),
                     score_components=ScoreComponents(
                         vector=vec_map.get(cid, 0.0),
                         bm25=bm25_map.get(cid, 0.0),
                         rrf=score_map.get(cid, 0.0),
-                        rerank=rank_entry.get("relevance_score", 0.0),
+                        rerank=rank_entry.get("relevance_score"),
                     ),
-                    asset_refs=resolved_assets,
-                    source_refs=chunk.source_refs,
-                    metadata={
-                        "title_path": chunk.metadata.get("title_path", []),
-                    },
+                    source_refs=src_refs,
+                    metadata=meta,
                 )
             )
 

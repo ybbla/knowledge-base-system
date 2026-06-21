@@ -40,12 +40,6 @@ const App = (() => {
       await Chunks.render();
     });
 
-    // 检索调试
-    Router.on('/search-debug', async () => {
-      UI.renderSidebar('/search-debug');
-      await SearchPage.renderDebug();
-    });
-
     // 系统状态已集成到仪表盘中，不再作为独立页面
   }
 

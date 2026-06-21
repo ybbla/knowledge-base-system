@@ -22,6 +22,13 @@ const Documents = (() => {
     // 先渲染骨架结构，避免抖动
     renderSkeleton();
 
+    // 从 URL hash 参数读取状态筛选（如 /#/documents?status=failed）
+    const query = Router.getQuery();
+    if (query.status && ['active', 'failed', 'processing', 'deleted'].includes(query.status)) {
+      currentTab = query.status;
+      currentStatus = query.status;
+    }
+
     // 动态加载分类选项
     try {
       const res = await API.searchFilters();
@@ -162,7 +169,7 @@ const Documents = (() => {
           <td>
             <div class="doc-title-cell">
               ${UI.fmtBadge(doc.source_type)}
-              <span class="doc-title-text">${UI.escapeHtml(doc.title || '未命名文档')}</span>
+              <span class="doc-title-link" onclick="Documents.showDocDetail('${doc.doc_id}')">${UI.escapeHtml(doc.title || '未命名文档')}</span>
             </div>
           </td>
           <td>${UI.escapeHtml(doc.category || '通用')}</td>
@@ -170,12 +177,12 @@ const Documents = (() => {
           <td>${UI.formatTime(doc.created_at)}</td>
           <td>${UI.formatTime(doc.updated_at) || UI.formatTime(doc.created_at)}</td>
           <td class="actions-cell">
-            <button class="btn btn-sm btn-ghost doc-action-btn" onclick="Documents.showDocDetail('${doc.doc_id}')" title="查看详情">
-              <span class="action-icon">👁</span>详情
-            </button>
             ${currentTab === 'deleted'
               ? `<button class="btn btn-sm btn-success doc-action-btn" onclick="Documents.restoreDoc('${doc.doc_id}')" title="恢复文档">
                    <span class="action-icon">↶</span>恢复
+                 </button>
+                 <button class="btn btn-sm btn-outline doc-action-btn" onclick="Documents.showEditDialog('${doc.doc_id}')" title="编辑文档">
+                   <span class="action-icon">✎</span>编辑
                  </button>`
               : currentTab === 'failed'
               ? `
@@ -190,8 +197,8 @@ const Documents = (() => {
                 </button>`
               : currentTab === 'processing'
               ? `
-                <button class="btn btn-sm btn-outline doc-action-btn" onclick="Documents.showEditDialog('${doc.doc_id}')" title="编辑文档">
-                  <span class="action-icon">✎</span>编辑
+                <button class="btn btn-sm btn-danger doc-action-btn" onclick="Documents.deleteDoc('${doc.doc_id}')" title="删除文档">
+                  <span class="action-icon">🗑</span>删除
                 </button>`
               : `
                 <button class="btn btn-sm btn-outline doc-action-btn" onclick="Documents.showEditDialog('${doc.doc_id}')" title="编辑文档">
@@ -337,7 +344,7 @@ const Documents = (() => {
               <button class="btn btn-outline btn-sm" onclick="Documents.batchDelete()" id="batchDeleteDocBtn" disabled>批量删除</button>
             ` : currentTab === 'deleted' ? `
               <button class="btn btn-outline btn-sm" onclick="Documents.batchRestore()" id="batchDeleteDocBtn" disabled>批量恢复</button>
-            ` : currentTab === 'active' ? `
+            ` : (currentTab === 'active' || currentTab === 'processing') ? `
               <button class="btn btn-outline btn-sm" onclick="Documents.batchDelete()" id="batchDeleteDocBtn" disabled>批量删除</button>
             ` : ''}
             <button class="btn btn-primary" onclick="Documents.showUploadModal()">↑ 上传文档</button>
@@ -363,8 +370,8 @@ const Documents = (() => {
         </select>
         <select class="select select-sm" id="docSortFilter" onchange="Documents.doSearch()">
           <option value="updated_at:desc" ${currentSort === 'updated_at:desc' ? 'selected' : ''}>更新时间</option>
-          <option value="title:asc" ${currentSort === 'title:asc' ? 'selected' : ''}>标题 A-Z</option>
           <option value="created_at:desc" ${currentSort === 'created_at:desc' ? 'selected' : ''}>创建时间</option>
+          <option value="title:asc" ${currentSort === 'title:asc' ? 'selected' : ''}>标题 A-Z</option>
         </select>
         <button class="btn btn-ghost btn-sm" onclick="Documents.resetFilters()" ${hasFilters ? '' : 'disabled'}>清空筛选</button>
         <span class="doc-count">${errorMessage ? '' : `共 ${total} 篇文档`}</span>
@@ -615,16 +622,12 @@ const Documents = (() => {
   }
 
   async function retryDoc(docId, docTitle) {
-    // fire-and-forget：立即显示弹条，后台重试
-    showProcessingToast([{ title: docTitle || '文档' }]);
-    currentTab = 'failed';
-    currentStatus = 'failed';
-    loadPage(currentPage);
     try {
-      await API.retryDocument(docId);
-      UI.toast('已重新入库', 'success');
-      loadPage(currentPage);
       showProcessingToast([{ title: docTitle || '文档', docId }]);
+      await API.retryDocument(docId);
+      currentTab = 'failed';
+      currentStatus = 'failed';
+      loadPage(currentPage);
     } catch (e) {
       UI.toast(`重试失败: ${e.message}`, 'error');
     }
@@ -741,7 +744,7 @@ const Documents = (() => {
             </div>
             <div>
               <label class="field-label">分类</label>
-              <select class="select" id="editDocCategorySelect" onchange="Documents.onEditCategorySelect()" style="width: 100%;">
+              <select class="select" id="editDocCategorySelect" onfocus="Documents.onEditCategoryFocus()" onchange="Documents.onEditCategorySelect()" style="width: 100%;">
                 ${catOptions}
                 <option value="__custom__">✚ 新增分类…</option>
               </select>
@@ -758,13 +761,19 @@ const Documents = (() => {
     }
   }
 
+  let _editCatPrev = '';
+
+  function onEditCategoryFocus() {
+    const select = document.getElementById('editDocCategorySelect');
+    if (select && select.value !== '__custom__') {
+      _editCatPrev = select.value;
+    }
+  }
+
   function onEditCategorySelect() {
     const select = document.getElementById('editDocCategorySelect');
-    if (!select) return;
-    if (select.value === '__custom__') {
-      showNewCategoryDialog('edit');
-      select.value = ''; // 重置，避免再次触发
-    }
+    if (!select || select.value !== '__custom__') return;
+    showNewCategoryDialog('edit');
   }
 
   function showNewCategoryDialog(mode) {
@@ -779,11 +788,19 @@ const Documents = (() => {
         </div>
       `,
       `
-        <button class="btn btn-secondary" onclick="this.closest('.modal-backdrop').remove()">取消</button>
+        <button class="btn btn-secondary" onclick="Documents.cancelNewCategory('${mode}')">取消</button>
         <button class="btn btn-primary" onclick="Documents.confirmNewCategory('${mode}')">确认添加</button>
       `
     );
     setTimeout(() => document.getElementById('newCategoryInput')?.focus(), 100);
+  }
+
+  function cancelNewCategory(mode) {
+    if (mode === 'edit') {
+      const select = document.getElementById('editDocCategorySelect');
+      if (select && _editCatPrev) select.value = _editCatPrev;
+    }
+    document.querySelector('.modal-backdrop:last-child')?.remove();
   }
 
   function confirmNewCategory(mode) {
@@ -1260,5 +1277,5 @@ const Documents = (() => {
     return map[ext] || 'unknown';
   }
 
-  return { renderList, showUploadModal, closeUploadModal, onCategorySelect, onEditCategorySelect, showNewCategoryDialog, confirmNewCategory, doSearch, switchTab, resetFilters, loadPage, deleteDoc, restoreDoc, retryDoc, batchRetry, batchRestore, showEditDialog, saveEdit, toggleSelectAll, toggleSelect, batchDelete, selectFile, clearFile, removeSelectedFile, doUpload, showUpdateModal, selectUpdateFile, clearUpdateFile, doUpdateUpload, confirmReplace, uploadAsNew, showDocDetail };
+  return { renderList, showUploadModal, closeUploadModal, onCategorySelect, onEditCategoryFocus, onEditCategorySelect, showNewCategoryDialog, cancelNewCategory, confirmNewCategory, doSearch, switchTab, resetFilters, loadPage, deleteDoc, restoreDoc, retryDoc, batchRetry, batchRestore, showEditDialog, saveEdit, toggleSelectAll, toggleSelect, batchDelete, selectFile, clearFile, removeSelectedFile, doUpload, showUpdateModal, selectUpdateFile, clearUpdateFile, doUpdateUpload, confirmReplace, uploadAsNew, showDocDetail };
 })();

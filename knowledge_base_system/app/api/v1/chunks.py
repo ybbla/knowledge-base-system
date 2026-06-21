@@ -225,9 +225,15 @@ async def create_chunk(
                 status.HTTP_409_CONFLICT,
             )
 
-    # 持久化
+    # 持久化 PG
     if hasattr(chunk_store, "put"):
         chunk_store.put(chunk)
+
+    # 写入 Milvus（embedding → dense_vector + BM25 自动生成 sparse_vector）
+    try:
+        reindex_chunk(chunk, vector_index, bm25_index, embedding_client)
+    except Exception:
+        logger.exception("新建知识块索引写入失败: %s", chunk.chunk_id)
 
     if document_repo is not None and hasattr(document_repo, "touch_updated_at"):
         try:

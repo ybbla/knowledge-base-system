@@ -1,9 +1,19 @@
 /* ==========================================================================
-   仪表盘组件 — 系统概览、统计数据、状态面板（已迁移至 v1 API）
+   仪表盘组件 — 系统概览、统计数据、服务状态面板
+
+   数据来源（全部通过 v1 API）：
+     - GET /api/v1/health         → 整体状态 + 外部依赖详情
+     - GET /api/v1/documents      → 文档总数、失败/处理中文档数
+     - GET /api/v1/chunks         → 知识块总数
    ========================================================================== */
 
 const Dashboard = (() => {
 
+  /**
+   * 将后端依赖状态码转为中文展示文本
+   * @param {string} status - ok | error | not_configured
+   * @returns {string} 正常 | 异常 | 未配置
+   */
   function _formatStatus(status) {
     if (status === 'ok') return '正常';
     if (status === 'error') return '异常';
@@ -11,54 +21,60 @@ const Dashboard = (() => {
     return status || '—';
   }
 
+  /**
+   * 将后端依赖状态码转为 CSS 类名
+   * @param {string} status - ok | error
+   * @returns {string} is-ok | is-error | ''
+   */
   function _getStatusClass(status) {
     if (status === 'ok') return 'is-ok';
     if (status === 'error') return 'is-error';
     return '';
   }
 
+  /** 渲染仪表盘页面 */
   async function render() {
     UI.setBreadcrumb([{ label: '仪表盘' }]);
 
-    // 使用 v1 健康检查和依赖状态
+    // ── 第一步：获取系统健康状态 ──
     let healthOk = false;
+    let apiOnline = false;   // API 服务自身是否可达（请求成功即为在线）
     let depStatuses = {};
-    let failedDocCount = 0;
 
     try {
       const res = await API.health();
-      healthOk = res?.data?.status === 'ok';
+      apiOnline = true;                          // 请求成功 → API 服务在线
+      healthOk = res?.data?.status === 'ok';     // 全部依赖 ok 才为 true
       depStatuses = res?.data?.dependencies || {};
-    } catch (e) { /* offline */ }
+    } catch (e) { /* apiOnline 保持 false → 前端显示"离线" */ }
 
-    // 获取文档统计
+    // ── 第二步：获取文档和知识块统计数据（并行请求） ──
     let docCount = 0;
     let chunkCount = 0;
-    try {
-      const docsRes = await API.listDocuments({ page: 1, page_size: 1 });
-      docCount = docsRes?.meta?.total || 0;
-    } catch (e) { /* ignore */ }
-
-    try {
-      const chunksRes = await API.listChunks({ page: 1, page_size: 1 });
-      chunkCount = chunksRes?.meta?.total || 0;
-    } catch (e) { /* ignore */ }
-
-    try {
-      const [failedDocsRes] = await Promise.all([
-        API.listDocuments({ page: 1, page_size: 1, status: 'failed' }),
-      ]);
-      failedDocCount = failedDocsRes?.meta?.total || 0;
-    } catch (e) { /* ignore */ }
-
-    // 获取处理中文档统计
+    let failedDocCount = 0;
     let processingDocCount = 0;
-    try {
-      const processingRes = await API.listDocuments({ page: 1, page_size: 1, status: 'processing' });
-      processingDocCount = processingRes?.meta?.total || 0;
-    } catch (e) { /* ignore */ }
 
-    // 只显示外部服务
+    try {
+      // 文档总数 + 知识块总数
+      const [docsRes, chunksRes] = await Promise.all([
+        API.listDocuments({ page: 1, page_size: 1 }),
+        API.listChunks({ page: 1, page_size: 1 }),
+      ]);
+      docCount = docsRes?.meta?.total || 0;
+      chunkCount = chunksRes?.meta?.total || 0;
+    } catch (e) { /* 统计数据获取失败使用默认值 0 */ }
+
+    try {
+      // 失败 + 处理中文档数（并行请求）
+      const [failedRes, processingRes] = await Promise.all([
+        API.listDocuments({ page: 1, page_size: 1, status: 'failed' }),
+        API.listDocuments({ page: 1, page_size: 1, status: 'processing' }),
+      ]);
+      failedDocCount = failedRes?.meta?.total || 0;
+      processingDocCount = processingRes?.meta?.total || 0;
+    } catch (e) { /* 统计数据获取失败使用默认值 0 */ }
+
+    // ── 第三步：组装外部依赖列表（按固定顺序） ──
     const externalDeps = [
       depStatuses.postgresql,
       depStatuses.milvus,
@@ -66,6 +82,7 @@ const Dashboard = (() => {
       depStatuses.llm
     ].filter(Boolean);
 
+    // ── 第四步：渲染页面 ──
     UI.render(`
       <div class="page-header">
         <h1 class="page-title">知识库概览</h1>
@@ -104,8 +121,8 @@ const Dashboard = (() => {
             <div class="status-section">
               <div class="status-item status-item-main">
                 <span class="status-item-label">API 服务</span>
-                <span class="status-item-value ${healthOk ? 'is-ok' : 'is-error'}">
-                  ${healthOk ? '在线' : '离线'}
+                <span class="status-item-value ${apiOnline ? 'is-ok' : 'is-error'}">
+                  ${apiOnline ? '在线' : '离线'}
                 </span>
               </div>
             </div>
@@ -147,11 +164,11 @@ const Dashboard = (() => {
           </div>
         </div>
         <div class="action-list">
-          <button class="action-row" onclick="App.router.navigate('/documents')">
+          <button class="action-row" onclick="App.router.navigate('/documents?status=failed')">
             <span>失败文档</span>
             <strong>${failedDocCount}</strong>
           </button>
-          <button class="action-row" onclick="App.router.navigate('/documents')">
+          <button class="action-row" onclick="App.router.navigate('/documents?status=processing')">
             <span>处理中文档</span>
             <strong>${processingDocCount}</strong>
           </button>

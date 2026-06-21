@@ -109,7 +109,8 @@ class SourceRef(BaseModel):
 class ScoreComponents(BaseModel):
     vector: float = 0.0
     bm25: float = 0.0
-    rerank: float = 0.0
+    rrf: float = 0.0
+    rerank: float | None = None  # None 表示 LLM Rerank 未执行或失败
 
 
 # ── top-level models ───────────────────────────────────────────────
@@ -175,6 +176,8 @@ class KnowledgeChunk(BaseModel):
     status: ChunkStatus = ChunkStatus.active
     asset_refs: list[AssetRef] = Field(default_factory=list)
     source_refs: list[SourceRef] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")

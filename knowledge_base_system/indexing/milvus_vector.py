@@ -279,13 +279,20 @@ class MilvusVectorIndex(VectorIndex):
         """批量更新 Milvus 中标量字段。"""
         self._manager.upsert_fields_batch(items)
 
+    # Milvus 检索返回的完整标量字段（跳过 PG 查询）
+    _SEARCH_OUTPUT_FIELDS = [
+        "chunk_id", "doc_id", "title", "content", "category",
+        "knowledge_type", "status", "source_refs", "asset_refs",
+        "metadata", "created_at", "updated_at",
+    ]
+
     def search(
         self,
         query_vector: list[float],
         top_k: int,
         category: str | None = None,
         knowledge_type: str | None = None,
-    ) -> list[tuple[str, float]]:
+    ) -> list[tuple[str, float, dict]]:
         self._manager.ensure_collection()
         collection = self._manager.collection
         if collection is None:
@@ -304,8 +311,11 @@ class MilvusVectorIndex(VectorIndex):
             param={"metric_type": "COSINE", "params": {"ef": settings.milvus_hnsw_ef}},
             limit=top_k,
             expr=expr,
-            output_fields=["chunk_id"],
+            output_fields=self._SEARCH_OUTPUT_FIELDS,
         )
         if not results:
             return []
-        return [(hit.entity.get("chunk_id"), float(hit.score)) for hit in results[0]]
+        return [
+            (hit.entity.get("chunk_id"), float(hit.score), dict(hit.entity.fields))
+            for hit in results[0]
+        ]

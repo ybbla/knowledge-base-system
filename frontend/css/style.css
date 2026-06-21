@@ -1536,11 +1536,72 @@ tr.empty-row:hover td {
 }
 
 .chunk-filter-bar {
-  grid-template-columns: minmax(240px, 1.5fr) repeat(3, minmax(132px, 1fr));
+  grid-template-columns: minmax(280px, 2fr) minmax(110px, 1fr) minmax(100px, 1fr) minmax(110px, auto) auto minmax(max-content, auto);
 }
 
 .chunk-filter-bar .doc-count {
   justify-self: center;
+}
+
+/* 搜索筛选工具栏 — 对齐 documents/chunks 的 kb-filter-bar 网格风格 */
+.search-filter-bar {
+  grid-template-columns: minmax(260px, 2fr) auto minmax(126px, 1fr) minmax(100px, 1fr) minmax(94px, auto) auto minmax(max-content, auto) !important;
+}
+
+.search-filter-bar .search-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-filter-bar .search-input-wrap .kb-toolbar-search {
+  width: 100%;
+  padding-left: var(--space-10);
+}
+
+.search-filter-bar .search-input-icon {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 1.1rem;
+  color: var(--ink-wash-light);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.search-filter-bar .doc-count {
+  justify-self: center;
+}
+
+.search-filter-bar .btn-primary {
+  padding-left: var(--space-6);
+  padding-right: var(--space-6);
+}
+
+/* 搜索框 + 搜索模式切换 组合控件 */
+.chunk-search-box {
+  display: flex;
+  gap: 0;
+  align-items: stretch;
+}
+
+.chunk-search-box .kb-toolbar-search {
+  flex: 1;
+  min-width: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.chunk-search-box .chunk-search-mode {
+  flex-shrink: 0;
+  width: 74px;
+  padding-left: 6px;
+  padding-right: 4px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: none;
+  font-size: var(--text-xs);
 }
 
 .ingestion-filter-bar {
@@ -1550,19 +1611,22 @@ tr.empty-row:hover td {
 @media (min-width: 769px) and (max-width: 1320px) {
   .document-filter-bar,
   .chunk-filter-bar,
-  .ingestion-filter-bar {
+  .ingestion-filter-bar,
+  .search-filter-bar {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .document-filter-bar .kb-toolbar-search,
-  .chunk-filter-bar .kb-toolbar-search,
-  .ingestion-filter-bar .kb-toolbar-search {
+  .chunk-filter-bar .chunk-search-box,
+  .ingestion-filter-bar .kb-toolbar-search,
+  .search-filter-bar .kb-toolbar-search {
     grid-column: span 3;
   }
 
   .document-filter-bar .doc-count,
   .chunk-filter-bar .doc-count,
-  .ingestion-filter-bar .doc-count {
+  .ingestion-filter-bar .doc-count,
+  .search-filter-bar .doc-count {
     justify-self: start;
   }
 }
@@ -2284,6 +2348,35 @@ tr.empty-row:hover td {
   padding: 2px 8px;
   border-radius: var(--radius-sm);
   white-space: nowrap;
+  position: relative;
+  cursor: help;
+}
+
+.result-card-score .score-detail {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--ink-deep);
+  color: var(--ink-inverse);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  z-index: 10;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.result-card-score:hover .score-detail {
+  display: flex;
+}
+
+.result-card-score .score-na {
+  color: var(--ink-fade);
+  font-style: italic;
 }
 
 .result-card-content {
@@ -2754,6 +2847,59 @@ tr.empty-row:hover td {
   margin-bottom: var(--space-4);
 }
 
+/* 详情 — 关联资源 / 来源引用列表 */
+.detail-section {
+  margin-top: var(--space-4);
+}
+
+.detail-section h3 {
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  margin-bottom: var(--space-2);
+  font-weight: 600;
+}
+
+.detail-ref-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.detail-ref-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  background: var(--mist-pale);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  flex-wrap: wrap;
+}
+
+.detail-ref-id {
+  font-family: var(--font-mono);
+  color: var(--ink-soft);
+  flex-shrink: 0;
+}
+
+.detail-ref-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  background: var(--ink-wash);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.detail-ref-text {
+  color: var(--ink-soft);
+}
+
+.detail-ref-caption {
+  color: var(--ink-wash-light);
+  font-style: italic;
+}
+
 .detail-content h3 {
   font-family: var(--font-display);
   font-size: var(--text-base);
@@ -2908,19 +3054,22 @@ tr.empty-row:hover td {
 
   .document-filter-bar,
   .chunk-filter-bar,
-  .ingestion-filter-bar {
+  .ingestion-filter-bar,
+  .search-filter-bar {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .document-filter-bar .kb-toolbar-search,
-  .chunk-filter-bar .kb-toolbar-search,
-  .ingestion-filter-bar .kb-toolbar-search {
+  .chunk-filter-bar .chunk-search-box,
+  .ingestion-filter-bar .kb-toolbar-search,
+  .search-filter-bar .kb-toolbar-search {
     grid-column: span 3;
   }
 
   .document-filter-bar .doc-count,
   .chunk-filter-bar .doc-count,
-  .ingestion-filter-bar .doc-count {
+  .ingestion-filter-bar .doc-count,
+  .search-filter-bar .doc-count {
     justify-self: start;
   }
 

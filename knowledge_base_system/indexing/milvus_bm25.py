@@ -82,13 +82,20 @@ class MilvusBM25Index(BM25Index):
         """批量更新标量字段。"""
         self._manager.upsert_fields_batch(items)
 
+    # 与 vector_index 共享同一 collection，检索时返回全量标量字段（省去 PG 查询）
+    _SEARCH_OUTPUT_FIELDS = [
+        "chunk_id", "doc_id", "title", "content", "category",
+        "knowledge_type", "status", "source_refs", "asset_refs",
+        "metadata", "created_at", "updated_at",
+    ]
+
     def search(
         self,
         query: str,
         top_k: int,
         category: str | None = None,
         knowledge_type: str | None = None,
-    ) -> list[tuple[str, float]]:
+    ) -> list[tuple[str, float, dict]]:
         """BM25 关键词检索，直接传入原始查询文本。"""
         self._manager.ensure_collection()
         collection = self._manager.collection
@@ -108,8 +115,11 @@ class MilvusBM25Index(BM25Index):
             param={"metric_type": "BM25", "params": {"ef": settings.milvus_sparse_ef}},
             limit=top_k,
             expr=expr,
-            output_fields=["chunk_id"],
+            output_fields=self._SEARCH_OUTPUT_FIELDS,
         )
         if not results:
             return []
-        return [(hit.entity.get("chunk_id"), float(hit.score)) for hit in results[0]]
+        return [
+            (hit.entity.get("chunk_id"), float(hit.score), dict(hit.entity.fields))
+            for hit in results[0]
+        ]
