@@ -923,53 +923,6 @@ class TestDocumentsFullCRUDFlow:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 10. 旧版上传/入库 API — 前端已迁移至 v1，旧接口仅保留兼容
-# ══════════════════════════════════════════════════════════════════════
-
-class TestLegacyUploadAPI:
-    """旧版 /upload、/ingest、/ingest/{job_id} 已标记废弃并添加 X-Deprecated
-    响应头。前端已迁移至 v1（API.uploadDocument、API.ingestDocument 等），
-    旧接口保留兼容期内可用，本测试验证其仍能正常响应。
-    """
-
-    def test_upload_endpoint_exists(self):
-        """POST /upload 端点必须存在并能处理请求。"""
-        import io
-        # 用空内容测试端点是否存在
-        response = client.post("/upload", files={
-            "file": ("test.md", io.BytesIO(b"# test"), "text/markdown"),
-        }, data={
-            "title": "上传测试",
-            "category": "测试",
-        })
-        # 应返回 200（成功）或合理的错误状态
-        assert response.status_code in {200, 201, 400, 422, 500, 503}, \
-            f"上传端点异常: {response.status_code}"
-
-    def test_ingest_endpoint_exists(self):
-        """POST /ingest 端点必须存在并能处理请求。"""
-        response = client.post("/ingest", json={
-            "documents": [{
-                "title": "入库测试文档",
-                "source_type": "markdown",
-                "source_uri": "file:///test/ingest_test.md",
-                "category": "测试",
-            }],
-            "options": {},
-        })
-        # 应返回 200/202（已接受）或合理状态
-        assert response.status_code in {200, 202, 400, 422, 500, 503}, \
-            f"入库端点异常: {response.status_code}"
-
-    def test_ingest_job_query_endpoint_exists(self):
-        """GET /ingest/{job_id} 端点必须存在（前端轮询用, ingestion.js:61）。"""
-        response = client.get("/ingest/__nonexistent_job_test__")
-        # 不存在返回 404 是可以接受的
-        assert response.status_code in {200, 404}, \
-            f"入库任务查询端点异常: {response.status_code}"
-
-
-# ══════════════════════════════════════════════════════════════════════
 # 11. 响应结构一致性验证
 # ══════════════════════════════════════════════════════════════════════
 

@@ -16,14 +16,13 @@ from app.core.models import (
     Asset,
     AssetRef,
     AssetRelation,
-    AssetStatus,
     AssetType,
     DocStatus,
     Document,
-    ElementType,
     KnowledgeChunk,
     ParsedElement,
 )
+from app.core.paths import resolve_file_uri
 from assets.base import AssetStore
 from assets.image_processor import process_image, process_video
 from assets.minio_store import MinioAssetStore, read_uri_bytes
@@ -87,7 +86,7 @@ class IngestionPipeline:
     def ingest(
         self,
         doc: Document,
-        raw_content: str = "",
+        raw_content: bytes | str | None = None,
         options: dict[str, Any] | None = None,
     ) -> Document:
         """同步执行文档入库，返回更新后的 Document（status=active 或 failed）。
@@ -126,7 +125,7 @@ class IngestionPipeline:
     def _run_create(
         self,
         doc: Document,
-        raw_content: str,
+        raw_content: bytes | str | None,
         options: dict[str, Any],
     ) -> None:
         """文档入库流程（解析 → 递归 → 抽取 → 索引）。"""
@@ -134,14 +133,19 @@ class IngestionPipeline:
             self._document_repo.create(doc)
 
         # 1. 解析文档
-        if doc.source_uri.startswith("minio://"):
-            raw = read_uri_bytes(doc.source_uri, self._minio_store)
-            if doc.source_type.lower() in {"markdown", "md", "txt", "text"}:
-                doc.metadata["raw_content"] = raw.decode("utf-8")
-            else:
-                doc.metadata["raw_content"] = raw
         parser = self._parser_registry.get(doc.source_type)
-        result = parser.parse(doc)
+
+        # 降级路径：调用方未传内容时从 MinIO / file:// 读取
+        if raw_content is None:
+            if doc.source_uri.startswith("minio://"):
+                raw_content = read_uri_bytes(doc.source_uri, self._minio_store)
+            elif doc.source_uri.startswith("file://"):
+                raw_content = resolve_file_uri(doc.source_uri).read_bytes()
+
+            if parser.CONTENT_IS_TEXT and isinstance(raw_content, bytes):
+                raw_content = raw_content.decode("utf-8")
+
+        result = parser.parse(doc, raw_content)
         doc = result.doc
         elements = result.elements
         assets = result.assets
@@ -153,11 +157,11 @@ class IngestionPipeline:
             max_depth=options.get("max_depth"),
             max_elements=options.get("max_elements_per_doc"),
         )
-        all_docs, embedded_elements = loader.load_embedded(doc, elements)
-        for d in all_docs:
+        recursive_result = loader.load_embedded(doc, elements)
+        for d in recursive_result.documents:
             if self._document_repo:
                 self._document_repo.create(d)
-        elements.extend(embedded_elements)
+        elements.extend(recursive_result.elements)
 
         if self._element_repo and elements:
             self._element_repo.create_batch(elements)
@@ -177,14 +181,8 @@ class IngestionPipeline:
             self._trigger_eval_data_generation(doc, chunks)
 
     def _prepare_assets(self, assets: list[Asset]) -> list[Asset]:
-        """应用资源数量限制，并处理图片资源生命周期。超限资源标记为 failed。"""
-        for idx, asset in enumerate(assets):
-            if idx >= settings.max_assets_per_doc:
-                asset.status = AssetStatus.failed
-                asset.error_message = "max_assets_per_doc_exceeded"
-                self._asset_store.put(asset)
-                continue
-
+        """按资源类型分发到对应的处理函数。"""
+        for asset in assets:
             if asset.asset_type == AssetType.image:
                 process_image(asset, self._asset_store, self._minio_store)
             elif asset.asset_type == AssetType.video:

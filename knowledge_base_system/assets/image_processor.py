@@ -34,11 +34,10 @@ def process_image(
 
     处理流程：
     1. 从 asset._data 或 original_uri 读取字节
-    2. 校验文件大小不超过限制
-    3. 通过魔数校验图片 MIME 类型
-    4. 计算 SHA-256 哈希，查找已有副本实现去重
-    5. 调用视觉理解模型生成图片描述（可选）
-    6. 上传 MinIO 并更新 storage_uri
+    2. 通过魔数校验图片 MIME 类型
+    3. 计算 SHA-256 哈希，查找已有副本实现去重
+    4. 调用视觉理解模型生成图片描述（可选）
+    5. 上传 MinIO 并更新 storage_uri
 
     Args:
         asset: 待处理的图片 Asset。
@@ -52,13 +51,6 @@ def process_image(
         data = getattr(asset, "_data", None)
         if data is None:
             data = read_uri_bytes(asset.original_uri, minio_store)
-
-        max_size = settings.max_asset_size_mb * 1024 * 1024
-        if len(data) > max_size:
-            asset.status = AssetStatus.failed
-            asset.error_message = "max_asset_size_exceeded"
-            asset_store.put(asset)
-            return asset
 
         mime_type = sniff_image_mime(data)
         if mime_type is None:

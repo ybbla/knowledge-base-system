@@ -383,8 +383,6 @@ class TestDbParsedElement:
                 "page": 3,
                 "section_path": ["1 产品概述", "1.2 上传文档"],
                 "table_path": [],
-                "char_start": 120,
-                "char_end": 138,
             },
         )
         db_session.add(el)
@@ -393,8 +391,6 @@ class TestDbParsedElement:
         result = db_session.get(DbParsedElement, "el_loc")
         assert result.source_location["page"] == 3
         assert len(result.source_location["section_path"]) == 2
-        assert result.source_location["char_start"] == 120
-        assert result.source_location["char_end"] == 138
 
     def test_batch_query_by_doc_id(self, doc_fixture, db_session):
         for i in range(3):

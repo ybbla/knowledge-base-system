@@ -1561,18 +1561,22 @@ tr.empty-row:hover td {
 
 /* 搜索筛选工具栏 — 对齐 documents/chunks 的 kb-filter-bar 网格风格 */
 .search-filter-bar {
-  grid-template-columns: minmax(260px, 2fr) auto minmax(126px, 1fr) minmax(100px, 1fr) minmax(94px, auto) auto minmax(max-content, auto) !important;
+  grid-template-columns: minmax(280px, 2fr) auto minmax(126px, 1fr) minmax(100px, 1fr) auto minmax(max-content, auto) !important;
 }
 
 .search-filter-bar .search-input-wrap {
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: stretch;
+  gap: 0;
 }
 
 .search-filter-bar .search-input-wrap .kb-toolbar-search {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding-left: var(--space-10);
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 .search-filter-bar .search-input-icon {
@@ -1586,13 +1590,16 @@ tr.empty-row:hover td {
   z-index: 1;
 }
 
-.search-filter-bar .doc-count {
-  justify-self: center;
-}
-
-.search-filter-bar .btn-primary {
-  padding-left: var(--space-6);
-  padding-right: var(--space-6);
+.search-filter-bar .search-topk {
+  flex-shrink: 0;
+  width: 80px;
+  height: 48px !important;
+  padding-left: var(--space-2);
+  padding-right: var(--space-2);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: none;
+  font-size: var(--text-xs);
 }
 
 /* 搜索框 + 搜索模式切换 组合控件 */

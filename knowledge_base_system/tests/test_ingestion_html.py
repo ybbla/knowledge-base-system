@@ -81,11 +81,9 @@ class _FakeEmbedder:
         return [[1.0, 0.0] for _ in texts]
 
 
-def _pipeline(monkeypatch, *, max_assets_per_doc=None):
+def _pipeline(monkeypatch):
     embedder = _FakeEmbedder()
     monkeypatch.setattr(ingestion_module, "embedding_client", embedder)
-    if max_assets_per_doc is not None:
-        monkeypatch.setattr(ingestion_module.settings, "max_assets_per_doc", max_assets_per_doc)
 
     registry = ParserRegistry()
     registry.register(HtmlParser())
@@ -153,27 +151,3 @@ def test_ingestion_pipeline_marks_invalid_html_failed(monkeypatch):
     assert "HTML 解析失败" in doc.error_message
 
 
-def test_html_assets_respect_max_assets_per_doc(monkeypatch):
-    pipeline, _extractor, *_rest, asset_store = _pipeline(monkeypatch, max_assets_per_doc=1)
-    doc = Document(
-        title="HTML",
-        source_type="html",
-        source_uri="memory://assets.html",
-        metadata={
-            "raw_content": """
-            <article>
-              <p>资源</p>
-              <a href="https://example.com/a.pdf">A</a>
-              <a href="https://example.com/b.pdf">B</a>
-            </article>
-            """
-        },
-    )
-    doc = pipeline.ingest(doc)
-
-    assert doc.status.value == "active", doc.error_message
-    stored = list(asset_store.assets.values())
-    assert len(stored) == 2
-    assert stored[0].status.value == "ready"
-    assert stored[1].status.value == "failed"
-    assert stored[1].error_message == "max_assets_per_doc_exceeded"

@@ -6,14 +6,29 @@
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from app.core.config import settings
 from app.core.models import DocStatus, Document, ParsedElement
+from app.core.paths import resolve_file_uri
 from parsers.base import ParseResult
 
 logger = logging.getLogger(__name__)
 
 ParseFn = Callable[[Document], ParseResult]
+
+
+@dataclass
+class RecursiveLoadResult:
+    """递归加载嵌入子文档的结果。
+
+    包含递归过程中发现的所有子文档及其解析元素。
+    与 ParseResult 分工明确：
+      - ParseResult：单个文档解析结果（解析器职责）
+      - RecursiveLoadResult：递归发现的所有子文档（RecursiveLoader 职责）
+    """
+    documents: list[Document] = field(default_factory=list)
+    elements: list[ParsedElement] = field(default_factory=list)
 
 
 class RecursiveLoader:
@@ -35,10 +50,10 @@ class RecursiveLoader:
         self._visited_hashes: set[str] = set()
         self._total_elements = 0
 
-    def load(self, root_doc: Document, raw_content: str = "") -> tuple[list[Document], list]:
+    def load(self, root_doc: Document, raw_content: str = "") -> RecursiveLoadResult:
         """入口方法：解析根文档并递归解析所有嵌入子文档。
 
-        返回 (all_docs, all_elements)。
+        返回 RecursiveLoadResult，包含根文档和所有嵌入子文档。
         """
         # 仅在 raw_content 非空或 metadata 中尚无 raw_content 时设置，避免空值覆盖已有数据
         if raw_content or "raw_content" not in root_doc.metadata:
@@ -46,13 +61,13 @@ class RecursiveLoader:
         all_docs: list[Document] = []
         all_elements: list = []
         self._parse_recursive(root_doc, depth=0, all_docs=all_docs, all_elements=all_elements)
-        return all_docs, all_elements
+        return RecursiveLoadResult(documents=all_docs, elements=all_elements)
 
     def load_embedded(
         self,
         root_doc: Document,
         root_elements: list[ParsedElement],
-    ) -> tuple[list[Document], list[ParsedElement]]:
+    ) -> RecursiveLoadResult:
         """从已解析的根文档元素继续递归加载嵌入文档。
 
         根文档本身已经由调用方解析，本方法只返回嵌入文档产生的
@@ -73,7 +88,7 @@ class RecursiveLoader:
             all_docs=all_docs,
             all_elements=all_elements,
         )
-        return all_docs, all_elements
+        return RecursiveLoadResult(documents=all_docs, elements=all_elements)
 
     def _parse_recursive(
         self, doc: Document, depth: int, all_docs: list[Document], all_elements: list
@@ -96,8 +111,13 @@ class RecursiveLoader:
         if pre_parse_hash:
             self._visited_hashes.add(pre_parse_hash)
 
-        # Parse this document
-        result = self._parse(doc)
+        # Parse this document — 内容优先从 metadata 获取，否则从 source_uri 读取
+        content = doc.metadata.get("raw_content", b"")
+        if not content and doc.source_uri.startswith("file://"):
+            filepath = resolve_file_uri(doc.source_uri)
+            if filepath.exists():
+                content = filepath.read_bytes()
+        result = self._parse(doc, content)
         doc = result.doc
         post_parse_hash = doc.source_hash
         if (

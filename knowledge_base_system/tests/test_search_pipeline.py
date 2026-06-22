@@ -4,9 +4,6 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api import ingest as ingest_api
-from app.api import search as search_api
-from app.api import upload as upload_api
 from app.core.models import (
     KnowledgeType,
     ScoreComponents,
@@ -32,29 +29,6 @@ After upload, the system shows parsing status:
 | Success | The document has entered the knowledge base. |
 | Failed | Review the error and upload again. |
 """
-
-
-class _CompletedIngestionPipeline:
-    def __init__(self) -> None:
-        self.job = None
-
-    def submit(self, doc, options=None):
-        self.job = SimpleNamespace(
-            job_id=doc.doc_id,
-            status="completed",
-            doc_ids=[doc.doc_id],
-            chunk_count=1,
-            asset_count=0,
-            error=None,
-            started_at=None,
-            finished_at=None,
-        )
-        return self.job
-
-    def get_job(self, job_id):
-        if self.job and self.job.job_id == job_id:
-            return self.job
-        return None
 
 
 class _SearchPipeline:
@@ -91,56 +65,43 @@ class TestSearchPipeline:
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(upload_api, "UPLOAD_DIR", Path("data/uploads"))
-        monkeypatch.setattr(ingest_api, "ingestion_pipeline", _CompletedIngestionPipeline())
-        monkeypatch.setattr(search_api, "retrieval_pipeline", _SearchPipeline())
-
-        upload_resp = client.post(
-            "/upload",
-            files={
-                "file": (
-                    "manual.md",
-                    SAMPLE_MARKDOWN.encode("utf-8"),
-                    "text/markdown",
-                )
-            },
-            data={"title": "Product Manual", "category": "manuals"},
+        monkeypatch.setattr(
+            "app.api.v1.documents.ingestion_pipeline",
+            type("_FakePipeline", (), {"ingest": lambda self, doc, **kw: doc})(),
         )
-        assert upload_resp.status_code == 200, f"Upload failed: {upload_resp.text}"
-        upload_data = upload_resp.json()
-
-        resp = client.post(
-            "/ingest",
-            json={
-                "documents": [
-                    {
+        monkeypatch.setattr(
+            "app.api.v1.documents.upload_api",
+            type("_FakeUploadApi", (), {
+                "DEFAULT_CATEGORY": "通用",
+                "save_upload_file": staticmethod(
+                    lambda *a, **kw: {
+                        "source_uri": "minio://kb-input/doc_test/manual.md",
+                        "doc_id": "doc_test",
+                        "file_name": "manual.md",
+                        "size": len(SAMPLE_MARKDOWN.encode("utf-8")),
                         "title": "Product Manual",
-                        "source_type": "markdown",
-                        "source_uri": upload_data["source_uri"],
-                        "source_hash": upload_data.get("source_hash", ""),
                         "category": "manuals",
                     }
-                ],
-                "options": {"max_depth": 1},
-            },
+                ),
+            })(),
         )
-        assert resp.status_code == 202, f"Ingest failed: {resp.text}"
-        data = resp.json()
-        assert data["status"] == "accepted"
+        monkeypatch.setattr(
+            "app.api.v1.documents.document_repo",
+            type("_FakeRepo", (), {
+                "find_by_hash": lambda self, h: None,
+                "find_similar_by_filename": lambda self, n: [],
+                "create": lambda self, d: d,
+                "update": lambda self, d: d,
+                "get": lambda self, did: None,
+            })(),
+        )
 
-        job_id = data["job_id"]
-        status_resp = client.get(f"/ingest/{job_id}")
-        assert status_resp.status_code == 200
-        self.job_result = status_resp.json()
-
-    def test_ingest_completed(self):
-        assert self.job_result["status"] == "completed"
-        assert self.job_result["chunk_count"] == 1
-        assert len(self.job_result["doc_ids"]) == 1
-
-    def test_search_returns_results(self):
+    def test_search_returns_results(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.core.deps", "retrieval_pipeline", _SearchPipeline()
+        )
         resp = client.post(
-            "/search",
+            "/api/v1/search",
             json={
                 "query": "How do users know document parsing succeeded?",
                 "top_k": 5,
@@ -152,7 +113,6 @@ class TestSearchPipeline:
 
         assert data["search_id"].startswith("search_")
         assert data["query"]
-        assert data["rewritten_query"]
         assert data["total_count"] == 1
 
         results = data["results"]
@@ -175,9 +135,12 @@ class TestSearchPipeline:
         assert r["source_refs"][0]["element_id"] == "el_manual"
         assert r["metadata"]["title_path"] == ["Product Manual"]
 
-    def test_search_category_filter_excludes_other_categories(self):
+    def test_search_category_filter_excludes_other_categories(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.core.deps", "retrieval_pipeline", _SearchPipeline()
+        )
         resp = client.post(
-            "/search",
+            "/api/v1/search",
             json={
                 "query": "upload document",
                 "top_k": 5,

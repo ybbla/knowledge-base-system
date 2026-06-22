@@ -163,7 +163,7 @@ class TestHtmlParser:
         """
         doc = _doc(html, source_uri="https://docs.example.com/manual/page.html")
 
-        result = self.parser.parse(doc)
+        result = self.parser.parse(doc, doc.metadata["raw_content"])
         assets = {asset.original_uri: asset for asset in result.assets}
 
         image = assets["https://docs.example.com/manual/images/a.png"]
@@ -193,7 +193,7 @@ class TestHtmlParser:
         path.write_bytes("<h1>文件</h1><p>来自文件。</p>".encode("utf-8"))
 
         doc = Document(title="File", source_type="html", source_uri=f"file://{path}")
-        result = self.parser.parse(doc)
+        result = self.parser.parse(doc, doc.metadata["raw_content"])
 
         assert result.doc.source_hash.startswith("sha256:")
         assert any(el.text == "来自文件。" for el in result.elements)

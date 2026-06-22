@@ -8,7 +8,6 @@ from ingestion.pipeline import IngestionPipeline
 from llm.semantic_extractor import SemanticExtractor
 from llm.volcengine_client import embedding_client
 from parsers.docx_parser import DocxParser
-from parsers.html_parser import HtmlParser
 from parsers.markdown_parser import MarkdownParser
 from parsers.pdf_parser import PdfParser
 from parsers.pptx_parser import PptxParser
@@ -21,7 +20,7 @@ logger = logging.getLogger(__name__)
 # ── Parser registry ──────────────────────────────────────────────────
 
 parser_registry = ParserRegistry()
-parser_registry.register(MarkdownParser(), DocxParser(), XlsxParser(), HtmlParser(), PptxParser(), PdfParser())
+parser_registry.register(MarkdownParser(), DocxParser(), XlsxParser(), PptxParser(), PdfParser())
 
 # ── 外部服务后端 ─────────────────────────────────────────────────────
 

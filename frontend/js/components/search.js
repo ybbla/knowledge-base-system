@@ -37,6 +37,12 @@ const SearchPage = (() => {
           <span class="search-input-icon">⌕</span>
           <input class="input kb-toolbar-search" type="text" id="searchInput" placeholder="输入问题，检索最相关的知识块…" autofocus
                  onkeydown="if(event.key==='Enter')SearchPage.doSearch()">
+          <select id="searchTopK" class="select select-sm search-topk" data-current-value="3" onchange="SearchPage.handleTopKChange('searchTopK')">
+            <option value="3" selected>Top 3</option>
+            <option value="5">Top 5</option>
+            <option value="8">Top 8</option>
+            <option value="__custom__">自定义...</option>
+          </select>
         </div>
         <button class="btn btn-primary" onclick="SearchPage.doSearch()">搜索</button>
         <select id="searchCategory" class="select select-sm" onchange="SearchPage.doSearch()">
@@ -46,12 +52,6 @@ const SearchPage = (() => {
         <select id="searchKnowledgeType" class="select select-sm" onchange="SearchPage.doSearch()">
           <option value="">全部类型</option>
           ${(filterOptions.knowledge_types || []).map(k => `<option value="${UI.escapeHtml(k.value)}">${UI.escapeHtml(UI.ktypeLabel(k.value))}</option>`).join('')}
-        </select>
-        <select id="searchTopK" class="select select-sm" data-current-value="3" onchange="SearchPage.handleTopKChange('searchTopK')">
-          <option value="3" selected>Top 3</option>
-          <option value="5">Top 5</option>
-          <option value="8">Top 8</option>
-          <option value="__custom__">自定义...</option>
         </select>
         <button class="btn btn-ghost btn-sm" onclick="SearchPage.resetFilters()">清除筛选</button>
         <span class="doc-count" id="searchCountText"></span>

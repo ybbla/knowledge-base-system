@@ -24,8 +24,13 @@ def _doc(raw: bytes, source_uri: str = "memory://slides.pptx") -> Document:
         title="PPTX",
         source_type="pptx",
         source_uri=source_uri,
-        metadata={"raw_content": raw},
     )
+
+
+def _parse(parser: PptxParser, raw: bytes, source_uri: str = "memory://slides.pptx"):
+    """辅助：同时传入 doc 和 content 调用 parser.parse。"""
+    doc = _doc(raw, source_uri)
+    return parser.parse(doc, raw)
 
 
 def _blank_slide(prs: Presentation):
@@ -52,7 +57,7 @@ class TestPptxParser:
         item.text = "上传文件"
         item.level = 1
 
-        result = self.parser.parse(_doc(_pptx_bytes(prs)))
+        result = _parse(self.parser, _pptx_bytes(prs))
 
         assert result.doc.source_hash.startswith("sha256:")
         assert [el.element_type for el in result.elements] == [
@@ -89,7 +94,7 @@ class TestPptxParser:
         table.cell(2, 0).text = "成功"
         table.cell(2, 1).text = "文档已经进入知识库"
 
-        result = self.parser.parse(_doc(_pptx_bytes(prs)))
+        result = _parse(self.parser, _pptx_bytes(prs))
         table_el = next(el for el in result.elements if el.element_type == ElementType.table)
         table_data = table_el.structured_data["table"]
 
@@ -111,7 +116,7 @@ class TestPptxParser:
             slide = _blank_slide(prs)
             slide.shapes.add_textbox(Inches(0.5), Inches(0.2), Inches(6), Inches(0.5)).text = "截图"
             slide.shapes.add_picture(image_file.name, Inches(0.5), Inches(1.0))
-            result = self.parser.parse(_doc(_pptx_bytes(prs)))
+            result = _parse(self.parser, _pptx_bytes(prs))
         finally:
             os.unlink(image_file.name)
 
@@ -135,7 +140,7 @@ class TestPptxParser:
             "重复 https://example.com/demo.mp4"
         )
 
-        result = self.parser.parse(_doc(_pptx_bytes(prs)))
+        result = _parse(self.parser, _pptx_bytes(prs))
         assets = {asset.original_uri: asset for asset in result.assets}
 
         assert assets["https://example.com/demo.mp4"].asset_type == AssetType.video
@@ -166,17 +171,17 @@ class TestPptxParser:
             chart_data,
         )
 
-        result = self.parser.parse(_doc(_pptx_bytes(prs)))
+        result = _parse(self.parser, _pptx_bytes(prs))
         unknown = next(el for el in result.elements if el.element_type == ElementType.unknown)
 
-        assert "Unsupported PPTX object" in unknown.text
+        assert "不支持的 PPTX 对象" in unknown.text
         assert unknown.metadata["shape_type"] == "CHART"
 
     def test_blank_slide_gets_fallback_title(self):
         prs = Presentation()
         _blank_slide(prs)
 
-        result = self.parser.parse(_doc(_pptx_bytes(prs)))
+        result = _parse(self.parser, _pptx_bytes(prs))
 
         assert len(result.elements) == 1
         assert result.elements[0].element_type == ElementType.title
@@ -188,19 +193,225 @@ class TestPptxParser:
         slide = _blank_slide(prs)
         slide.shapes.add_textbox(Inches(0.5), Inches(0.2), Inches(6), Inches(0.5)).text = "文件来源"
         path = tmp_path / "sample.pptx"
-        path.write_bytes(_pptx_bytes(prs))
+        raw = _pptx_bytes(prs)
+        path.write_bytes(raw)
 
         doc = Document(title="File", source_type="pptx", source_uri=f"file://{path}")
-        result = self.parser.parse(doc)
+        result = self.parser.parse(doc, raw)
 
         assert result.doc.source_hash.startswith("sha256:")
         assert result.elements[0].text == "文件来源"
 
     def test_invalid_pptx_raises_clear_error(self):
         with pytest.raises(ValueError, match="PPTX 解析失败"):
-            self.parser.parse(_doc(b"not a pptx"))
+            _parse(self.parser, b"not a pptx")
 
     def test_empty_presentation_raises_clear_error(self):
         prs = Presentation()
         with pytest.raises(ValueError, match="PPTX 解析失败"):
-            self.parser.parse(_doc(_pptx_bytes(prs)))
+            _parse(self.parser, _pptx_bytes(prs))
+
+    # ── 新增：超链接文字保留和 structured_data.links 测试 ──────────────
+
+    def test_hyperlink_run_text_preserved_in_links(self):
+        """验证文本运行中超链接的文字保留和 structured_data.links 输出。"""
+        prs = Presentation()
+        slide = _blank_slide(prs)
+        slide.shapes.add_textbox(Inches(0.5), Inches(0.2), Inches(6), Inches(0.5)).text = "链接测试"
+        tb = slide.shapes.add_textbox(Inches(0.5), Inches(1.0), Inches(6), Inches(1.0))
+        tf = tb.text_frame
+        p = tf.paragraphs[0]
+        run1 = p.add_run()
+        run1.text = "普通文字"
+        run2 = p.add_run()
+        run2.text = "点击查看文档"
+        run2.hyperlink.address = "https://example.com/doc.pdf"
+
+        result = _parse(self.parser, _pptx_bytes(prs))
+        paragraph = next(
+            el for el in result.elements
+            if el.element_type == ElementType.paragraph and "普通文字" in el.text
+        )
+        assert "点击查看文档" in paragraph.text
+        assert paragraph.structured_data is not None
+        links = paragraph.structured_data["links"]
+        assert len(links) == 1
+        assert links[0]["text"] == "点击查看文档"
+        assert links[0]["url"] == "https://example.com/doc.pdf"
+        assert links[0]["link_type"] == "document"
+        # 验证 Asset 被创建
+        assert len(result.assets) == 1
+        assert result.assets[0].original_uri == "https://example.com/doc.pdf"
+        assert result.assets[0].asset_type == AssetType.attachment
+
+    def test_shape_level_hyperlink_preserved_in_links(self):
+        """验证形状级超链接（click_action.hyperlink）的文字和链接记录。"""
+        prs = Presentation()
+        slide = _blank_slide(prs)
+        slide.shapes.add_textbox(Inches(0.5), Inches(0.2), Inches(6), Inches(0.5)).text = "视频页"
+        tb = slide.shapes.add_textbox(Inches(0.5), Inches(1.0), Inches(6), Inches(0.8))
+        tb.text_frame.paragraphs[0].text = "观看演示"
+        tb.click_action.hyperlink.address = "https://example.com/demo.mp4"
+
+        result = _parse(self.parser, _pptx_bytes(prs))
+        paragraph = next(
+            el for el in result.elements
+            if el.element_type == ElementType.paragraph and "观看演示" in el.text
+        )
+        assert paragraph.structured_data is not None
+        links = paragraph.structured_data["links"]
+        # 有两个链接：形状级 + 运行级（同一个 url，classify_link 分类为 video）
+        shape_link = [l for l in links if l["text"] == "观看演示"]
+        assert len(shape_link) >= 1
+        assert shape_link[0]["url"] == "https://example.com/demo.mp4"
+        assert shape_link[0]["link_type"] == "video"
+        # 验证 video Asset
+        assert any(a.asset_type == AssetType.video for a in result.assets)
+
+    def test_image_shape_with_hyperlink_links(self):
+        """验证图片形状带超链接时 structured_data.links 正确输出。"""
+        png_bytes = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+        )
+        image_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        try:
+            image_file.write(png_bytes)
+            image_file.close()
+            prs = Presentation()
+            slide = _blank_slide(prs)
+            slide.shapes.add_textbox(Inches(0.5), Inches(0.2), Inches(6), Inches(0.5)).text = "图片链接"
+            pic = slide.shapes.add_picture(image_file.name, Inches(0.5), Inches(1.0))
+            pic.click_action.hyperlink.address = "https://example.com/report.pdf"
+            result = _parse(self.parser, _pptx_bytes(prs))
+        finally:
+            os.unlink(image_file.name)
+
+        image_el = next(el for el in result.elements if el.element_type == ElementType.image)
+        assert image_el.structured_data is not None
+        links = image_el.structured_data["links"]
+        assert len(links) == 1
+        assert links[0]["url"] == "https://example.com/report.pdf"
+        assert links[0]["link_type"] == "document"
+        # filename 作为链接文字 fallback
+        assert links[0]["text"] != ""
+
+    def test_mixed_hyperlink_and_plain_text(self):
+        """验证多超链接混合文本（部分 run 有超链接、部分无）的正确处理。"""
+        prs = Presentation()
+        slide = _blank_slide(prs)
+        slide.shapes.add_textbox(Inches(0.5), Inches(0.2), Inches(6), Inches(0.5)).text = "混合文本"
+        tb = slide.shapes.add_textbox(Inches(0.5), Inches(1.0), Inches(6), Inches(1.0))
+        tf = tb.text_frame
+        p = tf.paragraphs[0]
+        r1 = p.add_run()
+        r1.text = "无链接 "
+        r2 = p.add_run()
+        r2.text = "视频链接"
+        r2.hyperlink.address = "https://example.com/demo.mp4"
+        r3 = p.add_run()
+        r3.text = " 中间文字 "
+        r4 = p.add_run()
+        r4.text = "文档链接"
+        r4.hyperlink.address = "https://example.com/doc.pdf"
+
+        result = _parse(self.parser, _pptx_bytes(prs))
+        paragraph = next(
+            el for el in result.elements
+            if el.element_type == ElementType.paragraph and "无链接" in el.text
+        )
+        # 文本包含所有 run 的文字
+        assert "视频链接" in paragraph.text
+        assert "中间文字" in paragraph.text
+        assert "文档链接" in paragraph.text
+        # links 仅包含有超链接的 run
+        assert paragraph.structured_data is not None
+        links = paragraph.structured_data["links"]
+        assert len(links) == 2
+        link_texts = {l["text"] for l in links}
+        assert link_texts == {"视频链接", "文档链接"}
+        link_types = {l["link_type"] for l in links}
+        assert link_types == {"video", "document"}
+
+    def test_list_item_hyperlinks_create_assets_and_links(self):
+        """验证列表项中的超链接同时创建 Asset，链接写入列表容器 structured_data.links。"""
+        prs = Presentation()
+        slide = _blank_slide(prs)
+        slide.shapes.add_textbox(Inches(0.5), Inches(0.2), Inches(6), Inches(0.5)).text = "资源列表"
+        body = slide.shapes.add_textbox(Inches(0.5), Inches(1.0), Inches(6), Inches(1.5))
+        # 第一条：带超链接
+        p1 = body.text_frame.paragraphs[0]
+        r1 = p1.add_run()
+        r1.text = "下载文档"
+        r1.hyperlink.address = "https://example.com/manual.pdf"
+        # 第二条：无超链接
+        p2 = body.text_frame.add_paragraph()
+        p2.text = "纯文本说明"
+        p2.level = 1
+
+        result = _parse(self.parser, _pptx_bytes(prs))
+        list_el = next(el for el in result.elements if el.element_type == ElementType.list)
+        list_children = [el for el in result.elements if el.parent_element_id == list_el.element_id]
+
+        # 链接信息在列表容器上
+        assert list_el.structured_data is not None
+        links = list_el.structured_data["links"]
+        assert len(links) == 1
+        assert links[0]["url"] == "https://example.com/manual.pdf"
+        assert links[0]["text"] == "下载文档"
+
+        # 验证 Asset 被创建（修复 gap）
+        assert any(a.original_uri == "https://example.com/manual.pdf" for a in result.assets)
+
+        # 子元素不包含 structured_data
+        for child in list_children:
+            assert child.structured_data is None or not child.structured_data.get("links")
+
+    def test_classify_link_categories(self):
+        """验证 classify_link 对各类 URL 的分类正确性。"""
+        from parsers.utils import classify_link
+
+        # 图片
+        assert classify_link("https://example.com/photo.png") == "image"
+        assert classify_link("https://example.com/icon.svg") == "image"
+        # 视频（后缀）
+        assert classify_link("https://example.com/demo.mp4") == "video"
+        assert classify_link("https://example.com/clip.webm") == "video"
+        # 视频（域名）
+        assert classify_link("https://www.youtube.com/watch?v=abc") == "video"
+        assert classify_link("https://www.bilibili.com/video/BV1xx") == "video"
+        # 音频
+        assert classify_link("https://example.com/song.mp3") == "audio"
+        assert classify_link("https://example.com/podcast.wav") == "audio"
+        # 文档
+        assert classify_link("https://example.com/report.pdf") == "document"
+        assert classify_link("https://example.com/data.xlsx") == "document"
+        # 普通 URL
+        assert classify_link("https://example.com/page") == "url"
+        assert classify_link("https://example.com/about") == "url"
+
+    def test_guess_mime_replacement_behavior(self):
+        """验证 guess_mime 替换 _guess_mime 后行为不变。"""
+        from parsers.utils import guess_mime
+
+        # 使用 _pptx_bytes 创建简单 PPTX，验证图片 Asset 的 MIME 类型
+        png_bytes = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+        )
+        image_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        try:
+            image_file.write(png_bytes)
+            image_file.close()
+            prs = Presentation()
+            slide = _blank_slide(prs)
+            slide.shapes.add_textbox(Inches(0.5), Inches(0.2), Inches(6), Inches(0.5)).text = "MIME测试"
+            slide.shapes.add_picture(image_file.name, Inches(0.5), Inches(1.0))
+            result = _parse(self.parser, _pptx_bytes(prs))
+        finally:
+            os.unlink(image_file.name)
+
+        assert len(result.assets) == 1
+        assert result.assets[0].mime_type == "image/png"
+
+        # 验证 URL Asset 的 MIME 推断
+        assert guess_mime("https://example.com/doc.pdf", AssetType.attachment) == "application/pdf"
+        assert guess_mime("https://example.com/unknown.xyz", AssetType.image) == "image/*"

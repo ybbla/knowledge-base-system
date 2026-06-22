@@ -26,6 +26,7 @@ from app.core.models import (
 )
 from app.core.paths import resolve_file_uri
 from parsers.base import DocumentParser, ParseResult
+from parsers.utils import classify_link
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +64,17 @@ ATTACHMENT_EXTENSIONS = {
     ".zip", ".rar", ".7z", ".csv", ".txt", ".md",
 }
 
+# 远程图片 URL 扩展名（用于识别指向图片文件的链接）
+IMAGE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg",
+}
+
 
 # ── 内部数据结构 ──────────────────────────────────────────────────────
 
 @dataclass
 class _TextBlock:
-    """页面文本块，含完整的字体和位置信息。"""
+    """页面文本块，含完整的字体、位置和 span 级 bbox 信息。"""
     page: int
     y0: float
     y1: float
@@ -78,6 +84,8 @@ class _TextBlock:
     font_size: float
     is_bold: bool
     bbox: tuple[float, float, float, float]
+    # 每个 span 的 (文本, bbox四元组)，用于与 page.get_links() 的 link rect 做交叉匹配确定锚文本
+    span_bboxes: list[tuple[str, tuple[float, float, float, float]]] = field(default_factory=list)
 
 
 @dataclass
@@ -118,14 +126,15 @@ class PdfParser(DocumentParser):
     def supports(self, source_type: str) -> bool:
         return source_type.lower() in self.SUPPORTED_TYPES
 
-    def parse(self, doc: Document) -> ParseResult:
+    def parse(self, doc: Document, content: bytes | str) -> ParseResult:
         """主解析入口：将 PDF 解析为结构化元素和资源列表。"""
-        raw = self._read_content(doc)
-        if not raw:
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        if not content:
             raise ValueError("PDF 解析失败：文档内容为空")
 
         try:
-            pdf = fitz.open(stream=raw, filetype="pdf")
+            pdf = fitz.open(stream=content, filetype="pdf")
         except Exception as exc:
             raise ValueError(f"PDF 解析失败：{exc}") from exc
 
@@ -198,7 +207,7 @@ class PdfParser(DocumentParser):
                     )
                 raise ValueError("PDF 解析失败：无可提取的文本内容")
 
-            doc.source_hash = compute_hash(raw)
+            doc.source_hash = compute_hash(content)
             return ParseResult(doc=doc, elements=state.elements, assets=state.assets)
 
         except ValueError:
@@ -209,21 +218,6 @@ class PdfParser(DocumentParser):
                 pdf.close()
             except Exception:
                 pass  # 忽略重复关闭错误
-
-    # ── 内容读取 ──────────────────────────────────────────────────
-
-    def _read_content(self, doc: Document) -> bytes:
-        """从 metadata.raw_content 或 file:// URI 读取 PDF 字节。"""
-        raw = doc.metadata.get("raw_content", b"")
-        if raw:
-            return raw.encode("utf-8") if isinstance(raw, str) else raw
-
-        if doc.source_uri.startswith("file://"):
-            filepath = resolve_file_uri(doc.source_uri)
-            if filepath.exists():
-                return filepath.read_bytes()
-
-        return b""
 
     # ── TOC 处理 ─────────────────────────────────────────────────
 
@@ -281,6 +275,7 @@ class PdfParser(DocumentParser):
             font_sizes: list[float] = []
             font_flags: list[int] = []
             font_names: list[str] = []
+            span_bboxes: list[tuple[str, tuple[float, float, float, float]]] = []
 
             for line in block.get("lines", []):
                 line_text = ""
@@ -289,6 +284,8 @@ class PdfParser(DocumentParser):
                     font_sizes.append(span.get("size", 0))
                     font_flags.append(span.get("flags", 0))
                     font_names.append(span.get("font", ""))
+                    # 收集每个 span 的文本和 bbox，用于后续与 link rect 交叉匹配
+                    span_bboxes.append((span.get("text", ""), tuple(span.get("bbox", (0, 0, 0, 0)))))
                 all_text_parts.append(line_text)
 
             combined_text = " ".join(
@@ -314,6 +311,7 @@ class PdfParser(DocumentParser):
                 font_size=avg_font_size,
                 is_bold=is_bold,
                 bbox=tuple(bbox),
+                span_bboxes=span_bboxes,
             ))
 
         # 按 (y0, x0) 排序模拟阅读顺序
@@ -417,6 +415,8 @@ class PdfParser(DocumentParser):
             if same_font and gap <= max(threshold, 2.0):
                 # 合并文本
                 combined = f"{current.text} {next_block.text}".strip()
+                # 合并 span_bboxes，保持原始 span 顺序
+                merged_span_bboxes = current.span_bboxes + next_block.span_bboxes
                 # 更新合并后的块信息
                 current = _TextBlock(
                     page=current.page,
@@ -433,6 +433,7 @@ class PdfParser(DocumentParser):
                         max(current.bbox[2], next_block.bbox[2]),
                         max(current.bbox[3], next_block.bbox[3]),
                     ),
+                    span_bboxes=merged_span_bboxes,
                 )
             else:
                 merged.append(current)
@@ -463,21 +464,110 @@ class PdfParser(DocumentParser):
         table_regions = self._detect_tables(page)
         table_y_ranges: list[tuple[float, float]] = []
         for table_data in table_regions:
-            table_block = self._add_table(table_data, page_number, state)
+            table_block = self._add_table(table_data, page_number, state, page, doc)
             if table_block is not None:
                 table_y_ranges.append((table_block.y0, table_block.y1))
 
-        # 3. 处理文本块（排除表格覆盖的区域）
-        for block in blocks:
+        # 3. 处理文本块（排除表格覆盖的区域），建立 block→element 映射
+        block_to_element: dict[int, int] = {}
+        for bi, block in enumerate(blocks):
             if self._in_table_region(block, table_y_ranges):
                 continue
             self._add_text_block(block, state, page_number, doc)
+            # 记录当前 block 索引 → 最新追加的元素索引
+            block_to_element[bi] = len(state.elements) - 1
 
-        # 4. 提取图片
+        # 3.5 链接交叉匹配：link rect → span bbox → 锚文本 → 精确关联到元素
+        self._match_links_to_blocks(page, blocks, block_to_element, state, doc, page_number)
+
+        # 4. 提取图片（过滤页眉页脚区域）
         self._extract_page_images(page, page_number, state, doc, pdf)
 
-        # 5. 处理页面超链接（关联到当前页最后一个非 image 元素）
+        # 5. 处理孤立页面超链接（兜底 + 页眉页脚过滤）
         self._asset_ids_for_page_links(page, state, doc, page_number)
+
+    # ── 链接匹配 ──────────────────────────────────────────────────
+
+    def _match_links_to_blocks(
+        self,
+        page: fitz.Page,
+        blocks: list[_TextBlock],
+        block_to_element: dict[int, int],
+        state: _PdfParseState,
+        doc: Document,
+        page_number: int,
+    ) -> None:
+        """将页面超链接通过 link rect 与 span bbox 交叉匹配精确关联到所属元素。
+
+        对 page.get_links() 返回的每个链接，使用其 from 矩形与所有块的
+        span_bboxes 做交集判断（阈值 ≥ 0.1），匹配到的 span 文本作为锚文本，
+        资源链接创建 Asset 并写入 asset_ids，普通网页链接写入 metadata["link_urls"]。
+        未匹配到的链接不在此处理，由 _asset_ids_for_page_links() 兜底。
+        """
+        try:
+            links = page.get_links()
+        except Exception:
+            return
+
+        page_height = page.rect.height
+        matched_uris: set[str] = set()
+
+        for link in links:
+            uri = link.get("uri", "")
+            if not uri or not uri.startswith(("http://", "https://")):
+                continue
+
+            link_rect = link.get("from")
+            if link_rect is None:
+                continue
+
+            # 过滤页眉页脚区域的链接
+            lr = fitz.Rect(link_rect)
+            if lr.y0 < page_height * HEADER_FOOTER_Y_MARGIN:
+                continue
+            if lr.y1 > page_height * (1 - HEADER_FOOTER_Y_MARGIN):
+                continue
+
+            # 与所有块的 span_bboxes 做交叉匹配
+            best_match: tuple[int, str, float] | None = None  # (block_idx, span_text, ratio)
+            for bi, block in enumerate(blocks):
+                if bi not in block_to_element:
+                    continue
+                for span_text, span_bbox in block.span_bboxes:
+                    sr = fitz.Rect(span_bbox)
+                    if sr.intersects(lr):
+                        ratio = (sr & lr).get_area() / max(sr.get_area(), 1.0)
+                        if ratio >= 0.1:
+                            if best_match is None or ratio > best_match[2]:
+                                best_match = (bi, span_text, ratio)
+
+            if best_match is not None:
+                bi, anchor_text, _ratio = best_match
+                ei = block_to_element[bi]
+                element = state.elements[ei]
+                # 创建 Asset（仅资源链接），普通网页链接写入 metadata["link_urls"]
+                asset_type = self._asset_type_for_url(uri)
+                if asset_type is not None:
+                    asset = self._asset_for_url(uri, asset_type, state, doc, {
+                        "page": page_number,
+                        "source": "pdf_link_bbox_match",
+                        "anchor_text": anchor_text,
+                    })
+                    if asset.asset_id not in element.asset_ids:
+                        element.asset_ids.append(asset.asset_id)
+                    if not asset.source_element_id:
+                        asset.source_element_id = element.element_id
+                else:
+                    # 普通网页链接 → metadata["link_urls"]（与 docx/markdown/xlsx 统一）
+                    element.metadata.setdefault("link_urls", []).append(uri)
+                # 将链接信息写入 structured_data.links
+                element.structured_data = element.structured_data or {}
+                element.structured_data.setdefault("links", []).append({
+                    "text": anchor_text,
+                    "url": uri,
+                    "link_type": classify_link(uri),
+                })
+                matched_uris.add(uri)
 
     # ── 标题 ──────────────────────────────────────────────────────
 
@@ -611,10 +701,13 @@ class PdfParser(DocumentParser):
                 extracted = table.extract()
                 if not extracted or len(extracted) < 2:
                     continue
+                ncols = len(extracted[0]) if extracted else 0
                 result.append({
                     "headers": [str(cell or "") for cell in extracted[0]],
                     "rows": extracted[1:],
                     "bbox": getattr(table, "bbox", None),
+                    "cells_bbox": getattr(table, "cells", None),
+                    "ncols": ncols,
                 })
             except Exception:
                 logger.debug("表格数据提取失败，跳过该表格")
@@ -627,23 +720,63 @@ class PdfParser(DocumentParser):
         table_data: dict[str, Any],
         page_number: int,
         state: _PdfParseState,
+        page: fitz.Page | None = None,
+        doc: Document | None = None,
     ) -> _TextBlock | None:
-        """将检测到的表格转换为 table 类型 ParsedElement。"""
+        """将检测到的表格转换为 table 类型 ParsedElement。
+
+        同时匹配页面链接到表格单元格（按坐标交叉匹配），
+        资源链接创建 Asset，普通网页链接写入 metadata.link_urls，
+        所有链接写入 structured_data.links。
+        """
         headers = table_data["headers"]
         raw_rows = table_data["rows"]
         if not raw_rows:
             return None
 
+        # ── 按坐标匹配链接到单元格 ──
+        table_asset_ids: list[str] = []
+        table_link_urls: list[str] = []
+        table_links: list[dict[str, str]] = []
+        cell_bboxes = table_data.get("cells_bbox")
+        ncols = table_data.get("ncols", 0)
+        links = page.get_links() if page is not None else []
+
+        if cell_bboxes and ncols and links:
+            for cell_idx, cell_bbox in enumerate(cell_bboxes):
+                for link in links:
+                    lr = fitz.Rect(link.get("from", (0, 0, 0, 0)))
+                    if fitz.Rect(cell_bbox).intersects(lr):
+                        uri = link.get("uri", "")
+                        if not uri:
+                            continue
+                        asset_type = self._asset_type_for_url(uri)
+                        if asset_type is not None:
+                            if doc is not None:
+                                asset = self._asset_for_url(uri, asset_type, state, doc, {
+                                    "page": page_number,
+                                    "source": "pdf_table_link",
+                                })
+                                table_asset_ids.append(asset.asset_id)
+                        else:
+                            table_link_urls.append(uri)
+                        table_links.append({
+                            "text": "",
+                            "url": uri,
+                            "link_type": classify_link(uri),
+                        })
+                        break  # 一个单元格最多一个链接
+
         rows: list[dict[str, Any]] = []
         for row in raw_rows:
             rows.append({
                 "cells": [
-                    {"text": str(cell or ""), "asset_ids": []}
+                    {"text": str(cell or ""), "asset_ids": list(dict.fromkeys(table_asset_ids))}
                     for cell in row
                 ],
             })
 
-        structured = {
+        structured: dict[str, Any] = {
             "table": {
                 "caption": "",
                 "headers": headers,
@@ -654,12 +787,19 @@ class PdfParser(DocumentParser):
                 },
             },
         }
+        if table_links:
+            structured["links"] = table_links
 
         text_parts: list[str] = []
         if headers:
             text_parts.append(" | ".join(headers))
         for row in rows:
             text_parts.append(" | ".join(cell["text"] for cell in row["cells"]))
+
+        all_asset_ids = list(dict.fromkeys(table_asset_ids))
+        element_metadata: dict[str, Any] = {"page": page_number, "source": "pdf_table_detection"}
+        if table_link_urls:
+            element_metadata["link_urls"] = table_link_urls
 
         self._append_element(state, ParsedElement(
             doc_id=state.doc_id,
@@ -668,11 +808,12 @@ class PdfParser(DocumentParser):
             element_type=ElementType.table,
             text="\n".join(part for part in text_parts if part.strip()),
             structured_data=structured,
+            asset_ids=all_asset_ids,
             source_location=SourceLocation(
                 page=page_number,
                 section_path=list(state.section_path),
             ),
-            metadata={"page": page_number, "source": "pdf_table_detection"},
+            metadata=element_metadata,
         ))
 
         bbox = table_data.get("bbox")
@@ -712,13 +853,38 @@ class PdfParser(DocumentParser):
         doc: Document,
         pdf: fitz.Document,
     ) -> None:
-        """提取页面内嵌图片，创建 image Asset 和 image 类型 ParsedElement。"""
+        """提取页面内嵌图片，创建 image Asset 和 image 类型 ParsedElement。
+
+        过滤页眉页脚区域的图片（Y 坐标在页面顶部 15% 以内或底部 15% 以内）。
+        """
         image_list = page.get_images(full=True)
         if not image_list:
             return
 
-        for img in image_list:
+        page_height = page.rect.height
+
+        # 获取图片位置信息，用于过滤页眉页脚图片
+        image_bboxes: dict[int, tuple[float, float, float, float]] = {}
+        try:
+            for info in page.get_image_info():
+                idx = info.get("number")
+                bbox = info.get("bbox")
+                if idx is not None and bbox is not None:
+                    image_bboxes[idx] = tuple(bbox)
+        except Exception:
+            pass  # get_image_info 失败时不过滤图片位置
+
+        for idx, img in enumerate(image_list):
             xref = img[0]
+
+            # 过滤页眉页脚区域的图片
+            if idx in image_bboxes:
+                _by0, _by1 = image_bboxes[idx][1], image_bboxes[idx][3]
+                if _by0 < page_height * HEADER_FOOTER_Y_MARGIN:
+                    continue
+                if _by1 > page_height * (1 - HEADER_FOOTER_Y_MARGIN):
+                    continue
+
             try:
                 base_image = pdf.extract_image(xref)
             except Exception:
@@ -793,11 +959,16 @@ class PdfParser(DocumentParser):
         doc: Document,
         page_number: int,
     ) -> list[str]:
-        """从文本中提取 URL 并创建对应的 Asset。"""
+        """从文本中提取 URL 并创建对应的 Asset。
+
+        仅对视频、图片、附件链接创建 Asset；普通网页链接跳过。
+        """
         urls = [match.group(0) for match in HTTP_URL_RE.finditer(text or "")]
         asset_ids: list[str] = []
         for url in dict.fromkeys(urls):
             asset_type = self._asset_type_for_url(url)
+            if asset_type is None:
+                continue  # 普通网页链接，不创建 Asset
             asset = self._asset_for_url(url, asset_type, state, doc, {
                 "page": page_number,
                 "source": "pdf_text_url",
@@ -812,31 +983,68 @@ class PdfParser(DocumentParser):
         doc: Document,
         page_number: int,
     ) -> None:
-        """从页面超链接中提取 URL 并创建 Asset，关联到最近的元素。"""
+        """处理 _match_links_to_blocks 未匹配到的孤立页面超链接（兜底逻辑）。
+
+        对未被 span 匹配的页面超链接创建 Asset 并关联到当前页最后一个非 image 元素。
+        过滤页眉页脚区域链接。
+        """
         try:
             links = page.get_links()
         except Exception:
             return
+
+        page_height = page.rect.height
 
         for link in links:
             uri = link.get("uri", "")
             if not uri or not uri.startswith(("http://", "https://")):
                 continue
 
-            asset_type = self._asset_type_for_url(uri)
-            asset = self._asset_for_url(uri, asset_type, state, doc, {
-                "page": page_number,
-                "source": "pdf_link",
-                "link_kind": link.get("kind", ""),
-            })
+            # 过滤页眉页脚区域的链接（与 _match_links_to_blocks 保持一致）
+            link_rect = link.get("from")
+            if link_rect is not None:
+                lr = fitz.Rect(link_rect)
+                if lr.y0 < page_height * HEADER_FOOTER_Y_MARGIN:
+                    continue
+                if lr.y1 > page_height * (1 - HEADER_FOOTER_Y_MARGIN):
+                    continue
 
-            # 将 Asset 关联到当前页最后一个非 image 元素
+            # 跳过已在 _match_links_to_blocks 中匹配的链接
+            asset_type = self._asset_type_for_url(uri)
+            if asset_type is not None:
+                if (asset_type.value, uri) in state.assets_by_key:
+                    continue
+
+            # 创建 Asset（普通网页链接跳过）
+            if asset_type is not None:
+                asset = self._asset_for_url(uri, asset_type, state, doc, {
+                    "page": page_number,
+                    "source": "pdf_link_fallback",
+                    "link_kind": link.get("kind", ""),
+                })
+                asset_id = asset.asset_id
+            else:
+                asset_id = ""
+                # 普通网页链接去重：检查 metadata["link_urls"]
+                already_recorded = any(
+                    uri in el.metadata.get("link_urls", [])
+                    for el in state.elements
+                )
+                if already_recorded:
+                    continue
+
+            # 将链接关联到当前页最后一个非 image 元素（兜底）
             for el in reversed(state.elements):
                 if el.element_type != ElementType.image:
-                    if asset.asset_id not in el.asset_ids:
-                        el.asset_ids.append(asset.asset_id)
-                        if not asset.source_element_id:
-                            asset.source_element_id = el.element_id
+                    if asset_id and asset_id not in el.asset_ids:
+                        el.asset_ids.append(asset_id)
+                    if not asset_id:
+                        el.metadata.setdefault("link_urls", []).append(uri)
+                    if asset_id:
+                        for rec in state.assets_by_key.values():
+                            if rec.asset.asset_id == asset_id and not rec.asset.source_element_id:
+                                rec.asset.source_element_id = el.element_id
+                                break
                     break
 
     def _asset_for_url(
@@ -867,13 +1075,19 @@ class PdfParser(DocumentParser):
         state.assets_by_key[key] = _AssetRecord(asset=asset, key=key)
         return asset
 
-    def _asset_type_for_url(self, url: str) -> AssetType:
-        """根据 URL 模式判断资源类型。"""
+    def _asset_type_for_url(self, url: str) -> AssetType | None:
+        """根据 URL 模式判断资源类型：视频 → 图片 → 附件 → None（普通网页链接）。
+
+        普通网页链接（无特殊后缀且非视频/图片）返回 None，
+        不创建 Asset，仅作为 link_anchor 记录 URL 和锚文本。
+        """
         if self._is_video_url(url):
             return AssetType.video
+        if self._is_image_url(url):
+            return AssetType.image
         if self._is_attachment_url(url):
             return AssetType.attachment
-        return AssetType.attachment
+        return None
 
     def _is_video_url(self, url: str) -> bool:
         """判断 URL 是否为视频链接。"""
@@ -887,6 +1101,13 @@ class PdfParser(DocumentParser):
         if suffix:
             return suffix in ATTACHMENT_EXTENSIONS
         return False
+
+    @staticmethod
+    def _is_image_url(url: str) -> bool:
+        """判断 URL 是否指向远程图片文件（按后缀匹配）。"""
+        path = url.split("?", 1)[0]
+        suffix = PurePosixPath(path).suffix.lower()
+        return suffix in IMAGE_EXTENSIONS if suffix else False
 
     # ── 资源输出 ──────────────────────────────────────────────────
 

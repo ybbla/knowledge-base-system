@@ -4,6 +4,16 @@
 解析为统一的 ParsedElement 和 Asset 结构，供下游索引管线消费。
 """
 
+from parsers.docx_parser import DocxParser
+from parsers.markdown_parser import MarkdownParser
 from parsers.pdf_parser import PdfParser
+from parsers.pptx_parser import PptxParser
+from parsers.xlsx_parser import XlsxParser
 
-__all__ = ["PdfParser"]
+__all__ = [
+    "PdfParser",
+    "MarkdownParser",
+    "DocxParser",
+    "PptxParser",
+    "XlsxParser",
+]

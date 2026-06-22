@@ -82,23 +82,17 @@ class TestSourceLocation:
         assert sl.page is None
         assert sl.section_path == []
         assert sl.table_path == []
-        assert sl.char_start is None
-        assert sl.char_end is None
 
     def test_full_fields(self):
         sl = SourceLocation(
             page=3,
             section_path=["1 产品概述", "1.2 上传文档"],
             table_path=[{"sheet": "sheet1", "range": "A1:B10"}],
-            char_start=120,
-            char_end=138,
         )
         assert sl.page == 3
         assert len(sl.section_path) == 2
         assert len(sl.table_path) == 1
         assert sl.table_path[0]["sheet"] == "sheet1"
-        assert sl.char_start == 120
-        assert sl.char_end == 138
 
     def test_json_round_trip(self):
         sl = SourceLocation(page=5, section_path=["A", "B"])

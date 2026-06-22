@@ -1,7 +1,7 @@
 import logging
 
 from app.core.models import Document, ElementType, ParsedElement
-from ingestion.recursive_loader import RecursiveLoader
+from ingestion.recursive_loader import RecursiveLoader, RecursiveLoadResult
 from parsers.base import ParseResult
 
 
@@ -71,13 +71,13 @@ def test_load_embedded_respects_max_depth_without_reparsing_root():
     parser = _BoundaryParser()
     loader = RecursiveLoader(parser.parse, max_depth=0)
 
-    docs, elements = loader.load_embedded(_root_doc(), [_embedded_element()])
+    result = loader.load_embedded(_root_doc(), [_embedded_element()])
 
     assert parser.parsed_doc_ids == []
-    assert len(docs) == 1
-    assert docs[0].doc_id == "doc_child"
-    assert docs[0].metadata["skipped_reason"] == "max_depth_exceeded"
-    assert elements == []
+    assert len(result.documents) == 1
+    assert result.documents[0].doc_id == "doc_child"
+    assert result.documents[0].metadata["skipped_reason"] == "max_depth_exceeded"
+    assert result.elements == []
 
 
 def test_load_embedded_counts_root_elements_for_max_elements(caplog):
@@ -102,9 +102,9 @@ def test_load_embedded_skips_duplicate_hash_after_parse():
         _embedded_element("doc_child_b"),
     ]
 
-    docs, elements = loader.load_embedded(_root_doc(), root_elements)
+    result = loader.load_embedded(_root_doc(), root_elements)
 
     assert parser.parsed_doc_ids == ["doc_child_a", "doc_child_b"]
-    assert [doc.doc_id for doc in docs] == ["doc_child_a", "doc_child_b"]
-    assert docs[1].metadata["skipped_reason"] == "duplicated_document"
-    assert [el.doc_id for el in elements] == ["doc_child_a"]
+    assert [doc.doc_id for doc in result.documents] == ["doc_child_a", "doc_child_b"]
+    assert result.documents[1].metadata["skipped_reason"] == "duplicated_document"
+    assert [el.doc_id for el in result.elements] == ["doc_child_a"]

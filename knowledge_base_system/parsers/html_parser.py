@@ -109,9 +109,12 @@ class HtmlParser(DocumentParser):
     def supports(self, source_type: str) -> bool:
         return source_type.lower() in self.SUPPORTED_TYPES
 
-    def parse(self, doc: Document) -> ParseResult:
+    CONTENT_IS_TEXT = True
+
+    def parse(self, doc: Document, content: bytes | str) -> ParseResult:
         """主解析入口：将 HTML 文档解析为结构化元素和资源列表。"""
-        content = self._read_content(doc)
+        if isinstance(content, bytes):
+            content = content.decode("utf-8")
         if not content.strip():
             raise ValueError("HTML 解析失败：文档内容为空")
 
@@ -129,31 +132,6 @@ class HtmlParser(DocumentParser):
         if not state.elements:
             raise ValueError("HTML 解析失败：未提取到有效内容")
         return ParseResult(doc=doc, elements=state.elements, assets=state.assets)
-
-    def _read_content(self, doc: Document) -> str:
-        """从 metadata.raw_content 或 file:// URI 读取 HTML 文本。"""
-        raw = doc.metadata.get("raw_content", "")
-        if raw:
-            return self._decode(raw)
-
-        if doc.source_uri.startswith("file://"):
-            filepath = resolve_file_uri(doc.source_uri)
-            if filepath.exists():
-                return self._decode(filepath.read_bytes())
-
-        return ""
-
-    @staticmethod
-    def _decode(raw: str | bytes) -> str:
-        """将字节或字符串解码为 UTF-8（尝试多种编码和回退策略）。"""
-        if isinstance(raw, str):
-            return raw
-        for encoding in ("utf-8-sig", "utf-8", "gb18030"):
-            try:
-                return raw.decode(encoding)
-            except UnicodeDecodeError:
-                continue
-        return raw.decode("utf-8", errors="replace")
 
     @staticmethod
     def _content_root(soup: BeautifulSoup) -> Tag | BeautifulSoup:

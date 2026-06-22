@@ -4,10 +4,6 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app.api import documents as legacy_documents
-from app.api import ingest as legacy_ingest
-from app.api import search as legacy_search
-from app.api import upload as legacy_upload
 from app.api.v1 import mount_v1_sub_routers, register_v1_exception_handlers, router as v1_router
 from app.core.deps import shutdown_resources, startup_resources
 
@@ -35,12 +31,6 @@ register_v1_exception_handlers(app)
 mount_v1_sub_routers()
 app.include_router(v1_router)
 
-# 旧版接口仅用于兼容存量调用方；新前端统一走 /api/v1。
-app.include_router(legacy_upload.router)
-# 以下 ingest 端点已废弃，计划后续版本移除。请使用 POST /api/v1/documents/upload 替代。
-app.include_router(legacy_ingest.router)
-app.include_router(legacy_search.router)
-app.include_router(legacy_documents.router)
 
 
 # ── 前端静态文件 ─────────────────────────────────────────────────────

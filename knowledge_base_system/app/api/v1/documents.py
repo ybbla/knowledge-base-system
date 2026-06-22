@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi import status as http_status
 
-from app.api import upload as upload_api
+from app.api import upload_utils as upload_api
 from app.api.v1.errors import ErrorCode
 from app.api.v1.schemas import (
     APIResponse,
@@ -36,7 +36,7 @@ from app.core.errors import (
     DocumentNotFoundError,
     DuplicateDocumentError,
 )
-from app.core.models import DocStatus, Document, new_id
+from app.core.models import DocStatus, Document, compute_hash, new_id
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 logger = logging.getLogger(__name__)
@@ -307,7 +307,10 @@ async def upload_document(
     杜绝并发重复上传产生的孤儿文件。
     """
     original_name = file.filename or "upload"
-    source_hash, size = upload_api._hash_upload(file)
+    file.file.seek(0)
+    file_content = file.file.read()
+    source_hash = compute_hash(file_content)
+    size = len(file_content)
     resolved_title = title or Path(original_name).stem
     resolved_category = category or upload_api.DEFAULT_CATEGORY
 
@@ -403,11 +406,13 @@ async def upload_document(
     # ── 写文件 ──
     try:
         upload_data = upload_api.save_upload_file(
-            file,
+            file_content,
+            original_name,
+            size,
             title=resolved_title,
             category=resolved_category,
+            content_type=file.content_type or "application/octet-stream",
             doc_id=pre_doc_id,
-            check_duplicate=False,
         )
     except Exception:
         logger.exception("文件写入失败")
@@ -442,7 +447,7 @@ async def upload_document(
     })
 
     if ingest_after_create:
-        doc = ingestion_pipeline.ingest(doc)
+        doc = ingestion_pipeline.ingest(doc, raw_content=file_content)
         response_data = _doc_to_item(doc)
 
     return APIResponse(data=response_data).model_dump(mode="json")

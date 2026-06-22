@@ -82,8 +82,6 @@ class SourceLocation(BaseModel):
     page: int | None = None
     section_path: list[str] = Field(default_factory=list)
     table_path: list[dict] = Field(default_factory=list)
-    char_start: int | None = None  # 预留 — 精确字符溯源，当前解析器未实现
-    char_end: int | None = None    # 预留 — 同上
 
 
 class Render(BaseModel):

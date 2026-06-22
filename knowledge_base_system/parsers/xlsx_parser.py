@@ -1,7 +1,7 @@
 """XLSX 工作簿解析器。
 
 使用 openpyxl 将 .xlsx 文件解析为统一的 ParsedElement 和 Asset，
-支持按区域自动检测表格与散列数据，处理合并单元格、超链接和公式。
+支持按区域自动检测表格与散列数据，处理合并单元格、超链接、公式和嵌入图片。
 """
 
 import io
@@ -9,6 +9,7 @@ import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from pathlib import PurePosixPath
 from typing import Any
 
 from openpyxl import load_workbook
@@ -25,8 +26,19 @@ from app.core.models import (
     SourceLocation,
     compute_hash,
 )
-from app.core.paths import resolve_file_uri
-from parsers.base import DocumentParser, ParseResult
+from parsers.base import DocumentParser, ParseResult, _BaseParseState
+from parsers.utils import (
+    HTTP_URL_RE,
+    classify_link,
+    guess_mime,
+    is_attachment_url,
+    is_video_url,
+)
+
+# 图片链接扩展名（与 docx_parser 的 _IMAGE_EXTENSIONS 保持一致）
+_IMAGE_EXTENSIONS: set[str] = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".tiff", ".tif",
+}
 
 
 @dataclass
@@ -68,27 +80,25 @@ class XlsxParser(DocumentParser):
 
     支持的 source_type：xlsx。
     逐工作表处理，多行多列区域视为表格，否则视为段落。
+    支持提取嵌入图片、超链接资源、合并单元格和公式。
     """
 
     SUPPORTED_TYPES = {"xlsx"}
-    VIDEO_URL_RE = re.compile(
-        r"https?://[^\s\])<\"']*(?:youtube\.com|youtu\.be|vimeo\.com|\.mp4|\.webm|\.mov|\.m4v)[^\s\])<\"']*",
-        re.IGNORECASE,
-    )
-    HTTP_URL_RE = re.compile(r"https?://[^\s\])<\"']+", re.IGNORECASE)
 
     def supports(self, source_type: str) -> bool:
         return source_type.lower() in self.SUPPORTED_TYPES
 
-    def parse(self, doc: Document) -> ParseResult:
+    # ── 主解析入口 ──────────────────────────────────────────────────
+
+    def parse(self, doc: Document, content: bytes | str) -> ParseResult:
         """主解析入口：将 XLSX 工作簿解析为结构化元素和资源列表。"""
-        raw = self._read_content(doc)
-        if not raw:
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        if not content:
             raise ValueError("XLSX 解析失败：文档内容为空")
 
         try:
-            value_wb = load_workbook(io.BytesIO(raw), data_only=True, read_only=False)
-            formula_wb = load_workbook(io.BytesIO(raw), data_only=False, read_only=False)
+            wb = load_workbook(io.BytesIO(content), data_only=True, read_only=False)
         except (InvalidFileException, OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
             raise ValueError(f"XLSX 解析失败：{exc}") from exc
 
@@ -96,95 +106,168 @@ class XlsxParser(DocumentParser):
         assets: list[Asset] = []
         assets_by_uri: dict[str, Asset] = {}
 
-        for sheet_index, value_ws in enumerate(value_wb.worksheets, start=1):
-            if value_ws.sheet_state != "visible":
+        for sheet_index, ws in enumerate(wb.worksheets, start=1):
+            if ws.sheet_state != "visible":
                 continue
 
-            formula_ws = formula_wb[value_ws.title]
-            state.add_sheet_title(value_ws.title, sheet_index)
+            state.add_sheet_title(ws.title, sheet_index)
+
+            # 先提取嵌入图片（在收集单元格之前，以便图片 asset_id 能合并到单元格）
+            image_cell_map = self._extract_sheet_images(
+                ws, doc, ws.title, sheet_index, assets,
+            )
+
+            # 从 zip 预提取所有公式（无论缓存值是否存在）
+            formulas_map = self._extract_all_formulas_from_zip(content, sheet_index)
+
             cells = self._collect_cells(
-                value_ws,
-                formula_ws,
-                doc,
-                sheet_index,
-                assets,
-                assets_by_uri,
+                ws, doc, sheet_index, assets, assets_by_uri,
+                formulas_map=formulas_map, image_cell_map=image_cell_map,
             )
             for region in self._find_regions(cells):
                 if region.row_count >= 2 and region.col_count >= 2:
-                    state.add_table(value_ws.title, sheet_index, region, cells, assets_by_uri)
+                    state.add_table(ws.title, sheet_index, region, cells, assets_by_uri, assets)
                 else:
-                    state.add_paragraphs(value_ws.title, sheet_index, region, cells, assets_by_uri)
+                    state.add_paragraphs(ws.title, sheet_index, region, cells, assets_by_uri, assets)
 
-        doc.source_hash = compute_hash(raw)
+        doc.source_hash = compute_hash(content)
         return ParseResult(doc=doc, elements=state.elements, assets=assets)
 
-    def _read_content(self, doc: Document) -> bytes:
-        """从 metadata.raw_content 或 file:// URI 读取文档字节。"""
-        raw = doc.metadata.get("raw_content", b"")
-        if raw:
-            return raw.encode("utf-8") if isinstance(raw, str) else raw
+    # ── 嵌入图片提取 ────────────────────────────────────────────────
 
-        if doc.source_uri.startswith("file://"):
-            filepath = resolve_file_uri(doc.source_uri)
-            if filepath.exists():
-                return filepath.read_bytes()
+    def _extract_sheet_images(
+        self,
+        ws,
+        doc: Document,
+        sheet_name: str,
+        sheet_index: int,
+        assets: list[Asset],
+    ) -> dict[tuple[int, int], list[str]]:
+        """提取工作表中嵌入的图片，创建 Asset 并返回 单元格→asset_id 映射。
 
-        return b""
+        Args:
+            ws: openpyxl 工作表对象。
+            doc: 文档对象。
+            sheet_name: 工作表名称。
+            sheet_index: 工作表序号（1-based）。
+            assets: 资源列表（就地追加）。
+
+        Returns:
+            {(row, col): [asset_id, ...]}  将图片关联到锚定单元格。
+            后续 _collect_cells() 会将图片 asset_id 合并到对应 _CellInfo 中，
+            最终通过 ParsedElement.asset_ids → Asset.source_element_id 完成溯源。
+        """
+        image_cell_map: dict[tuple[int, int], list[str]] = {}
+
+        for idx, img in enumerate(ws._images):
+            try:
+                data = img._data()
+            except Exception:
+                continue
+
+            # 获取锚定位置（0-based → 1-based）
+            row, col = 0, 0
+            try:
+                anchor = img.anchor
+                if hasattr(anchor, "_from"):
+                    row = anchor._from.row + 1
+                    col = anchor._from.col + 1
+            except Exception:
+                pass
+
+            content_type = img.format or "png"
+            ext = content_type.lower()
+            filename = f"image_{sheet_index}_{idx}.{ext}"
+
+            asset = Asset(
+                doc_id=doc.doc_id,
+                asset_type=AssetType.image,
+                original_uri=f"xlsx://{doc.doc_id}/media/{filename}",
+                mime_type=guess_mime(f".{ext}", AssetType.image),
+                status=AssetStatus.ready,
+                metadata={
+                    "source": "xlsx_image",
+                    "sheet_name": sheet_name,
+                    "sheet_index": sheet_index,
+                    "cell": f"{get_column_letter(col)}{row}" if row and col else None,
+                    "row": row,
+                    "col": col,
+                },
+            )
+            object.__setattr__(asset, "_data", data)
+            assets.append(asset)
+
+            if row and col:
+                image_cell_map.setdefault((row, col), []).append(asset.asset_id)
+
+        return image_cell_map
+
+    # ── 单元格收集 ──────────────────────────────────────────────────
 
     def _collect_cells(
         self,
-        value_ws,
-        formula_ws,
+        ws,
         doc: Document,
         sheet_index: int,
         assets: list[Asset],
         assets_by_uri: dict[str, Asset],
+        formulas_map: dict[str, str],
+        image_cell_map: dict[tuple[int, int], list[str]] | None = None,
     ) -> dict[tuple[int, int], _CellInfo]:
-        """遍历工作表中的所有单元格，收集文本、公式、超链接和资源。"""
-        merged_map = self._build_merged_map(formula_ws)
+        """遍历工作表中的所有单元格，收集文本、公式、超链接和资源。
+
+        公式文本通过预提取的 formulas_map 查询，
+        无论缓存值是否存在都能记录公式信息。
+        嵌入图片的 asset_id 合并到对应位置的 _CellInfo 中。
+        """
+        merged_map = self._build_merged_map(ws)
         cells: dict[tuple[int, int], _CellInfo] = {}
+        if image_cell_map is None:
+            image_cell_map = {}
 
-        for row in range(1, value_ws.max_row + 1):
-            for col in range(1, value_ws.max_column + 1):
+        for row in range(1, ws.max_row + 1):
+            for col in range(1, ws.max_column + 1):
                 source_row, source_col = merged_map.get((row, col), (row, col))
-                value_cell = value_ws.cell(source_row, source_col)
-                formula_cell = formula_ws.cell(source_row, source_col)
-                display_cell = formula_ws.cell(row, col)
-                coordinate = display_cell.coordinate
+                cell = ws.cell(row, col)
+                source_cell = ws.cell(source_row, source_col)
+                coordinate = cell.coordinate
 
-                formula = self._formula_text(formula_cell.value)
-                value_text = self._stringify(value_cell.value)
-                hyperlink = self._hyperlink_target(display_cell) or self._hyperlink_target(formula_cell)
+                value_text = self._stringify(source_cell.value)
+                hyperlink = self._hyperlink_target(cell) or self._hyperlink_target(source_cell)
                 text = value_text
                 metadata: dict[str, Any] = {
                     "cell": coordinate,
-                    "sheet_name": formula_ws.title,
+                    "sheet_name": ws.title,
                     "sheet_index": sheet_index,
                 }
 
+                # 从预提取 map 查询公式（无论缓存值是否存在）
+                formula = formulas_map.get(source_cell.coordinate)
                 if formula:
                     metadata["formula"] = formula
                     metadata["formula_value_missing"] = not bool(value_text)
-                    if not text:
+                    if not value_text:
                         text = formula
+
                 if (row, col) in merged_map and (row, col) != (source_row, source_col):
-                    metadata["merged_from"] = formula_cell.coordinate
+                    metadata["merged_from"] = source_cell.coordinate
                 if hyperlink:
                     metadata["hyperlink"] = hyperlink
                     if not text and hyperlink.startswith(("http://", "https://")):
                         text = hyperlink
 
-                asset_ids = self._assets_from_cell(
-                    doc,
-                    formula_ws.title,
-                    coordinate,
-                    text,
-                    hyperlink,
-                    assets,
-                    assets_by_uri,
+                # 提取链接资源（asset_ids + 普通网页 link_urls）
+                link_asset_ids, link_urls = self._assets_from_cell(
+                    doc, ws.title, coordinate, text, hyperlink,
+                    assets, assets_by_uri,
                 )
-                if not text and not asset_ids and not formula and not hyperlink:
+                if link_urls:
+                    metadata["link_urls"] = link_urls
+
+                # 合并嵌入图片的 asset_id（图片优先排在前面）
+                cell_asset_ids = image_cell_map.get((row, col), []) + link_asset_ids
+
+                if not text and not cell_asset_ids and not formula and not hyperlink:
                     continue
 
                 metadata["text"] = text
@@ -193,15 +276,66 @@ class XlsxParser(DocumentParser):
                     col=col,
                     coordinate=coordinate,
                     text=text,
-                    asset_ids=asset_ids,
+                    asset_ids=cell_asset_ids,
                     metadata=metadata,
                 )
 
         return cells
 
+    # ── 公式预提取 ────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_all_formulas_from_zip(
+        raw: bytes, sheet_index: int,
+    ) -> dict[str, str]:
+        """从 zip 原始 XML 中预提取当前工作表所有公式。
+
+        一次性解析 xl/worksheets/sheet{sheet_index}.xml，
+        提取所有 <c r="..."><f>...</f></c> 节点，
+        返回 {cell_ref: formula_text} 映射。
+
+        无论缓存值是否存在都提取公式文本，
+        确保 metadata 中始终记录公式信息。
+
+        Args:
+            raw: 原始 xlsx 文件字节。
+            sheet_index: 工作表序号（1-based）。
+
+        Returns:
+            {cell_ref: formula_text} 映射（如 {"B2": "=SUM(A2:A3)"}）。
+        """
+        formulas: dict[str, str] = {}
+        try:
+            sheet_xml_path = f"xl/worksheets/sheet{sheet_index}.xml"
+            with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                if sheet_xml_path not in zf.namelist():
+                    return formulas
+                sheet_xml = zf.read(sheet_xml_path).decode("utf-8")
+
+            # 匹配所有 <c r="B2"><f>SUM(A2:A3)</f> 节点
+            for match in re.finditer(
+                r'<c\s+r="([A-Z]+[0-9]+)"[^>]*>\s*<f[^>]*>(.*?)</f>',
+                sheet_xml,
+                re.DOTALL,
+            ):
+                cell_ref = match.group(1)
+                formula_text = match.group(2).strip()
+                formulas[cell_ref] = (
+                    f"={formula_text}" if not formula_text.startswith("=") else formula_text
+                )
+        except Exception:
+            pass
+
+        return formulas
+
+    # ── 合并单元格映射 ──────────────────────────────────────────────
+
     @staticmethod
     def _build_merged_map(ws) -> dict[tuple[int, int], tuple[int, int]]:
-        """构建合并单元格到源单元格的映射。"""
+        """构建合并单元格到源单元格的映射。
+
+        合并区域中所有单元格映射到左上角源单元格 (min_row, min_col)。
+        """
         merged_map: dict[tuple[int, int], tuple[int, int]] = {}
         for merged_range in ws.merged_cells.ranges:
             min_col, min_row, max_col, max_row = range_boundaries(str(merged_range))
@@ -210,23 +344,27 @@ class XlsxParser(DocumentParser):
                     merged_map[(row, col)] = (min_row, min_col)
         return merged_map
 
-    @staticmethod
-    def _formula_text(value: Any) -> str | None:
-        """如果单元格值为公式（以 = 开头）则返回，否则返回 None。"""
-        if isinstance(value, str) and value.startswith("="):
-            return value
-        return None
+    # ── 超链接 ──────────────────────────────────────────────────────
 
     @staticmethod
     def _hyperlink_target(cell) -> str | None:
-        """获取单元格的超链接目标 URL。"""
+        """获取单元格的超链接目标 URL。
+
+        优先返回 hyperlink.target（外部 URL），
+        其次返回 hyperlink.location（内部跳转）。
+        """
         if cell.hyperlink is None:
             return None
         return cell.hyperlink.target or cell.hyperlink.location
 
+    # ── 值序列化 ────────────────────────────────────────────────────
+
     @staticmethod
     def _stringify(value: Any) -> str:
-        """将单元格值安全转换为字符串。"""
+        """将单元格值安全转换为字符串。
+
+        None → 空字符串，datetime/date → ISO 格式，其余 → str.strip()。
+        """
         if value is None:
             return ""
         if isinstance(value, datetime):
@@ -234,6 +372,8 @@ class XlsxParser(DocumentParser):
         if isinstance(value, date):
             return value.isoformat()
         return str(value).strip()
+
+    # ── 链接资源提取 ────────────────────────────────────────────────
 
     def _assets_from_cell(
         self,
@@ -244,25 +384,38 @@ class XlsxParser(DocumentParser):
         hyperlink: str | None,
         assets: list[Asset],
         assets_by_uri: dict[str, Asset],
-    ) -> list[str]:
-        """从单元格文本和超链接中提取 URL 并创建 Asset。"""
+    ) -> tuple[list[str], list[str]]:
+        """从单元格文本和超链接中提取 URL 并创建 Asset。
+
+        按 video > image > attachment 分类创建 Asset，
+        普通网页链接不创建 Asset，返回为 link_urls。
+        已存在的 URL 通过 assets_by_uri 去重。
+
+        Returns:
+            (asset_ids, link_urls) — 资源 ID 列表和普通网页链接列表。
+        """
         urls: list[str] = []
         if text:
-            urls.extend(match.group(0) for match in self.HTTP_URL_RE.finditer(text))
+            urls.extend(match.group(0) for match in HTTP_URL_RE.finditer(text))
         if hyperlink and hyperlink.startswith(("http://", "https://")):
             urls.append(hyperlink)
 
         asset_ids: list[str] = []
-        for url in dict.fromkeys(urls):
+        link_urls: list[str] = []
+        for url in dict.fromkeys(urls):  # 去重保序
             asset = assets_by_uri.get(url)
             if asset is None:
-                asset_type = AssetType.video if self._is_video_url(url) else AssetType.attachment
+                asset_type = self._classify_link_asset_type(url)
+                if asset_type is None:
+                    # 普通网页链接，不创建 Asset
+                    link_urls.append(url)
+                    continue
                 asset = Asset(
                     doc_id=doc.doc_id,
                     asset_type=asset_type,
                     original_uri=url,
                     storage_uri=None,
-                    mime_type=self._guess_mime(url, asset_type),
+                    mime_type=guess_mime(url, asset_type),
                     status=AssetStatus.ready,
                     extracted_text=None,
                     metadata={
@@ -274,68 +427,82 @@ class XlsxParser(DocumentParser):
                 assets.append(asset)
                 assets_by_uri[url] = asset
             asset_ids.append(asset.asset_id)
-        return asset_ids
-
-    def _is_video_url(self, url: str) -> bool:
-        """判断 URL 是否为视频链接。"""
-        return bool(self.VIDEO_URL_RE.search(url))
+        return asset_ids, link_urls
 
     @staticmethod
-    def _guess_mime(url: str, asset_type: AssetType) -> str:
-        """根据 URL 后缀和资源类型推断 MIME 类型。"""
-        ext = url.lower().split("?", 1)[0].rsplit(".", 1)[-1]
-        mime_map = {
-            "mp4": "video/mp4",
-            "webm": "video/webm",
-            "mov": "video/quicktime",
-            "m4v": "video/mp4",
-            "pdf": "application/pdf",
-            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        }
-        if ext in mime_map:
-            return mime_map[ext]
-        return "video/*" if asset_type == AssetType.video else "application/octet-stream"
+    def _classify_link_asset_type(url: str) -> AssetType | None:
+        """根据 URL 判断链接的资源类型。
+
+        优先级：视频 > 图片 > 附件 > 普通网页。
+        普通网页返回 None，不创建 Asset，只记录到 metadata.link_urls。
+        与 Markdown/DOCX 解析器的 _classify_link_url() 行为一致。
+        """
+        if is_video_url(url):
+            return AssetType.video
+
+        suffix = PurePosixPath(url.split("?", 1)[0]).suffix.lower()
+        if suffix in _IMAGE_EXTENSIONS:
+            return AssetType.image
+
+        if is_attachment_url(url):
+            return AssetType.attachment
+
+        # 普通网页链接，不创建 Asset
+        return None
+
+    # ── 区域检测 ────────────────────────────────────────────────────
 
     @staticmethod
     def _find_regions(cells: dict[tuple[int, int], _CellInfo]) -> list[_Region]:
         """从单元格集合中检测连续的数据区域。
 
-        按行连续分组和列连续分组的笛卡尔积获得所有候选区域。
+        使用 occupied_rows 映射（dict[int, set[int]]）快速跳过空候选区域，
+        避免笛卡尔积产生的无效遍历。
         """
         if not cells:
             return []
 
-        row_groups = _group_contiguous(sorted({row for row, _ in cells}))
-        col_groups = _group_contiguous(sorted({col for _, col in cells}))
+        # 预构建 row → 该行所有有数据的列的集合
+        occupied_rows: dict[int, set[int]] = {}
+        for row, col in cells:
+            occupied_rows.setdefault(row, set()).add(col)
+
+        row_groups = _group_contiguous(sorted(occupied_rows.keys()))
+        all_cols = sorted({col for _, col in cells})
+        col_groups = _group_contiguous(all_cols)
         regions: list[_Region] = []
 
         for row_start, row_end in row_groups:
             for col_start, col_end in col_groups:
-                has_cells = any(
-                    row_start <= row <= row_end and col_start <= col <= col_end
-                    for row, col in cells
-                )
-                if has_cells:
-                    regions.append(_Region(row_start, row_end, col_start, col_end))
+                # O(1) 快速跳过空区域
+                if not any(
+                    any(col_start <= c <= col_end for c in occupied_rows.get(r, set()))
+                    for r in range(row_start, row_end + 1)
+                ):
+                    continue
+                regions.append(_Region(row_start, row_end, col_start, col_end))
 
         return sorted(regions, key=lambda region: (region.min_row, region.min_col))
 
+    # ── 清理 ──────────────────────────────────────────────────────
 
-class _XlsxParseState:
-    """维护 XLSX 解析过程中生成元素的顺序和标题路径。"""
+    @staticmethod
+    def _cleanup_raw_content(doc: Document) -> None:
+        """清理 metadata 中的 raw_content，避免大文件字节滞留内存。"""
+        cleaned = dict(doc.metadata)
+        cleaned.pop("raw_content", None)
+        doc.metadata = cleaned
 
-    def __init__(self, doc_id: str, doc_version: int):
-        self.doc_id = doc_id
-        self.doc_version = doc_version
-        self.elements: list[ParsedElement] = []
-        self._seq = 0
-        self._section_path: list[str] = []
+# ── 内部解析状态 ────────────────────────────────────────────────────
 
-    def _next_seq(self) -> int:
-        """生成递增的序号。"""
-        self._seq += 1
-        return self._seq
+
+@dataclass
+class _XlsxParseState(_BaseParseState):
+    """维护 XLSX 解析过程中生成元素的顺序和标题路径。
+
+    继承 _BaseParseState 的 doc_id、doc_version、elements、_seq、
+    _section_path 和 _next_seq() 方法。
+    """
 
     def add_sheet_title(self, sheet_name: str, sheet_index: int) -> None:
         """为每个工作表添加标题元素。"""
@@ -348,7 +515,11 @@ class _XlsxParseState:
                 element_type=ElementType.title,
                 text=sheet_name,
                 source_location=SourceLocation(section_path=list(self._section_path)),
-                metadata={"heading_level": 1, "sheet_name": sheet_name, "sheet_index": sheet_index},
+                metadata={
+                    "heading_level": 1,
+                    "sheet_name": sheet_name,
+                    "sheet_index": sheet_index,
+                },
             )
         )
 
@@ -359,6 +530,7 @@ class _XlsxParseState:
         region: _Region,
         cells: dict[tuple[int, int], _CellInfo],
         assets_by_uri: dict[str, Asset],
+        assets: list[Asset] | None = None,
     ) -> None:
         """为多行多列区域创建表格元素（首行为标题）。"""
         headers = [
@@ -405,17 +577,36 @@ class _XlsxParseState:
                 },
             }
         }
+        # 汇总表格级 link_urls 和 links（从单元格 metadata 聚合）
+        table_link_urls: list[str] = []
+        table_links: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
+        all_cells = header_cells + [c for row in rows for c in row["cells"]]
+        for c in all_cells:
+            cell_urls = c.get("metadata", {}).get("link_urls", [])
+            for url in cell_urls:
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    table_link_urls.append(url)
+                    table_links.append({
+                        "text": c["text"],
+                        "url": url,
+                        "link_type": classify_link(url),
+                    })
+        if table_links:
+            structured["links"] = table_links
+
         text = self._table_text(headers, rows)
         unique_asset_ids = list(dict.fromkeys(asset_ids))
-        element = ParsedElement(
-            doc_id=self.doc_id,
-            doc_version=self.doc_version,
-            sequence_order=self._next_seq(),
-            element_type=ElementType.table,
-            text=text,
-            structured_data=structured,
-            asset_ids=unique_asset_ids,
-            source_location=SourceLocation(
+        element_kwargs: dict[str, Any] = {
+            "doc_id": self.doc_id,
+            "doc_version": self.doc_version,
+            "sequence_order": self._next_seq(),
+            "element_type": ElementType.table,
+            "text": text,
+            "structured_data": structured,
+            "asset_ids": unique_asset_ids,
+            "source_location": SourceLocation(
                 section_path=list(self._section_path),
                 table_path=[
                     {
@@ -425,13 +616,23 @@ class _XlsxParseState:
                     }
                 ],
             ),
-            metadata={
+        }
+        if table_link_urls:
+            base_meta = {
                 "sheet_name": sheet_name,
                 "sheet_index": sheet_index,
                 "range": region.range_ref,
-            },
-        )
-        self._link_assets(element, assets_by_uri)
+                "link_urls": table_link_urls,
+            }
+        else:
+            base_meta = {
+                "sheet_name": sheet_name,
+                "sheet_index": sheet_index,
+                "range": region.range_ref,
+            }
+        element_kwargs["metadata"] = base_meta
+        element = ParsedElement(**element_kwargs)
+        self._link_assets(element, assets_by_uri, assets)
         self.elements.append(element)
 
     def add_paragraphs(
@@ -441,6 +642,7 @@ class _XlsxParseState:
         region: _Region,
         cells: dict[tuple[int, int], _CellInfo],
         assets_by_uri: dict[str, Asset],
+        assets: list[Asset] | None = None,
     ) -> None:
         """为单行或单列区域创建段落元素。"""
         for row in range(region.min_row, region.max_row + 1):
@@ -471,14 +673,18 @@ class _XlsxParseState:
                         "sheet_index": sheet_index,
                     },
                 )
-                self._link_assets(element, assets_by_uri)
+                self._link_assets(element, assets_by_uri, assets)
                 self.elements.append(element)
 
     @staticmethod
-    def _cell(cells: dict[tuple[int, int], _CellInfo], row: int, col: int) -> _CellInfo:
+    def _cell(
+        cells: dict[tuple[int, int], _CellInfo], row: int, col: int,
+    ) -> _CellInfo:
         """安全获取单元格信息，缺失时返回空 _CellInfo。"""
         coordinate = f"{get_column_letter(col)}{row}"
-        return cells.get((row, col)) or _CellInfo(row=row, col=col, coordinate=coordinate)
+        return cells.get((row, col)) or _CellInfo(
+            row=row, col=col, coordinate=coordinate,
+        )
 
     @staticmethod
     def _table_text(headers: list[str], rows: list[dict[str, Any]]) -> str:
@@ -491,12 +697,24 @@ class _XlsxParseState:
         return "\n".join(part for part in parts if part.strip())
 
     @staticmethod
-    def _link_assets(element: ParsedElement, assets_by_uri: dict[str, Asset]) -> None:
-        """将元素的 asset_ids 关联的 Asset 回链 source_element_id。"""
+    def _link_assets(
+        element: ParsedElement,
+        assets_by_uri: dict[str, Asset],
+        assets: list[Asset] | None = None,
+    ) -> None:
+        """将元素的 asset_ids 关联的 Asset 回链 source_element_id。
+
+        遍历 assets_by_uri（链接资源）和 assets（嵌入图片等），
+        确保所有类型的 Asset 都能关联到对应元素。
+        """
         linked = set(element.asset_ids)
         for asset in assets_by_uri.values():
             if asset.asset_id in linked and not asset.source_element_id:
                 asset.source_element_id = element.element_id
+        if assets:
+            for asset in assets:
+                if asset.asset_id in linked and not asset.source_element_id:
+                    asset.source_element_id = element.element_id
 
 
 def _group_contiguous(values: list[int]) -> list[tuple[int, int]]:

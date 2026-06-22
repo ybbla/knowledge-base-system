@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     llm_model: str = "doubao-seed-2-0-pro-260215"
     embedding_model: str = "doubao-embedding-vision-251215"
-    request_timeout_seconds: float = Field(default=3.0, validation_alias="VOLCENGINE_TIMEOUT_SECONDS")
+    request_timeout_seconds: float = Field(default=60.0, validation_alias="VOLCENGINE_TIMEOUT_SECONDS")
 
     # 检索默认参数。通过原始环境变量读取，便于评测脚本动态覆盖。
     vector_top_k: int = Field(default=30, validation_alias="VECTOR_TOP_K")
@@ -80,10 +80,6 @@ class Settings(BaseSettings):
     minio_presigned_expiry: int = Field(
         default=3600, validation_alias="MINIO_PRESIGNED_EXPIRY"
     )
-
-    # 资源处理限制
-    max_asset_size_mb: int = Field(default=100, validation_alias="MAX_ASSET_SIZE_MB")
-    max_assets_per_doc: int = Field(default=100, validation_alias="MAX_ASSETS_PER_DOC")
 
     # 多模态视觉理解
     image_vision_enabled: bool = Field(default=True, validation_alias="IMAGE_VISION_ENABLED")
