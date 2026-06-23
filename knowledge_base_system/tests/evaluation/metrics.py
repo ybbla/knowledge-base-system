@@ -1,6 +1,7 @@
-"""Compute Recall@k and MRR metrics."""
+"""检索质量评测指标计算。
 
-import math
+提供标准 Recall@K 和 MRR 两个核心指标，以及安全的均值汇总函数。
+"""
 
 
 def recall_at_k(
@@ -8,28 +9,41 @@ def recall_at_k(
     expected: list[str],
     k: int = 5,
 ) -> float | None:
-    """Compute Recall@k.
+    """计算标准 Recall@K：top-K 中命中的期望 chunk 数占期望总数的比例。
+
+    例如：期望 3 个 chunk，top-5 命中 2 个 → Recall@5 = 2/3 ≈ 0.667。
+
+    Args:
+        results: 检索返回的 chunk_id 列表，按分数降序排列。
+        expected: 期望命中的 chunk_id 列表。
+        k: 截断位置，默认 5。
 
     Returns:
-        1.0 if any expected chunk_id appears in results[:k],
-        0.0 if not found,
-        None if expected list is empty (no annotation).
+        Recall@K 分数 (float)，命中数/期望总数；
+        如果 expected 为空则返回 None（无标注，不计入汇总）。
     """
     if not expected:
         return None
     top_k = set(results[:k])
-    return 1.0 if top_k & set(expected) else 0.0
+    hits = len(top_k & set(expected))
+    return hits / len(expected)
 
 
 def mrr(
     results: list[str],
     expected: list[str],
 ) -> float | None:
-    """Compute Mean Reciprocal Rank (single query).
+    """计算 Mean Reciprocal Rank（单条查询版本）。
+
+    取第一个命中 chunk 的排名倒数。排第 1 → 1.0，排第 3 → 0.333，未命中 → 0.0。
+
+    Args:
+        results: 检索返回的 chunk_id 列表，按分数降序排列。
+        expected: 期望命中的 chunk_id 列表。
 
     Returns:
-        Reciprocal rank of first hit, 0.0 if not found,
-        None if expected list is empty (no annotation).
+        倒数排名 (float)；
+        如果 expected 为空则返回 None（无标注，不计入汇总）。
     """
     if not expected:
         return None
@@ -40,28 +54,15 @@ def mrr(
     return 0.0
 
 
-def recall_by_keywords(
-    results_content: list[str],
-    expected_keywords: list[str],
-    k: int = 5,
-) -> float | None:
-    """Compute keyword-based recall.
+def safe_mean(values: list[float | None]) -> float | None:
+    """计算非 None 值的算术平均。全为 None 时返回 None。
+
+    Args:
+        values: 可能包含 None 的浮点数列表。
 
     Returns:
-        1.0 if any result in top-k contains all expected keywords,
-        0.0 if not found,
-        None if expected_keywords is empty (no annotation).
+        平均值；全为 None 时返回 None。
     """
-    if not expected_keywords:
-        return None
-    for content in results_content[:k]:
-        if all(kw in content for kw in expected_keywords):
-            return 1.0
-    return 0.0
-
-
-def safe_mean(values: list[float | None]) -> float | None:
-    """Compute mean of non-None values. Returns None if all are None."""
     valid = [v for v in values if v is not None]
     if not valid:
         return None

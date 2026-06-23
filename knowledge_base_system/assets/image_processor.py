@@ -7,9 +7,10 @@ import hashlib
 import logging
 from pathlib import Path
 
-from app.core.config import get_settings, settings
+from app.core.config import get_settings
 from app.core.models import Asset, AssetStatus
 from assets.base import AssetStore
+from assets.downloader import download_to_bytes
 from assets.minio_store import MinioAssetStore, make_minio_key, read_uri_bytes
 
 logger = logging.getLogger(__name__)
@@ -25,21 +26,18 @@ MAGIC_MIME = {
 }
 
 
-def process_image(
+def _process_image_data(
+    data: bytes,
     asset: Asset,
     asset_store: AssetStore,
     minio_store: MinioAssetStore | None = None,
 ) -> Asset:
-    """处理图片 Asset：读取、校验、哈希去重，并按需上传 MinIO。
+    """处理图片字节数据：魔数校验、哈希去重、视觉理解、MinIO 上传。
 
-    处理流程：
-    1. 从 asset._data 或 original_uri 读取字节
-    2. 通过魔数校验图片 MIME 类型
-    3. 计算 SHA-256 哈希，查找已有副本实现去重
-    4. 调用视觉理解模型生成图片描述（可选）
-    5. 上传 MinIO 并更新 storage_uri
+    供 process_image（内嵌图片）和 process_image_link（下载后图片）共享。
 
     Args:
+        data: 图片原始字节。
         asset: 待处理的图片 Asset。
         asset_store: Asset 元数据存储。
         minio_store: MinIO 对象存储后端（None 时跳过上传）。
@@ -48,10 +46,6 @@ def process_image(
         处理后的 Asset（状态为 ready 或 failed）。
     """
     try:
-        data = getattr(asset, "_data", None)
-        if data is None:
-            data = read_uri_bytes(asset.original_uri, minio_store)
-
         mime_type = sniff_image_mime(data)
         if mime_type is None:
             asset.status = AssetStatus.failed
@@ -82,7 +76,6 @@ def process_image(
                     logger.warning("图片 %s 视觉理解返回空结果", asset.asset_id)
             except Exception:
                 logger.exception("图片 %s 视觉理解失败，继续上传 MinIO", asset.asset_id)
-                # 视觉失败不阻塞入库——图片仍然上传
 
         if minio_store is not None:
             file_name = asset.metadata.get("file_name") or Path(asset.original_uri).name
@@ -108,28 +101,78 @@ def process_image(
         return asset
 
 
-def process_video(
+def process_image(
     asset: Asset,
     asset_store: AssetStore,
+    minio_store: MinioAssetStore | None = None,
 ) -> Asset:
-    """处理视频 Asset：尝试调用多模态模型生成内容总结。
-
-    仅对可获取字节（`_data` 属性非空）的视频调用视觉理解。
-    外链视频（无字节）直接跳过，不调用视觉模型。
+    """处理内嵌图片 Asset：从 _data 或 original_uri 读取字节后走共享管线。
 
     Args:
-        asset: 待处理的视频 Asset。
+        asset: 待处理的图片 Asset（asset_type=image，_data 不为空）。
         asset_store: Asset 元数据存储。
+        minio_store: MinIO 对象存储后端（None 时跳过上传）。
 
     Returns:
         处理后的 Asset。
     """
     data = getattr(asset, "_data", None)
     if data is None:
-        # 外链视频，无字节可处理
+        data = read_uri_bytes(asset.original_uri, minio_store)
+    return _process_image_data(data, asset, asset_store, minio_store)
+
+
+def process_image_link(
+    asset: Asset,
+    asset_store: AssetStore,
+    minio_store: MinioAssetStore | None = None,
+) -> Asset:
+    """处理外部图片链接 Asset：HTTP 下载后走与内嵌图片相同的处理管线。
+
+    Args:
+        asset: 待处理的图片链接 Asset（asset_type=image_link，original_uri 为 URL）。
+        asset_store: Asset 元数据存储。
+        minio_store: MinIO 对象存储后端。
+
+    Returns:
+        处理后的 Asset。
+    """
+    try:
+        data = download_to_bytes(asset.original_uri)
+    except Exception as exc:
+        logger.warning("图片链接下载失败: %s (%s)", asset.original_uri, exc)
+        asset.status = AssetStatus.failed
+        asset.error_message = f"download_failed: {exc}"
+        asset_store.put(asset)
+        return asset
+    return _process_image_data(data, asset, asset_store, minio_store)
+
+
+def process_video(
+    asset: Asset,
+    asset_store: AssetStore,
+    minio_store: MinioAssetStore | None = None,
+) -> Asset:
+    """处理视频链接 Asset：HTTP 下载、视觉理解、MinIO 上传。
+
+    Args:
+        asset: 待处理的视频 Asset（asset_type=video_link，original_uri 为 URL）。
+        asset_store: Asset 元数据存储。
+        minio_store: MinIO 对象存储后端。
+
+    Returns:
+        处理后的 Asset。
+    """
+    try:
+        data = download_to_bytes(asset.original_uri)
+    except Exception as exc:
+        logger.warning("视频链接下载失败: %s (%s)", asset.original_uri, exc)
+        asset.status = AssetStatus.failed
+        asset.error_message = f"download_failed: {exc}"
         asset_store.put(asset)
         return asset
 
+    # 视觉理解：调用多模态模型生成视频内容总结
     try:
         from llm.volcengine_client import llm_client
 
@@ -140,7 +183,20 @@ def process_video(
             logger.warning("视频 %s 视觉理解返回空结果", asset.asset_id)
     except Exception:
         logger.exception("视频 %s 视觉理解失败", asset.asset_id)
-        # 失败不阻塞——Asset 仍然落存储
+
+    # 上传 MinIO
+    if minio_store is not None:
+        try:
+            file_name = asset.metadata.get("file_name") or Path(asset.original_uri).name
+            key = make_minio_key(asset.doc_id, file_name or f"{asset.asset_id}.bin", asset.asset_id)
+            asset.storage_uri = minio_store.upload_bytes(
+                minio_store.assets_bucket,
+                key,
+                data,
+                asset.mime_type or "video/mp4",
+            )
+        except Exception:
+            logger.exception("视频 %s MinIO 上传失败", asset.asset_id)
 
     asset_store.put(asset)
     return asset

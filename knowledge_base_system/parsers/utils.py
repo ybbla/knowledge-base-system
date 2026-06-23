@@ -52,7 +52,7 @@ def guess_mime(url: str, asset_type: AssetType) -> str:
 
     Args:
         url: 资源 URL 或文件路径。
-        asset_type: Asset 类型（image / video / audio / attachment）。
+        asset_type: Asset 类型（image / image_link / video_link / document_link）。
 
     Returns:
         匹配的 MIME 字符串；未识别时按 asset_type 返回通配 MIME。
@@ -61,12 +61,10 @@ def guess_mime(url: str, asset_type: AssetType) -> str:
     if suffix in MIME_MAP:
         return MIME_MAP[suffix]
     # 回退到类型通配
-    if asset_type == AssetType.image:
+    if asset_type in (AssetType.image, AssetType.image_link):
         return "image/*"
-    if asset_type == AssetType.video:
+    if asset_type == AssetType.video_link:
         return "video/*"
-    if asset_type == AssetType.audio:
-        return "audio/*"
     return "application/octet-stream"
 
 

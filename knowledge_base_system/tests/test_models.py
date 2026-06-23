@@ -14,7 +14,6 @@ from pydantic import ValidationError
 from app.core.models import (
     Asset,
     AssetRef,
-    AssetRelation,
     AssetStatus,
     AssetType,
     ChunkStatus,
@@ -106,9 +105,8 @@ class TestSourceLocation:
 
 class TestAssetRef:
     def test_minimal(self):
-        ref = AssetRef(asset_id="asset_001", relation=AssetRelation.evidence)
+        ref = AssetRef(asset_id="asset_001")
         assert ref.asset_id == "asset_001"
-        assert ref.relation == AssetRelation.evidence
         assert ref.linked_text is None
         assert ref.caption is None
         assert ref.render.mode == "inline"
@@ -116,12 +114,10 @@ class TestAssetRef:
     def test_full_fields(self):
         ref = AssetRef(
             asset_id="asset_001",
-            relation=AssetRelation.illustration,
             linked_text="如图所示的界面",
             caption="上传状态截图",
             render=Render(mode="gallery", position="after_element"),
         )
-        assert ref.relation == AssetRelation.illustration
         assert ref.linked_text == "如图所示的界面"
         assert ref.caption == "上传状态截图"
         assert ref.render.mode == "gallery"
@@ -130,13 +126,12 @@ class TestAssetRef:
     def test_json_round_trip(self):
         ref = AssetRef(
             asset_id="asset_001",
-            relation=AssetRelation.evidence,
             caption="A screenshot",
         )
         data = ref.model_dump(mode="json")
         restored = AssetRef.model_validate(data)
         assert restored.asset_id == "asset_001"
-        assert restored.relation == AssetRelation.evidence
+        assert restored.caption == "A screenshot"
         assert restored.caption == "A screenshot"
 
 
@@ -191,7 +186,7 @@ class TestScoreComponents:
         sc = ScoreComponents()
         assert sc.vector == 0.0
         assert sc.bm25 == 0.0
-        assert sc.rerank == 0.0
+        assert sc.rerank is None  # None 表示 LLM Rerank 未执行
 
     def test_custom(self):
         sc = ScoreComponents(vector=0.89, bm25=0.73, rerank=0.92)
@@ -295,7 +290,6 @@ class TestParsedElement:
         assert el.text == ""
         assert el.structured_data is None
         assert el.asset_ids == []
-        assert el.embedded_doc_id is None
         assert el.source_location.page is None
         assert el.metadata == {}
 
@@ -364,16 +358,15 @@ class TestParsedElement:
         )
         assert child.parent_element_id == parent.element_id
 
-    def test_embedded_document_element(self):
+    def test_code_element(self):
+        """代码块元素测试。"""
         el = ParsedElement(
             doc_id="doc_root",
             sequence_order=1,
-            element_type=ElementType.embedded_document,
-            text="嵌入文档入口",
-            embedded_doc_id="doc_child",
+            element_type=ElementType.code,
+            text="print('hello')",
         )
-        assert el.embedded_doc_id == "doc_child"
-        assert el.element_type == ElementType.embedded_document
+        assert el.element_type == ElementType.code
 
     def test_all_element_types(self):
         """确保所有 ElementType 枚举值都能创建 ParsedElement。"""
@@ -392,7 +385,6 @@ class TestParsedElement:
             text="H1 | H2\n1 | 2",
             structured_data={"headers": ["H1", "H2"], "rows": []},
             asset_ids=["asset_001", "asset_002"],
-            embedded_doc_id="doc_embedded",
             source_location=SourceLocation(page=3, section_path=["H1"]),
             metadata={"table_caption": "表1"},
         )
@@ -406,7 +398,6 @@ class TestParsedElement:
         assert restored.text == "H1 | H2\n1 | 2"
         assert restored.structured_data == {"headers": ["H1", "H2"], "rows": []}
         assert restored.asset_ids == ["asset_001", "asset_002"]
-        assert restored.embedded_doc_id == "doc_embedded"
         assert restored.source_location.page == 3
         assert restored.metadata["table_caption"] == "表1"
 
@@ -470,20 +461,20 @@ class TestAsset:
         assert asset.metadata["width"] == 1200
 
     def test_video_asset(self):
-        asset = Asset(doc_id="doc_001", asset_type=AssetType.video,
+        asset = Asset(doc_id="doc_001", asset_type=AssetType.video_link,
                       original_uri="https://example.com/video.mp4",
                       mime_type="video/mp4")
-        assert asset.asset_type == AssetType.video
+        assert asset.asset_type == AssetType.video_link
 
     def test_url_asset(self):
-        asset = Asset(doc_id="doc_001", asset_type=AssetType.attachment,
+        asset = Asset(doc_id="doc_001", asset_type=AssetType.document_link,
                       original_uri="https://example.com/page")
-        assert asset.asset_type == AssetType.attachment
+        assert asset.asset_type == AssetType.document_link
 
     def test_file_asset(self):
-        asset = Asset(doc_id="doc_001", asset_type=AssetType.attachment,
+        asset = Asset(doc_id="doc_001", asset_type=AssetType.document_link,
                       original_uri="file:///data/attachment.pdf")
-        assert asset.asset_type == AssetType.attachment
+        assert asset.asset_type == AssetType.document_link
 
     def test_all_asset_types(self):
         for atype in AssetType:
@@ -583,7 +574,6 @@ class TestKnowledgeChunk:
             asset_refs=[
                 AssetRef(
                     asset_id="asset_001",
-                    relation=AssetRelation.evidence,
                     linked_text="界面截图展示了上传状态列表",
                     caption="上传状态列表截图",
                     render=Render(mode="inline", position="after_linked_text"),
@@ -591,7 +581,7 @@ class TestKnowledgeChunk:
             ],
         )
         assert len(chunk.asset_refs) == 1
-        assert chunk.asset_refs[0].relation == AssetRelation.evidence
+        assert chunk.asset_refs[0].asset_id == "asset_001"
         assert chunk.asset_refs[0].linked_text == "界面截图展示了上传状态列表"
         assert chunk.asset_refs[0].render.mode == "inline"
 
@@ -656,7 +646,7 @@ class TestKnowledgeChunk:
             category="产品使用",
             status=ChunkStatus.active,
             asset_refs=[
-                AssetRef(asset_id="asset_001", relation=AssetRelation.evidence,
+                AssetRef(asset_id="asset_001",
                          caption="截图"),
             ],
             source_refs=[
@@ -829,17 +819,20 @@ class TestEnums:
     def test_element_type_values(self):
         values = {t.value for t in ElementType}
         expected = {"paragraph", "title", "table", "image", "list",
-                    "embedded_document", "code", "video", "unknown"}
+                    "code", "video", "unknown"}
         assert values == expected
 
     def test_asset_type_values(self):
-        assert {t.value for t in AssetType} == {"image", "video", "audio", "attachment"}
+        assert {t.value for t in AssetType} == {"image", "image_link", "video_link", "document_link"}
 
     def test_asset_status_values(self):
         assert {s.value for s in AssetStatus} == {"ready", "failed"}
 
-    def test_asset_relation_values(self):
-        assert {r.value for r in AssetRelation} == {"evidence", "illustration", "demonstration", "source", "attachment"}
+    def test_asset_relation_removed(self):
+        """AssetRelation 枚举已删除，AssetRef 不再有 relation 字段。"""
+        ref = AssetRef(asset_id="asset_001")
+        data = ref.model_dump(mode="json")
+        assert "relation" not in data
 
     def test_knowledge_type_values(self):
         values = {t.value for t in KnowledgeType}

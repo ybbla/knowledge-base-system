@@ -143,9 +143,9 @@ class TestPptxParser:
         result = _parse(self.parser, _pptx_bytes(prs))
         assets = {asset.original_uri: asset for asset in result.assets}
 
-        assert assets["https://example.com/demo.mp4"].asset_type == AssetType.video
-        assert assets["https://example.com/audio.mp3"].asset_type == AssetType.audio
-        assert assets["https://example.com/manual.pdf"].asset_type == AssetType.attachment
+        assert assets["https://example.com/demo.mp4"].asset_type == AssetType.video_link
+        assert assets["https://example.com/audio.mp3"].asset_type == AssetType.video_link
+        assert assets["https://example.com/manual.pdf"].asset_type == AssetType.document_link
         assert len(result.assets) == 3
         paragraph = next(
             el
@@ -242,7 +242,7 @@ class TestPptxParser:
         # 验证 Asset 被创建
         assert len(result.assets) == 1
         assert result.assets[0].original_uri == "https://example.com/doc.pdf"
-        assert result.assets[0].asset_type == AssetType.attachment
+        assert result.assets[0].asset_type == AssetType.document_link
 
     def test_shape_level_hyperlink_preserved_in_links(self):
         """验证形状级超链接（click_action.hyperlink）的文字和链接记录。"""
@@ -266,7 +266,7 @@ class TestPptxParser:
         assert shape_link[0]["url"] == "https://example.com/demo.mp4"
         assert shape_link[0]["link_type"] == "video"
         # 验证 video Asset
-        assert any(a.asset_type == AssetType.video for a in result.assets)
+        assert any(a.asset_type == AssetType.video_link for a in result.assets)
 
     def test_image_shape_with_hyperlink_links(self):
         """验证图片形状带超链接时 structured_data.links 正确输出。"""
@@ -413,5 +413,5 @@ class TestPptxParser:
         assert result.assets[0].mime_type == "image/png"
 
         # 验证 URL Asset 的 MIME 推断
-        assert guess_mime("https://example.com/doc.pdf", AssetType.attachment) == "application/pdf"
+        assert guess_mime("https://example.com/doc.pdf", AssetType.document_link) == "application/pdf"
         assert guess_mime("https://example.com/unknown.xyz", AssetType.image) == "image/*"

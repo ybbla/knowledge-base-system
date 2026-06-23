@@ -1,38 +1,52 @@
-"""文档入库流水线 — 编排解析、递归加载、语义抽取、索引写入的完整流程。
+"""文档入库流水线 — 编排解析、语义抽取、索引写入的完整流程。
 
 主要类：
-- IngestionPipeline: 同步执行文档入库，包含清理旧块、解析、递归、抽取、索引五个阶段。
+- IngestionPipeline: 同步执行文档入库，包含清理旧块、解析、资源处理、抽取、索引五个阶段。
 - _batched: 通用列表分片工具函数。
 """
 
+import hashlib
 import logging
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from app.core.config import settings
 from app.core.models import (
     Asset,
-    AssetRef,
-    AssetRelation,
+    AssetStatus,
     AssetType,
     DocStatus,
     Document,
     KnowledgeChunk,
-    ParsedElement,
+    new_id,
 )
 from app.core.paths import resolve_file_uri
 from assets.base import AssetStore
-from assets.image_processor import process_image, process_video
-from assets.minio_store import MinioAssetStore, read_uri_bytes
+from assets.downloader import download_to_bytes
+from assets.image_processor import process_image, process_image_link, process_video
+from assets.minio_store import MinioAssetStore, make_minio_key, read_uri_bytes
 from indexing.base import BM25Index, VectorIndex
-from ingestion.recursive_loader import RecursiveLoader
 from llm.semantic_extractor import SemanticExtractor
 from llm.volcengine_client import embedding_client
 from parsers.registry import ParserRegistry
 
 logger = logging.getLogger(__name__)
+
+# URL 后缀 → source_type 映射（用于 document_link 推断子文档类型）
+_SUFFIX_TO_SOURCE_TYPE: dict[str, str] = {
+    ".pdf": "pdf",
+    ".docx": "docx",
+    ".xlsx": "xlsx",
+    ".pptx": "pptx",
+    ".html": "html",
+    ".htm": "html",
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".txt": "txt",
+}
 
 
 def _batched(items: list[Any], size: int) -> list[list[Any]]:
@@ -41,11 +55,17 @@ def _batched(items: list[Any], size: int) -> list[list[Any]]:
     return [items[start : start + batch_size] for start in range(0, len(items), batch_size)]
 
 
+def _source_type_from_url(url: str) -> str | None:
+    """从 URL 后缀推断 source_type，用于 document_link 子文档。"""
+    suffix = PurePosixPath(url.split("?", 1)[0]).suffix.lower()
+    return _SUFFIX_TO_SOURCE_TYPE.get(suffix)
+
+
 class IngestionPipeline:
     """文档入库流水线编排器。
 
     协调解析器注册表、语义抽取器、向量/BM25 双路索引和资源存储，
-    执行完整的文档入库流程：解析 → 递归加载嵌入子文档 → LLM 语义抽取 → 索引写入。
+    执行完整的文档入库流程：解析 → 资源处理 → LLM 语义抽取 → 索引写入。
     """
 
     def __init__(
@@ -91,7 +111,7 @@ class IngestionPipeline:
     ) -> Document:
         """同步执行文档入库，返回更新后的 Document（status=active 或 failed）。
 
-        重入库场景：先清理旧知识块（PG 软删除 + Milvus 真删），再走完整流水线。
+        重入库场景：先清理旧知识块（PG 硬删除 + Milvus 真删），再走完整流水线。
         """
         try:
             doc.status = DocStatus.processing
@@ -128,7 +148,7 @@ class IngestionPipeline:
         raw_content: bytes | str | None,
         options: dict[str, Any],
     ) -> None:
-        """文档入库流程（解析 → 递归 → 抽取 → 索引）。"""
+        """文档入库流程（解析 → 资源处理 → 抽取 → 索引）。"""
         if self._document_repo and self._document_repo.get(doc.doc_id) is None:
             self._document_repo.create(doc)
 
@@ -151,32 +171,17 @@ class IngestionPipeline:
         assets = result.assets
         assets = self._prepare_assets(assets)
 
-        # 2. 递归加载嵌入子文档
-        loader = RecursiveLoader(
-            parser_fn=parser.parse,
-            max_depth=options.get("max_depth"),
-            max_elements=options.get("max_elements_per_doc"),
-        )
-        recursive_result = loader.load_embedded(doc, elements)
-        for d in recursive_result.documents:
-            if self._document_repo:
-                self._document_repo.create(d)
-        elements.extend(recursive_result.elements)
-
         if self._element_repo and elements:
             self._element_repo.create_batch(elements)
 
-        # 3. 语义抽取
-        chunks = self._extractor.extract(
-            elements, assets, doc.doc_id, doc.category
-        )
-        self._attach_unreferenced_video_assets(chunks, assets)
+        # 2. 语义抽取（全文优先 + 递进降级）
+        chunks = self._extractor.extract(elements, assets, doc.category)
 
-        # 4. 索引
+        # 3. 索引
         if chunks:
             self._index_chunks(chunks)
 
-        # 5. 自动生成评测数据（后台异步）
+        # 4. 自动生成评测数据（后台异步）
         if settings.auto_eval_enabled and chunks:
             self._trigger_eval_data_generation(doc, chunks)
 
@@ -185,37 +190,111 @@ class IngestionPipeline:
         for asset in assets:
             if asset.asset_type == AssetType.image:
                 process_image(asset, self._asset_store, self._minio_store)
-            elif asset.asset_type == AssetType.video:
-                process_video(asset, self._asset_store)
+            elif asset.asset_type == AssetType.image_link:
+                process_image_link(asset, self._asset_store, self._minio_store)
+            elif asset.asset_type == AssetType.video_link:
+                process_video(asset, self._asset_store, self._minio_store)
+            elif asset.asset_type == AssetType.document_link:
+                self._process_document_link(asset)
             else:
                 self._asset_store.put(asset)
         return assets
 
-    @staticmethod
-    def _attach_unreferenced_video_assets(
-        chunks: list[KnowledgeChunk],
-        assets: list[Asset],
-    ) -> None:
-        """将未被 LLM 显式引用的视频资源兜底关联到同文档第一个知识块。"""
-        referenced = {
-            ref.asset_id
-            for chunk in chunks
-            for ref in chunk.asset_refs
-        }
-        for asset in assets:
-            if asset.asset_type != AssetType.video or asset.asset_id in referenced:
-                continue
-            for chunk in chunks:
-                if chunk.doc_id == asset.doc_id:
-                    chunk.asset_refs.append(
-                        AssetRef(
-                            asset_id=asset.asset_id,
-                            relation=AssetRelation.demonstration,
-                            caption=asset.original_uri,
-                        )
-                    )
-                    referenced.add(asset.asset_id)
-                    break
+    def _process_document_link(self, asset: Asset) -> None:
+        """处理文档链接 Asset：HTTP 下载、上传 MinIO、创建子 Document 并触发入库。
+
+        对标用户上传文档的完整流程。子文档在主文档语义抽取前同步完成入库，
+        失败不传播到主文档。
+
+        Args:
+            asset: document_link 类型的 Asset。
+        """
+        try:
+            data = download_to_bytes(asset.original_uri)
+        except Exception as exc:
+            logger.warning("文档链接下载失败: %s (%s)", asset.original_uri, exc)
+            asset.status = AssetStatus.failed
+            asset.error_message = f"download_failed: {exc}"
+            self._asset_store.put(asset)
+            return
+
+        # 推断子文档类型
+        source_type = _source_type_from_url(asset.original_uri)
+        if source_type is None:
+            logger.warning("无法推断文档链接类型: %s", asset.original_uri)
+            asset.status = AssetStatus.failed
+            asset.error_message = "unsupported_document_type"
+            self._asset_store.put(asset)
+            return
+
+        # 计算内容哈希，先做去重检查（避免重复上传 MinIO）
+        source_hash = f"sha256:{hashlib.sha256(data).hexdigest()}"
+        if self._document_repo and hasattr(self._document_repo, "find_by_hash"):
+            existing = self._document_repo.find_by_hash(source_hash)
+            if existing is not None:
+                logger.info("文档链接 %s 与已有文档 %s 内容相同，跳过", asset.original_uri, existing.doc_id)
+                asset.storage_uri = existing.source_uri
+                asset.status = AssetStatus.ready
+                self._asset_store.put(asset)
+                return
+
+        # 创建子文档 ID 并上传 MinIO kb-input bucket
+        child_doc_id = new_id("doc")
+        file_name = Path(asset.original_uri.rsplit("?", 1)[0]).name or "document"
+        if self._minio_store is not None:
+            key = make_minio_key(child_doc_id, file_name)
+            try:
+                source_uri = self._minio_store.upload_bytes(
+                    self._minio_store.input_bucket,
+                    key,
+                    data,
+                    "application/octet-stream",
+                )
+            except Exception as exc:
+                logger.warning("子文档 MinIO 上传失败: %s (%s)", child_doc_id, exc)
+                asset.status = AssetStatus.failed
+                asset.error_message = f"minio_upload_failed: {exc}"
+                self._asset_store.put(asset)
+                return
+        else:
+            source_uri = asset.original_uri
+
+        # 获取父文档的 root_doc_id，构建正确的文档层级
+        parent_root_id = asset.doc_id
+        if self._document_repo:
+            parent_doc = self._document_repo.get(asset.doc_id)
+            if parent_doc:
+                parent_root_id = parent_doc.root_doc_id or parent_doc.doc_id
+
+        # 创建子 Document
+        child_doc = Document(
+            doc_id=child_doc_id,
+            title=Path(file_name).stem or "子文档",
+            source_type=source_type,
+            source_uri=source_uri,
+            source_hash=source_hash,
+            parent_doc_id=asset.doc_id,
+            root_doc_id=parent_root_id,
+            metadata={"source": "document_link", "original_url": asset.original_uri},
+        )
+
+        # 持久化子文档
+        if self._document_repo:
+            self._document_repo.create(child_doc)
+
+        # 触发子文档后台异步入库（子文档已持久化 PG + MinIO，不阻塞主文档）
+        thread = threading.Thread(
+            target=self.ingest,
+            args=(child_doc,),
+            kwargs={"raw_content": data},
+            daemon=True,
+        )
+        thread.start()
+
+        asset.storage_uri = source_uri
+        asset.status = AssetStatus.ready
+        self._asset_store.put(asset)
+
 
     def index_existing_chunks(self, chunks: list[KnowledgeChunk]) -> None:
         """重新索引已持久化的知识块（不重复写 PG），用于启动恢复或人工补偿。"""
@@ -289,17 +368,16 @@ class IngestionPipeline:
         """
         def _generate() -> None:
             try:
-                import asyncio
                 from tests.evaluation.gen_dataset import generate_for_chunks
                 from tests.evaluation.storage import save_per_doc_dataset
 
-                # 转换 chunk 格式
+                # 转换 chunk 格式为 dict 列表，供 LLM 使用
                 chunk_dicts = [
                     {"chunk_id": c.chunk_id, "title": c.title, "content": c.content}
                     for c in chunks
                 ]
 
-                # 生成评测数据
+                # 生成评测数据（异步，不阻塞主流程）
                 items, errors = generate_for_chunks(
                     chunks=chunk_dicts,
                     doc_id=doc.doc_id,

@@ -1082,11 +1082,11 @@ class PdfParser(DocumentParser):
         不创建 Asset，仅作为 link_anchor 记录 URL 和锚文本。
         """
         if self._is_video_url(url):
-            return AssetType.video
+            return AssetType.video_link
         if self._is_image_url(url):
-            return AssetType.image
+            return AssetType.image_link
         if self._is_attachment_url(url):
-            return AssetType.attachment
+            return AssetType.document_link
         return None
 
     def _is_video_url(self, url: str) -> bool:

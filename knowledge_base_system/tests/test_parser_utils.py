@@ -33,27 +33,27 @@ class TestGuessMime:
 
     def test_video_extensions(self):
         """常见视频扩展名返回对应 MIME。"""
-        assert guess_mime("demo.mp4", AssetType.video) == "video/mp4"
-        assert guess_mime("demo.webm", AssetType.video) == "video/webm"
-        assert guess_mime("demo.mov", AssetType.video) == "video/quicktime"
-        assert guess_mime("demo.m4v", AssetType.video) == "video/mp4"
+        assert guess_mime("demo.mp4", AssetType.video_link) == "video/mp4"
+        assert guess_mime("demo.webm", AssetType.video_link) == "video/webm"
+        assert guess_mime("demo.mov", AssetType.video_link) == "video/quicktime"
+        assert guess_mime("demo.m4v", AssetType.video_link) == "video/mp4"
 
     def test_audio_extensions(self):
-        """常见音频扩展名返回对应 MIME。"""
-        assert guess_mime("song.mp3", AssetType.audio) == "audio/mpeg"
-        assert guess_mime("sound.wav", AssetType.audio) == "audio/wav"
-        assert guess_mime("audio.m4a", AssetType.audio) == "audio/mp4"
-        assert guess_mime("audio.aac", AssetType.audio) == "audio/aac"
-        assert guess_mime("audio.ogg", AssetType.audio) == "audio/ogg"
-        assert guess_mime("audio.flac", AssetType.audio) == "audio/flac"
+        """常见音频扩展名返回对应 MIME（归入 video_link 处理）。"""
+        assert guess_mime("song.mp3", AssetType.video_link) == "audio/mpeg"
+        assert guess_mime("sound.wav", AssetType.video_link) == "audio/wav"
+        assert guess_mime("audio.m4a", AssetType.video_link) == "audio/mp4"
+        assert guess_mime("audio.aac", AssetType.video_link) == "audio/aac"
+        assert guess_mime("audio.ogg", AssetType.video_link) == "audio/ogg"
+        assert guess_mime("audio.flac", AssetType.video_link) == "audio/flac"
 
     def test_document_extensions(self):
         """文档/附件扩展名返回对应 MIME。"""
-        assert guess_mime("doc.pdf", AssetType.attachment) == "application/pdf"
-        assert guess_mime("doc.docx", AssetType.attachment).startswith("application/vnd.openxmlformats-officedocument")
-        assert guess_mime("doc.xlsx", AssetType.attachment).startswith("application/vnd.openxmlformats-officedocument")
-        assert guess_mime("doc.pptx", AssetType.attachment).startswith("application/vnd.openxmlformats-officedocument")
-        assert guess_mime("archive.zip", AssetType.attachment) == "application/zip"
+        assert guess_mime("doc.pdf", AssetType.document_link) == "application/pdf"
+        assert guess_mime("doc.docx", AssetType.document_link).startswith("application/vnd.openxmlformats-officedocument")
+        assert guess_mime("doc.xlsx", AssetType.document_link).startswith("application/vnd.openxmlformats-officedocument")
+        assert guess_mime("doc.pptx", AssetType.document_link).startswith("application/vnd.openxmlformats-officedocument")
+        assert guess_mime("archive.zip", AssetType.document_link) == "application/zip"
 
     def test_url_with_query_params(self):
         """URL 带查询参数时正确提取扩展名。"""
@@ -62,9 +62,9 @@ class TestGuessMime:
     def test_unknown_extension_fallback(self):
         """未知扩展名按 asset_type 回退到通配 MIME。"""
         assert guess_mime("file.xyz", AssetType.image) == "image/*"
-        assert guess_mime("file.xyz", AssetType.video) == "video/*"
-        assert guess_mime("file.xyz", AssetType.audio) == "audio/*"
-        assert guess_mime("file.xyz", AssetType.attachment) == "application/octet-stream"
+        assert guess_mime("file.xyz", AssetType.image_link) == "image/*"
+        assert guess_mime("file.xyz", AssetType.video_link) == "video/*"
+        assert guess_mime("file.xyz", AssetType.document_link) == "application/octet-stream"
 
 
 class TestUrlRegex:

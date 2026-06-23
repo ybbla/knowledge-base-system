@@ -309,12 +309,12 @@ class DocxParser(DocumentParser):
         普通网页返回 None。
         """
         if is_video_url(url):
-            return AssetType.video
+            return AssetType.video_link
         suffix = PurePosixPath(url.split("?", 1)[0]).suffix.lower()
         if suffix in _IMAGE_EXTENSIONS:
-            return AssetType.image
+            return AssetType.image_link
         if is_attachment_url(url):
-            return AssetType.attachment
+            return AssetType.document_link
         return None
 
     # ── 内联图片处理 ────────────────────────────────────────────
@@ -624,7 +624,7 @@ class DocxParser(DocumentParser):
             elements: 已解析的元素列表。
             state: 当前解析状态。
         """
-        seen: set[str] = {a.original_uri for a in state.assets if a.asset_type == AssetType.video}
+        seen: set[str] = {a.original_uri for a in state.assets if a.asset_type == AssetType.video_link}
         for el in elements:
             for match in VIDEO_URL_RE.finditer(el.text or ""):
                 url = match.group(0)
@@ -634,10 +634,10 @@ class DocxParser(DocumentParser):
                 asset = Asset(
                     doc_id=state.doc_id,
                     source_element_id=el.element_id,
-                    asset_type=AssetType.video,
+                    asset_type=AssetType.video_link,
                     original_uri=url,
                     storage_uri=None,
-                    mime_type=guess_mime(url, AssetType.video),
+                    mime_type=guess_mime(url, AssetType.video_link),
                     extracted_text=None,
                     metadata={"source": "video_link"},
                 )

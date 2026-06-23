@@ -90,7 +90,7 @@ class TestMarkdownParser:
         # Should have at least one image asset
         assert len(result.assets) >= 1
         image_asset = result.assets[0]
-        assert image_asset.asset_type == "image"
+        assert image_asset.asset_type == "image_link"
         assert "upload-status.png" in image_asset.original_uri
 
     def test_parse_list(self):
@@ -192,7 +192,7 @@ class TestLinkUrlExtraction:
     def test_attachment_link_creates_asset(self):
         """附件链接 [下载手册](*.pdf) 创建 attachment 类型 Asset。"""
         result = self._parse("请 [下载手册](https://example.com/manual.pdf) 查阅。")
-        attachment_assets = [a for a in result.assets if a.asset_type == AssetType.attachment]
+        attachment_assets = [a for a in result.assets if a.asset_type == AssetType.document_link]
         assert len(attachment_assets) >= 1
         assert "manual.pdf" in attachment_assets[0].original_uri
 
@@ -203,21 +203,21 @@ class TestLinkUrlExtraction:
     def test_video_link_creates_asset(self):
         """视频链接 [演示视频](*.mp4) 创建 video 类型 Asset。"""
         result = self._parse("观看 [演示视频](https://example.com/demo.mp4)。")
-        video_assets = [a for a in result.assets if a.asset_type == AssetType.video]
+        video_assets = [a for a in result.assets if a.asset_type == AssetType.video_link]
         assert len(video_assets) >= 1
         assert "demo.mp4" in video_assets[0].original_uri
 
     def test_youtube_link_creates_video_asset(self):
         """YouTube 链接创建 video 类型 Asset。"""
         result = self._parse("请看 [教程](https://www.youtube.com/watch?v=abc123)。")
-        video_assets = [a for a in result.assets if a.asset_type == AssetType.video]
+        video_assets = [a for a in result.assets if a.asset_type == AssetType.video_link]
         assert len(video_assets) >= 1
         assert "youtube.com" in video_assets[0].original_uri
 
     def test_image_link_creates_asset(self):
         """指向图片的链接 [截图](*.png) 创建 image 类型 Asset。"""
         result = self._parse("查看 [截图](https://example.com/screenshot.png)。")
-        image_assets = [a for a in result.assets if a.asset_type == AssetType.image]
+        image_assets = [a for a in result.assets if a.asset_type == AssetType.image_link]
         assert len(image_assets) >= 1
         assert "screenshot.png" in image_assets[0].original_uri
 
@@ -237,7 +237,7 @@ class TestLinkUrlExtraction:
         para = [e for e in result.elements if e.element_type == ElementType.paragraph][0]
 
         # 应有一个附件 Asset
-        attachment_assets = [a for a in result.assets if a.asset_type == AssetType.attachment]
+        attachment_assets = [a for a in result.assets if a.asset_type == AssetType.document_link]
         assert len(attachment_assets) >= 1
 
         # 应有普通链接
@@ -274,7 +274,7 @@ class TestTableCellResourceAssociation:
         result = self._parse(md)
         table = [e for e in result.elements if e.element_type == ElementType.table][0]
 
-        image_assets = [a for a in result.assets if a.asset_type == AssetType.image]
+        image_assets = [a for a in result.assets if a.asset_type == AssetType.image_link]
         assert len(image_assets) >= 2
 
         # 单元格 asset_ids 应引用对应图片
@@ -299,7 +299,7 @@ class TestTableCellResourceAssociation:
         result = self._parse(md)
         table = [e for e in result.elements if e.element_type == ElementType.table][0]
 
-        attachment_assets = [a for a in result.assets if a.asset_type == AssetType.attachment]
+        attachment_assets = [a for a in result.assets if a.asset_type == AssetType.document_link]
         assert len(attachment_assets) >= 2
 
         rows = table.structured_data["table"]["rows"]
@@ -333,7 +333,7 @@ class TestTableCellResourceAssociation:
 """
         result = self._parse(md)
         # 不应创建 Asset（因为这是普通网页链接）
-        non_image_assets = [a for a in result.assets if a.asset_type != AssetType.image]
+        non_image_assets = [a for a in result.assets if a.asset_type != AssetType.image_link]
         assert len(non_image_assets) == 0
 
     def test_cell_text_preserved_with_image(self):

@@ -28,7 +28,6 @@ class ParsedElementRepository(BaseRepository):
             text=el.text,
             structured_data=el.structured_data,
             asset_ids=el.asset_ids,
-            embedded_doc_id=el.embedded_doc_id,
             source_location=el.source_location.model_dump(mode="json"),
             meta=el.metadata,
         )
@@ -45,7 +44,6 @@ class ParsedElementRepository(BaseRepository):
             text=db_el.text,
             structured_data=db_el.structured_data,
             asset_ids=db_el.asset_ids or [],
-            embedded_doc_id=db_el.embedded_doc_id,
             source_location=SourceLocation.model_validate(db_el.source_location or {}),
             metadata=db_el.meta or {},
         )

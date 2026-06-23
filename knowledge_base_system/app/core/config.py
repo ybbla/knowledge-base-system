@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     max_recursion_depth: int = 3
     max_elements_per_doc: int = 1000
     max_window_tokens: int = 3000
+    context_window_tokens: int = Field(default=1000000, validation_alias="CONTEXT_WINDOW_TOKENS")  # LLM 上下文窗口上限，语义抽取安全阈值 = 此值 × 0.8
     embedding_batch_size: int = Field(default=32, validation_alias="EMBEDDING_BATCH_SIZE")
     index_upsert_batch_size: int = Field(default=100, validation_alias="INDEX_UPSERT_BATCH_SIZE")
 
@@ -86,7 +87,7 @@ class Settings(BaseSettings):
 
     # 评测数据自动生成
     auto_eval_enabled: bool = Field(default=True, validation_alias="AUTO_EVAL_ENABLED")
-    auto_eval_queries_per_doc: int = Field(default=4, validation_alias="AUTO_EVAL_QUERIES_PER_DOC")
+    auto_eval_queries_per_doc: int = Field(default=3, validation_alias="AUTO_EVAL_QUERIES_PER_DOC")
 
     def reload_runtime_env(self) -> "Settings":
         """按需刷新运行期可调配置，支持评测和线上调参无需重启。"""

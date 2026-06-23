@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 
 from app.core.models import (
     AssetRef,
-    AssetRelation,
     KnowledgeChunk,
     KnowledgeType,
     Render,
@@ -52,7 +51,6 @@ class PgChunkStore(BaseRepository):
             asset_refs.append(
                 AssetRef(
                     asset_id=raw["asset_id"],
-                    relation=AssetRelation(raw.get("relation", "evidence")),
                     linked_text=raw.get("linked_text"),
                     caption=raw.get("caption"),
                     render=Render(

@@ -15,7 +15,7 @@ class _FakeExtractor:
         self.seen_elements = []
         self.seen_assets = []
 
-    def extract(self, elements, assets, doc_id, category):
+    def extract(self, elements, assets, category):
         self.seen_elements = list(elements)
         self.seen_assets = list(assets)
         source = next(
@@ -130,7 +130,7 @@ def test_ingestion_pipeline_dispatches_html_parser(monkeypatch):
         ElementType.table,
         ElementType.video,
     }
-    assert [asset.asset_type for asset in extractor.seen_assets] == [AssetType.video]
+    assert [asset.asset_type for asset in extractor.seen_assets] == [AssetType.video_link]
     assert len(chunk_store.chunks) == 1
     assert len(embedder.calls) == 1
     assert len(vector_index.batches) == 1

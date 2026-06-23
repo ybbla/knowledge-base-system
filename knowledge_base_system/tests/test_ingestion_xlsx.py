@@ -33,7 +33,7 @@ class _FakeExtractor:
     def __init__(self) -> None:
         self.seen_elements = []
 
-    def extract(self, elements, assets, doc_id, category):
+    def extract(self, elements, assets, category):
         self.seen_elements = list(elements)
         source = next(
             (el for el in elements if el.element_type == ElementType.table),
@@ -119,7 +119,7 @@ class _EmbeddedParser(DocumentParser):
         else:
             asset = Asset(
                 doc_id=doc.doc_id,
-                asset_type=AssetType.video,
+                asset_type=AssetType.video_link,
                 original_uri="https://example.com/root.mp4",
             )
             elements = [

@@ -447,7 +447,7 @@ class HtmlParser(DocumentParser):
         for url in self.HTTP_URL_RE.findall(self._text(tag)):
             if self._is_video_url(url):
                 asset_ids.append(
-                    self._asset_for_url(url, AssetType.video, state, doc, {"source": "html_text"}).asset_id
+                    self._asset_for_url(url, AssetType.video_link, state, doc, {"source": "html_text"}).asset_id
                 )
         return list(dict.fromkeys(asset_ids))
 
@@ -482,17 +482,7 @@ class HtmlParser(DocumentParser):
             return [
                 self._asset_for_url(
                     resolved_url or original_url,
-                    AssetType.image,
-                    state,
-                    doc,
-                    metadata,
-                ).asset_id
-            ]
-        if self._tag_is_video(tag) or self._is_video_url(resolved_url or original_url):
-            return [
-                self._asset_for_url(
-                    resolved_url or original_url,
-                    AssetType.video,
+                    AssetType.image_link,
                     state,
                     doc,
                     metadata,
@@ -502,7 +492,7 @@ class HtmlParser(DocumentParser):
             return [
                 self._asset_for_url(
                     resolved_url or original_url,
-                    AssetType.attachment,
+                    AssetType.document_link,
                     state,
                     doc,
                     metadata,
@@ -661,9 +651,9 @@ class HtmlParser(DocumentParser):
         }
         if suffix in mime_map:
             return mime_map[suffix]
-        if asset_type == AssetType.image:
+        if asset_type in (AssetType.image, AssetType.image_link):
             return "image/*"
-        if asset_type == AssetType.video:
+        if asset_type == AssetType.video_link:
             return "video/*"
         return "application/octet-stream"
 

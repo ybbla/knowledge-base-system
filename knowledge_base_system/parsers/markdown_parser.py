@@ -293,14 +293,14 @@ class MarkdownParser(DocumentParser):
         """
         # 视频链接
         if is_video_url(href):
-            return AssetType.video
+            return AssetType.video_link
         # 图片链接（通过扩展名判断）
         suffix = PurePosixPath(href.split("?", 1)[0]).suffix.lower()
         if suffix in _IMAGE_EXTENSIONS:
-            return AssetType.image
+            return AssetType.image_link
         # 附件链接
         if is_attachment_url(href):
-            return AssetType.attachment
+            return AssetType.document_link
         return None
 
     # ── 图片资源 ──────────────────────────────────────────────
@@ -315,7 +315,7 @@ class MarkdownParser(DocumentParser):
             src = token.attrs.get("src", "")
             alt = token.attrs.get("alt", "")
 
-        asset_type = AssetType.video if self._is_video_link(src, alt) else AssetType.image
+        asset_type = AssetType.video_link if self._is_video_link(src, alt) else AssetType.image_link
         return Asset(
             doc_id=state.doc_id,
             asset_type=asset_type,
@@ -333,7 +333,7 @@ class MarkdownParser(DocumentParser):
         assets: list[Asset],
     ) -> None:
         """从原始内容中提取视频链接并创建对应的 Asset 和 image/video 类型元素。"""
-        seen = {asset.original_uri for asset in assets if asset.asset_type == AssetType.video}
+        seen = {asset.original_uri for asset in assets if asset.asset_type == AssetType.video_link}
         candidates: list[tuple[str, str]] = []
         candidates.extend((m.group("src"), "video") for m in self.VIDEO_TAG_RE.finditer(content))
         candidates.extend((m.group("src"), m.group("alt")) for m in self.MD_VIDEO_RE.finditer(content))
@@ -345,10 +345,10 @@ class MarkdownParser(DocumentParser):
             seen.add(src)
             asset = Asset(
                 doc_id=state.doc_id,
-                asset_type=AssetType.video,
+                asset_type=AssetType.video_link,
                 original_uri=src,
                 storage_uri=None,
-                mime_type=guess_mime(src, AssetType.video),
+                mime_type=guess_mime(src, AssetType.video_link),
                 status=AssetStatus.ready,
                 extracted_text=None,
                 metadata={"alt": label},

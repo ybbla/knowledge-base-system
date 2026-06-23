@@ -164,7 +164,7 @@ class TestElementsToJsonAssetDescriptions:
         ]
         assets = [
             Asset(asset_id="vid_001", doc_id="doc_test",
-                  asset_type=AssetType.video, original_uri="demo.mp4",
+                  asset_type=AssetType.video_link, original_uri="demo.mp4",
                   extracted_text="视频演示了上传操作流程。"),
         ]
 
@@ -172,5 +172,5 @@ class TestElementsToJsonAssetDescriptions:
         result = json.loads(result_json)
 
         assert "asset_descriptions" in result[0]
-        assert result[0]["asset_descriptions"][0]["asset_type"] == "video"
+        assert result[0]["asset_descriptions"][0]["asset_type"] == "video_link"
         assert "上传操作流程" in result[0]["asset_descriptions"][0]["description"]

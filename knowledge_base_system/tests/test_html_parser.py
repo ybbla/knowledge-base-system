@@ -169,11 +169,11 @@ class TestHtmlParser:
         image = assets["https://docs.example.com/manual/images/a.png"]
         assert image.asset_type == AssetType.image
         assert image.metadata["alt"] == "架构图"
-        assert assets["https://example.com/demo.mp4"].asset_type == AssetType.video
-        assert assets["https://www.youtube.com/embed/demo"].asset_type == AssetType.video
-        assert assets["https://docs.example.com/manual/files/manual.pdf"].asset_type == AssetType.attachment
-        assert assets["https://example.com/report.pdf"].asset_type == AssetType.attachment
-        assert assets["https://example.com/slides.pptx"].asset_type == AssetType.attachment
+        assert assets["https://example.com/demo.mp4"].asset_type == AssetType.video_link
+        assert assets["https://www.youtube.com/embed/demo"].asset_type == AssetType.video_link
+        assert assets["https://docs.example.com/manual/files/manual.pdf"].asset_type == AssetType.document_link
+        assert assets["https://example.com/report.pdf"].asset_type == AssetType.document_link
+        assert assets["https://example.com/slides.pptx"].asset_type == AssetType.document_link
         assert any(el.asset_ids for el in result.elements)
 
     def test_duplicate_urls_create_single_asset(self):

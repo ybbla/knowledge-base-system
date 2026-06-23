@@ -55,25 +55,15 @@ class ElementType(str, Enum):
     table = "table"
     image = "image"
     video = "video"
-    embedded_document = "embedded_document"  # 预留 — 子文档当前通过 ParsedElement.embedded_doc_id 关联，不使用独立元素类型
     code = "code"
     unknown = "unknown"
 
 
 class AssetType(str, Enum):
-    image = "image"
-    video = "video"
-    audio = "audio"
-    attachment = "attachment"
-
-
-class AssetRelation(str, Enum):
-    """资源与知识块的关联关系。"""
-    evidence = "evidence"            # 证据：资源直接支撑知识块内容
-    illustration = "illustration"    # 示意：资源辅助理解知识块
-    demonstration = "demonstration"  # 演示：视频等动态展示
-    source = "source"                # 预留 — LLM 未实际输出，表示知识块来源于此资源
-    attachment = "attachment"        # 预留 — LLM 未实际输出，表示资源作为附件关联
+    image = "image"                   # 内嵌图片（解析器提供了实际字节 _data）
+    image_link = "image_link"         # 外部图片链接（仅有 URL，需下载）
+    video_link = "video_link"         # 视频链接（仅有 URL，需下载）
+    document_link = "document_link"   # 文档链接（仅有 URL，需下载后触发子文档入库）
 
 
 # ── 嵌套类型 ──────────────────────────────────────────────────────
@@ -90,8 +80,8 @@ class Render(BaseModel):
 
 
 class AssetRef(BaseModel):
+    """知识块关联的资源引用。不包含关联关系标签（下游无行为差异）。"""
     asset_id: str
-    relation: AssetRelation
     linked_text: str | None = None
     caption: str | None = None
     render: Render = Field(default_factory=Render)
@@ -141,7 +131,6 @@ class ParsedElement(BaseModel):
     text: str = ""
     structured_data: dict[str, Any] | None = None
     asset_ids: list[str] = Field(default_factory=list)
-    embedded_doc_id: str | None = None
     source_location: SourceLocation = Field(default_factory=SourceLocation)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

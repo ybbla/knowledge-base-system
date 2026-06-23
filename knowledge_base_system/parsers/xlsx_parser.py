@@ -438,14 +438,14 @@ class XlsxParser(DocumentParser):
         与 Markdown/DOCX 解析器的 _classify_link_url() 行为一致。
         """
         if is_video_url(url):
-            return AssetType.video
+            return AssetType.video_link
 
         suffix = PurePosixPath(url.split("?", 1)[0]).suffix.lower()
         if suffix in _IMAGE_EXTENSIONS:
-            return AssetType.image
+            return AssetType.image_link
 
         if is_attachment_url(url):
-            return AssetType.attachment
+            return AssetType.document_link
 
         # 普通网页链接，不创建 Asset
         return None

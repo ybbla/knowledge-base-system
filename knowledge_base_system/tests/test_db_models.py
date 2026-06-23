@@ -276,7 +276,6 @@ class TestDbParsedElement:
         assert result.text == ""
         assert result.structured_data is None
         assert result.asset_ids == []
-        assert result.embedded_doc_id is None
         assert result.source_location == {}
         assert result.meta == {}
 
@@ -340,24 +339,23 @@ class TestDbParsedElement:
         result = db_session.get(DbParsedElement, "el_list_child")
         assert result.parent_element_id == "el_list"
 
-    def test_embedded_document_element(self, doc_fixture, db_session):
+    def test_code_element(self, doc_fixture, db_session):
         el = DbParsedElement(
-            element_id="el_embed",
+            element_id="el_code",
             doc_id="doc_001",
             sequence_order=1,
-            element_type="embedded_document",
-            text="嵌入文档入口",
-            embedded_doc_id="doc_child",
+            element_type="code",
+            text="print('hello')",
         )
         db_session.add(el)
         db_session.commit()
 
-        result = db_session.get(DbParsedElement, "el_embed")
-        assert result.embedded_doc_id == "doc_child"
+        result = db_session.get(DbParsedElement, "el_code")
+        assert result.element_type == "code"
 
     def test_all_element_types(self, doc_fixture, db_session):
         types = ["paragraph", "title", "table", "image", "list",
-                 "embedded_document", "code", "video", "unknown"]
+                 "code", "video", "unknown"]
         for i, etype in enumerate(types):
             el = DbParsedElement(
                 element_id=f"el_type_{i}",
@@ -426,7 +424,6 @@ class TestDbParsedElement:
             text="H1 | H2\n1 | 2",
             structured_data={"headers": ["H1", "H2"], "rows": []},
             asset_ids=["asset_001", "asset_002"],
-            embedded_doc_id="doc_embedded",
             source_location={"page": 3, "section_path": ["H1"]},
             meta={"table_caption": "表1"},
         )
@@ -440,7 +437,6 @@ class TestDbParsedElement:
         assert result.element_type == "table"
         assert result.structured_data["headers"] == ["H1", "H2"]
         assert result.asset_ids == ["asset_001", "asset_002"]
-        assert result.embedded_doc_id == "doc_embedded"
         assert result.source_location["page"] == 3
         assert result.meta["table_caption"] == "表1"
 
@@ -689,7 +685,7 @@ class TestDbKnowledgeChunk:
             asset_refs=[
                 {"asset_id": "asset_001", "relation": "evidence", "caption": "截图1"},
                 {"asset_id": "asset_002", "relation": "illustration", "caption": "截图2"},
-                {"asset_id": "asset_003", "relation": "source", "caption": "链接"},
+                {"asset_id": "asset_003", "relation": "illustration", "caption": "链接"},
             ],
         )
         db_session.add(chunk)

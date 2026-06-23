@@ -113,7 +113,6 @@ def _element_to_item(element: Any) -> dict[str, Any]:
         "text": element.text,
         "structured_data": element.structured_data,
         "asset_ids": element.asset_ids,
-        "embedded_doc_id": element.embedded_doc_id,
         "source_location": (
             element.source_location.model_dump(mode="json")
             if hasattr(element.source_location, "model_dump")

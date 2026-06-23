@@ -212,8 +212,8 @@ class TestXlsxParser:
         table = next(el for el in result.elements if el.element_type == ElementType.table)
         asset_types = {asset.original_uri: asset.asset_type for asset in result.assets}
 
-        assert asset_types["https://example.com/demo.mp4"] == AssetType.video
-        assert asset_types["https://example.com/manual.pdf"] == AssetType.attachment
+        assert asset_types["https://example.com/demo.mp4"] == AssetType.video_link
+        assert asset_types["https://example.com/manual.pdf"] == AssetType.document_link
         assert len(table.asset_ids) == 2
         assert all(asset.source_element_id == table.element_id for asset in result.assets)
 
@@ -266,12 +266,12 @@ class TestLinkTypeClassification:
         result, _ = _parse(wb)
         asset_types = {a.original_uri: a.asset_type for a in result.assets}
 
-        assert asset_types["https://example.com/photo.png"] == AssetType.image
-        assert asset_types["https://example.com/logo.jpg"] == AssetType.image
-        assert asset_types["https://example.com/icon.gif"] == AssetType.image
+        assert asset_types["https://example.com/photo.png"] == AssetType.image_link
+        assert asset_types["https://example.com/logo.jpg"] == AssetType.image_link
+        assert asset_types["https://example.com/icon.gif"] == AssetType.image_link
 
     def test_video_link_classified_as_video(self):
-        """视频链接被识别为 AssetType.video。"""
+        """视频链接被识别为 AssetType.video_link。"""
         wb = Workbook()
         ws = wb.active
         ws["A1"] = "https://example.com/demo.mp4"
@@ -280,11 +280,11 @@ class TestLinkTypeClassification:
         result, _ = _parse(wb)
         asset_types = {a.original_uri: a.asset_type for a in result.assets}
 
-        assert asset_types["https://example.com/demo.mp4"] == AssetType.video
-        assert asset_types["https://example.com/clip.webm"] == AssetType.video
+        assert asset_types["https://example.com/demo.mp4"] == AssetType.video_link
+        assert asset_types["https://example.com/clip.webm"] == AssetType.video_link
 
     def test_document_link_classified_as_attachment(self):
-        """文档链接被识别为 AssetType.attachment。"""
+        """文档链接被识别为 AssetType.document_link。"""
         wb = Workbook()
         ws = wb.active
         ws["A1"] = "https://example.com/doc.pdf"
@@ -293,8 +293,8 @@ class TestLinkTypeClassification:
         result, _ = _parse(wb)
         asset_types = {a.original_uri: a.asset_type for a in result.assets}
 
-        assert asset_types["https://example.com/doc.pdf"] == AssetType.attachment
-        assert asset_types["https://example.com/report.docx"] == AssetType.attachment
+        assert asset_types["https://example.com/doc.pdf"] == AssetType.document_link
+        assert asset_types["https://example.com/report.docx"] == AssetType.document_link
 
     def test_image_link_via_hyperlink(self):
         """通过真实超链接设置的图片链接被识别为 AssetType.image。"""
@@ -304,7 +304,7 @@ class TestLinkTypeClassification:
         ws["A1"].hyperlink = "https://example.com/product.png"
 
         result, _ = _parse(wb)
-        assert result.assets[0].asset_type == AssetType.image
+        assert result.assets[0].asset_type == AssetType.image_link
         assert result.assets[0].original_uri == "https://example.com/product.png"
 
 
@@ -382,7 +382,7 @@ class TestMergedCellsWithHyperlink:
         ws["A1"].hyperlink = "https://example.com/logo.png"
 
         result, _ = _parse(wb)
-        assert result.assets[0].asset_type == AssetType.image
+        assert result.assets[0].asset_type == AssetType.image_link
         assert result.assets[0].original_uri == "https://example.com/logo.png"
 
 
@@ -539,9 +539,9 @@ class TestMultiSheetWithImagesAndLinks:
 
         # 资源类型正确
         asset_types = {a.original_uri: a.asset_type for a in result.assets}
-        assert asset_types["https://example.com/training.mp4"] == AssetType.video
-        assert asset_types["https://example.com/logo.png"] == AssetType.image
-        assert asset_types["https://example.com/manual.pdf"] == AssetType.attachment
+        assert asset_types["https://example.com/training.mp4"] == AssetType.video_link
+        assert asset_types["https://example.com/logo.png"] == AssetType.image_link
+        assert asset_types["https://example.com/manual.pdf"] == AssetType.document_link
 
     def test_multi_sheet_with_embedded_images(self):
         """多个 sheet 各自有嵌入图片。"""

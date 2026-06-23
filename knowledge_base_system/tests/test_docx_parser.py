@@ -400,7 +400,7 @@ class TestDocxParser:
         result = self.parser.parse(doc, doc.metadata["raw_content"])
 
         # 应有 attachment 类型 Asset
-        attach_assets = [a for a in result.assets if a.asset_type == AssetType.attachment]
+        attach_assets = [a for a in result.assets if a.asset_type == AssetType.document_link]
         assert len(attach_assets) >= 1
         # 段落关联了 attachment
         paragraphs = [e for e in result.elements if e.element_type == ElementType.paragraph]
@@ -434,7 +434,7 @@ class TestDocxParser:
         )
         result = self.parser.parse(doc, doc.metadata["raw_content"])
 
-        video_assets = [a for a in result.assets if a.asset_type == AssetType.video]
+        video_assets = [a for a in result.assets if a.asset_type == AssetType.video_link]
         assert len(video_assets) >= 1
         assert video_assets[0].original_uri == "https://www.youtube.com/watch?v=abc123"
 
@@ -518,7 +518,7 @@ class TestDocxParser:
         # 文本包含显示文字
         assert "文档" in table_data["rows"][0]["cells"][1]["text"]
         # 应有 attachment Asset
-        attach_assets = [a for a in result.assets if a.asset_type == AssetType.attachment]
+        attach_assets = [a for a in result.assets if a.asset_type == AssetType.document_link]
         assert len(attach_assets) >= 1
 
     # ── 新增测试：合并单元格 + 资源 ─────────────────────────────

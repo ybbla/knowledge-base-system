@@ -5,7 +5,6 @@ from sqlalchemy.orm import sessionmaker
 from app.core.models import (
     Asset,
     AssetRef,
-    AssetRelation,
     AssetType,
     Document,
     ElementType,
@@ -114,7 +113,6 @@ class TestPgChunkStore:
             asset_refs=[
                 AssetRef(
                     asset_id="asset_001",
-                    relation=AssetRelation.evidence,
                     caption="Test image",
                 )
             ],
@@ -130,7 +128,7 @@ class TestPgChunkStore:
         assert fetched.content == "Sample content for retrieval."
         assert fetched.knowledge_type == KnowledgeType.declarative
         assert len(fetched.asset_refs) == 1
-        assert fetched.asset_refs[0].relation == AssetRelation.evidence
+        assert fetched.asset_refs[0].asset_id == "asset_001"
         assert len(fetched.source_refs) == 1
         assert fetched.metadata["title_path"] == ["Heading"]
 

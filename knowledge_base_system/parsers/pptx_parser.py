@@ -828,9 +828,9 @@ class PptxParser(DocumentParser):
         """
         kind = classify_link(url)
         return {
-            "image": AssetType.image,
-            "video": AssetType.video,
-            "audio": AssetType.audio,
-            "document": AssetType.attachment,
+            "image": AssetType.image_link,
+            "video": AssetType.video_link,
+            "audio": AssetType.video_link,
+            "document": AssetType.document_link,
         }.get(kind)  # "url" 不在映射中 → 返回 None
 

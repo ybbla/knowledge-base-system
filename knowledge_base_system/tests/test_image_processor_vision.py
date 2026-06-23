@@ -95,31 +95,30 @@ class TestProcessVideo:
 
     @pytest.fixture
     def video_asset(self):
-        """创建带字节的视频 Asset。"""
-        asset = Asset(
+        """创建视频链接 Asset（URL，无 _data，模拟下载后使用）。"""
+        return Asset(
             doc_id="doc_test",
-            asset_type=AssetType.video,
+            asset_type=AssetType.video_link,
             original_uri="https://example.com/test.mp4",
             mime_type="video/mp4",
         )
-        object.__setattr__(asset, "_data", FAKE_MP4)
-        return asset
 
     @pytest.fixture
     def external_video_asset(self):
-        """创建外链视频 Asset（无字节）。"""
-        asset = Asset(
+        """创建外链视频 Asset（URL，下载会失败）。"""
+        return Asset(
             doc_id="doc_test",
-            asset_type=AssetType.video,
+            asset_type=AssetType.video_link,
             original_uri="https://youtube.com/watch?v=test",
             mime_type="video/*",
         )
-        # 不设置 _data——模拟外链视频
-        return asset
 
     def test_process_video_calls_describe(self, video_asset, asset_store):
-        """有字节的视频应调用 describe_video。"""
-        with patch("llm.volcengine_client.llm_client") as mock_llm:
+        """下载成功 + 视觉理解成功。"""
+        with (
+            patch("assets.image_processor.download_to_bytes", return_value=FAKE_MP4),
+            patch("llm.volcengine_client.llm_client") as mock_llm,
+        ):
             mock_llm.describe_video.return_value = "视频总结内容"
 
             result = process_video(video_asset, asset_store)
@@ -127,17 +126,22 @@ class TestProcessVideo:
             assert result.extracted_text == "视频总结内容"
             mock_llm.describe_video.assert_called_once()
 
-    def test_external_video_skips_vision(self, external_video_asset, asset_store):
-        """外链视频（无字节）不应调用视觉提取。"""
+    def test_external_video_download_fails_marks_failed(self, external_video_asset, asset_store):
+        """外链视频下载失败时标记为 failed，不调用视觉提取。"""
         with patch("llm.volcengine_client.llm_client") as mock_llm:
-            result = process_video(external_video_asset, asset_store)
+            with patch("assets.image_processor.download_to_bytes", side_effect=OSError("timeout")):
+                result = process_video(external_video_asset, asset_store)
 
             mock_llm.describe_video.assert_not_called()
-            assert result.extracted_text is None
+            assert result.status.value == "failed"
+            assert "download_failed" in result.error_message
 
     def test_video_vision_failure_does_not_block(self, video_asset, asset_store):
         """视频视觉提取失败不应抛出异常。"""
-        with patch("llm.volcengine_client.llm_client") as mock_llm:
+        with (
+            patch("assets.image_processor.download_to_bytes", return_value=FAKE_MP4),
+            patch("llm.volcengine_client.llm_client") as mock_llm,
+        ):
             mock_llm.describe_video.side_effect = Exception("API Error")
 
             result = process_video(video_asset, asset_store)

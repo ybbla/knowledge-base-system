@@ -455,8 +455,8 @@ class TestPdfParser:
 
         result = self.parser.parse(*_doc(pdf_bytes))
 
-        video_assets = [a for a in result.assets if a.asset_type == AssetType.video]
-        attachment_assets = [a for a in result.assets if a.asset_type == AssetType.attachment]
+        video_assets = [a for a in result.assets if a.asset_type == AssetType.video_link]
+        attachment_assets = [a for a in result.assets if a.asset_type == AssetType.document_link]
 
         assert any("demo.mp4" in a.original_uri for a in video_assets)
         assert any("report.pdf" in a.original_uri for a in attachment_assets)
@@ -599,29 +599,29 @@ class TestPdfParser:
     # 3.3
 
     def test_remote_image_url_as_image_asset(self):
-        """验证远程 .png/.jpg URL 归类为 AssetType.image。"""
+        """验证远程 .png/.jpg URL 归类为 AssetType.image_link。"""
         pdf_bytes = _make_pdf_with_links()
         result = self.parser.parse(*_doc(pdf_bytes))
 
-        image_assets = [a for a in result.assets if a.asset_type == AssetType.image]
+        image_assets = [a for a in result.assets if a.asset_type == AssetType.image_link]
         chart_assets = [a for a in image_assets if "chart.png" in a.original_uri]
-        assert len(chart_assets) >= 1, "chart.png 应归类为 image"
+        assert len(chart_assets) >= 1, "chart.png 应归类为 image_link"
         for a in image_assets:
-            assert "manual.pdf" not in a.original_uri, "manual.pdf 不应归类为 image"
+            assert "manual.pdf" not in a.original_uri, "manual.pdf 不应归类为 image_link"
 
     # 3.4
 
     def test_asset_type_classification(self):
-        """验证 URL 分类：.pdf→attachment，YouTube→video，.png→image。"""
+        """验证 URL 分类：.pdf→document_link，YouTube→video_link，.png→image_link。"""
         pdf_bytes = _make_pdf_with_links()
         result = self.parser.parse(*_doc(pdf_bytes))
 
         for a in result.assets:
             uri = a.original_uri
             if "manual.pdf" in uri:
-                assert a.asset_type == AssetType.attachment
+                assert a.asset_type == AssetType.document_link
             elif "chart.png" in uri:
-                assert a.asset_type == AssetType.image
+                assert a.asset_type == AssetType.image_link
 
     # 3.5
 

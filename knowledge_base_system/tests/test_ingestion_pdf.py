@@ -40,7 +40,7 @@ class _FakeExtractor:
     def __init__(self) -> None:
         self.seen_elements: list = []
 
-    def extract(self, elements, assets, doc_id, category):
+    def extract(self, elements, assets, category):
         self.seen_elements = list(elements)
         source = elements[0] if elements else None
         return [
