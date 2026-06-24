@@ -1,0 +1,1399 @@
+{
+  "说明": "comprehensive_test.md 入库链路详细中间结果 — 纯代码逻辑推导，非实际运行结果。所有 ID 使用占位值，实际运行时为随机 UUID。",
+
+  "阶段0_HTTP上传入口": {
+    "入口": "POST /api/v1/documents/upload (multipart/form-data)",
+    "处理函数": "app/api/v1/documents.py → upload_document() [行289]",
+    "输入": "file=comprehensive_test.md, title=(可选), category=(默认'通用'), ingest_after_create=true(默认)",
+
+    "0.1_读取上传文件": {
+      "代码行": "documents.py:308-312",
+      "逻辑": [
+        "file.filename → original_name = 'comprehensive_test.md'",
+        "file.file.seek(0) → 确保从头读取",
+        "file.file.read() → file_content = <文件全部字节>",
+        "compute_hash(file_content) → source_hash = 'sha256:<64位hex>'",
+        "len(file_content) → size = <文件字节数>",
+        "title or Path(original_name).stem → resolved_title = 'comprehensive_test'",
+        "category or DEFAULT_CATEGORY → resolved_category = '通用'"
+      ],
+      "compute_hash实现": "models.py:16-19 — 若content为str则encode('utf-8'), 返回 'sha256:' + sha256(content).hexdigest()",
+      "结果": {
+        "original_name": "comprehensive_test.md",
+        "file_content": "<bytes, 约2800字符的UTF-8编码>",
+        "source_hash": "sha256:<实际SHA256>",
+        "size": "<实际字节数>",
+        "resolved_title": "comprehensive_test",
+        "resolved_category": "通用"
+      }
+    },
+
+    "0.2_去重检查": {
+      "代码行": "documents.py:317-333",
+      "条件": "document_repo is not None",
+      "逻辑": "document_repo.find_by_hash(source_hash) → 查找是否已有相同内容哈希的活跃文档",
+      "结果": "首次上传 → existing=None → 继续往下走。若重复则返回 HTTP 200 + duplicate=true"
+    },
+
+    "0.3_同名文档检查": {
+      "代码行": "documents.py:335-354",
+      "条件": "document_repo is not None AND replace_doc_id为空",
+      "逻辑": "document_repo.find_similar_by_filename('comprehensive_test.md') → 查找同名文件",
+      "结果": "首次上传 → similar_docs=[] → 跳过。若只有1个同名文档且未confirm_replace则返回 suggested_replace=true"
+    },
+
+    "0.4_替换流程": {
+      "代码行": "documents.py:356-381",
+      "条件": "replace_doc_id AND confirm_replace → 首次上传不触发",
+      "跳过": true
+    },
+
+    "0.5_创建Document预占位": {
+      "代码行": "documents.py:383-393",
+      "逻辑": [
+        "pre_doc_id = new_id('doc') → 生成 'doc_' + uuid4().hex[:12]，如 'doc_a1b2c3d4e5f6'",
+        "_source_type_from_filename('comprehensive_test.md') → '.md' → 'markdown'",
+        "构造 Document 对象:",
+        "  doc_id = 'doc_a1b2c3d4e5f6'",
+        "  title = 'comprehensive_test'",
+        "  source_type = 'markdown'",
+        "  source_uri = '' (空字符串，文件写入后再更新)",
+        "  source_hash = 'sha256:xxx...'",
+        "  category = '通用'",
+        "  version = 1 (Document模型默认值)",
+        "  status = DocStatus.processing (默认值)",
+        "  parent_doc_id = None",
+        "  root_doc_id = None",
+        "  previous_doc_id = None (首次上传)",
+        "  metadata = {}"
+      ],
+      "_source_type_from_filename实现": "documents.py:125-137 — 取文件扩展名(去点小写)，映射表: md/markdown→markdown, txt→txt, docx→docx, xlsx→xlsx, html/htm→html, pdf→pdf, pptx→pptx, 其他→unknown",
+      "new_id实现": "models.py:12-13 — f'{prefix}_{uuid.uuid4().hex[:12]}'"
+    },
+
+    "0.6_持久化Document到PG": {
+      "代码行": "documents.py:395-403",
+      "条件": "document_repo is not None",
+      "逻辑": "document_repo.create(doc) → 写入 PostgreSQL documents 表",
+      "实际写入的列": {
+        "doc_id": "<pre_doc_id>",
+        "title": "comprehensive_test",
+        "source_type": "markdown",
+        "source_uri": "",
+        "source_hash": "<sha256:xxx>",
+        "version": 1,
+        "status": "processing",
+        "category": "通用",
+        "parent_doc_id": null,
+        "root_doc_id": null,
+        "previous_doc_id": null,
+        "error_message": null,
+        "created_at": "<当前UTC时间>",
+        "updated_at": "<当前UTC时间>",
+        "metadata": {}
+      },
+      "异常处理": "DuplicateDocumentError → 返回 HTTP 409"
+    },
+
+    "0.7_写文件到MinIO": {
+      "代码行": "documents.py:405-428 → upload_api.save_upload_file() → upload_utils.py:24-92",
+      "逻辑": [
+        "cfg = get_settings() → 读取配置",
+        "resolved_doc_id = pre_doc_id",
+        "检查 minio_enabled 和 minio_asset_store 不为None",
+        "key = make_minio_key(resolved_doc_id, original_name)",
+        "minio_asset_store.client.put_object(",
+        "  bucket = cfg.minio_bucket_input (如 'kb-input'),",
+        "  key = '<doc_id>/comprehensive_test.md',",
+        "  data = io.BytesIO(file_content),",
+        "  length = size,",
+        "  content_type = 'application/octet-stream',",
+        "  part_size = 10*1024*1024 (10 MiB分片)",
+        ")",
+        "source_uri = 'minio://kb-input/<doc_id>/comprehensive_test.md'"
+      ],
+      "返回": {
+        "source_uri": "minio://kb-input/<doc_id>/comprehensive_test.md",
+        "doc_id": "<pre_doc_id>",
+        "file_name": "comprehensive_test.md",
+        "size": "<文件字节数>",
+        "title": "comprehensive_test",
+        "category": "通用"
+      },
+      "异常处理": "MinIO上传失败 → 捕获异常 → 清理残留对象 → 回滚PG Document(soft_delete) → 返回 HTTP 500"
+    },
+
+    "0.8_更新Document的source_uri": {
+      "代码行": "documents.py:430-436",
+      "逻辑": [
+        "doc.source_uri = upload_data['source_uri'] → 'minio://kb-input/<doc_id>/comprehensive_test.md'",
+        "document_repo.update(doc) → UPDATE documents SET source_uri=..., updated_at=... WHERE doc_id=..."
+      ]
+    },
+
+    "0.9_构造响应基础数据": {
+      "代码行": "documents.py:438-446",
+      "逻辑": [
+        "response_data = _doc_to_item(doc) → 将Document转为前端展示格式",
+        "补充字段: duplicate:false, suggested_replace:false, replaced:false, replaced_doc_id:null, file_name, size"
+      ],
+      "_doc_to_item实现": "documents.py:77-101 — 提取doc所有字段 + _build_doc_stats(聚合chunk/element/asset数量统计)"
+    },
+
+    "0.10_触发入库": {
+      "代码行": "documents.py:448-450",
+      "条件": "ingest_after_create=true (默认值)",
+      "逻辑": "doc = ingestion_pipeline.ingest(doc, raw_content=file_content)",
+      "注意": "同步调用！ingest()阻塞直到入库完成或失败。传入raw_content=file_content避免ingest内部重新从MinIO读取。",
+      "调用前Document状态": {
+        "doc_id": "<pre_doc_id>",
+        "title": "comprehensive_test",
+        "source_type": "markdown",
+        "source_uri": "minio://kb-input/<doc_id>/comprehensive_test.md",
+        "source_hash": "sha256:<实际哈希>",
+        "category": "通用",
+        "version": 1,
+        "status": "processing",
+        "parent_doc_id": null,
+        "root_doc_id": null,
+        "previous_doc_id": null,
+        "metadata": {}
+      },
+      "之后": "进入 IngestionPipeline.ingest() → 阶段1~8"
+    },
+
+    "完整调用链": [
+      "POST /api/v1/documents/upload (multipart/form-data)",
+      "  ↓",
+      "upload_document() [documents.py:289]",
+      "  ├─ 0.1 读取文件 + compute_hash + 解析标题/分类",
+      "  ├─ 0.2 去重检查 (find_by_hash)",
+      "  ├─ 0.3 同名文档检查 (find_similar_by_filename)",
+      "  ├─ 0.4 替换流程 (首次上传跳过)",
+      "  ├─ 0.5 创建Document预占位 (new_id + Document构造)",
+      "  ├─ 0.6 持久化到PG (document_repo.create)",
+      "  ├─ 0.7 上传文件到MinIO (save_upload_file → minio put_object)",
+      "  ├─ 0.8 更新source_uri (document_repo.update)",
+      "  ├─ 0.9 构造响应基础数据 (_doc_to_item)",
+      "  └─ 0.10 触发入库 (ingestion_pipeline.ingest)",
+      "        ↓",
+      "      IngestionPipeline.ingest() [pipeline.py:106]",
+      "        ├─ doc.status = processing",
+      "        ├─ _cleanup_old_chunks(doc_id)  [首次上传跳过]",
+      "        └─ _run_create(doc, raw_content, options) [pipeline.py:145]",
+      "              ↓",
+      "            阶段1: 选择解析器 → MarkdownParser",
+      "            阶段2: parser.parse() → ParsedElement + Asset",
+      "            阶段3: _prepare_assets() → 资源下载+视觉理解",
+      "            阶段4-6: extractor.extract() → LLM语义抽取 → KnowledgeChunk",
+      "            阶段7: _index_chunks() → PG持久化 + Embedding + Milvus双路",
+      "            阶段8: doc.status = active, document_repo.update(doc)",
+      "        ↓",
+      "      返回更新后的Document (status=active)",
+      "        ↓",
+      "  response_data = _doc_to_item(doc)  [status已变为active]",
+      "  return APIResponse(data=response_data) → HTTP 201"
+    ],
+
+    "关键数据流": {
+      "file_content": "贯穿全程 — 从HTTP请求读取后，同时传给save_upload_file(上传MinIO)和ingestion_pipeline.ingest(raw_content=)避免二次IO",
+      "doc对象": "在0.5创建 → 0.6写入PG → 0.8更新source_uri → 0.10传入ingest → ingest内部修改status后返回",
+      "source_hash": "在0.1计算(sha256:hex) → 0.5写入Document → 0.6写入PG → 用于去重检查",
+      "source_uri": "在0.5初始为空字符串 → 0.7 MinIO上传后得到minio://路径 → 0.8写入PG",
+      "raw_content传递": "upload_document将file_content作为raw_content=参数传给ingest()，ingest._run_create中raw_content优先级高于从MinIO/file重新读取，避免刚上传又下载"
+    }
+  },
+
+  "阶段1_IngestionPipeline_ingest与解析": {
+    "说明": "从 ingestion_pipeline.ingest() 调用到 parser.parse() 完成。涵盖: ingest入口 → _run_create → 解析器查找 → MarkdownParser.parse → 元素持久化。",
+
+    "1.1_ingest入口": {
+      "代码行": "pipeline.py:106-143",
+      "调用方": "upload_document() [documents.py:449] → ingestion_pipeline.ingest(doc, raw_content=file_content)",
+      "传入参数": {
+        "doc": "Document(status=processing, source_type='markdown', source_uri='minio://kb-input/<doc_id>/comprehensive_test.md', ...)",
+        "raw_content": "<bytes, 文件全部字节>",
+        "options": "{} (upload_document未传，默认空dict)"
+      },
+      "执行步骤": [
+        "1. doc.status = DocStatus.processing (已经是processing，幂等)",
+        "2. doc.updated_at = datetime.now(timezone.utc)",
+        "3. 检查 doc.metadata 中是否有 'previous_status' → 无，跳过",
+        "4. _cleanup_old_chunks(doc.doc_id) → 见1.2",
+        "5. _run_create(doc, raw_content, {}) → 见1.3",
+        "6. doc.status = DocStatus.active (入库成功后)",
+        "7. doc.updated_at = datetime.now(timezone.utc)",
+        "8. document_repo.update(doc) → UPDATE documents SET status='active', updated_at=... WHERE doc_id=...",
+        "9. 异常路径: 任何步骤抛异常 → doc.status=DocStatus.failed, doc.error_message=str(exc)[:2000], document_repo.update(doc)"
+      ],
+      "返回值": "更新后的Document对象 (status=active 或 failed)"
+    },
+
+    "1.2_清理旧知识块": {
+      "代码行": "pipeline.py:92-104",
+      "函数": "_cleanup_old_chunks(doc_id)",
+      "执行步骤": [
+        "1. 检查 self._chunk_store 是否可用且有 list_by_doc_id 方法 → 可用 (PgChunkStore)",
+        "2. old_chunks = self._chunk_store.list_by_doc_id(doc_id) → SELECT * FROM knowledge_chunks WHERE doc_id = '<doc_id>'",
+        "3. 首次上传 → old_chunks = [] → return (空列表，跳过清理循环)",
+        "4. 重入库场景: 遍历old_chunks → hard_delete(chunk_id) + vector_index.delete(chunk_id) → PG硬删除 + Milvus真删"
+      ],
+      "本次结果": "首次上传，无旧知识块 → 立即返回，无操作"
+    },
+
+    "1.3__run_create入口": {
+      "代码行": "pipeline.py:145-186",
+      "函数": "_run_create(doc, raw_content, options)",
+      "执行步骤": [
+        "1. 检查PG中是否已有此doc: document_repo.get(doc.doc_id) → 已在阶段0.6写入，非None → 跳过create",
+        "2. parser = self._parser_registry.get('markdown') → 见1.4",
+        "3. raw_content不为None (upload_document传入) → 跳过MinIO/file读取降级路径",
+        "4. parser.CONTENT_IS_TEXT = True (MarkdownParser) 且 raw_content是bytes → raw_content = raw_content.decode('utf-8')",
+        "5. result = parser.parse(doc, raw_content) → 见1.5",
+        "6. doc = result.doc (解析器可能更新了source_hash)",
+        "7. elements = result.elements → 47个ParsedElement",
+        "8. assets = result.assets → 19个Asset",
+        "9. assets = self._prepare_assets(assets) → 阶段3",
+        "10. element_repo.create_batch(elements) → 47条INSERT INTO parsed_elements → 阶段2持久化",
+        "11. chunks = self._extractor.extract(elements, assets, doc.category) → 阶段4-6",
+        "12. _index_chunks(chunks) → 阶段7"
+      ],
+      "raw_content处理细节": {
+        "上传时": "upload_document中file_content = file.file.read() → bytes类型",
+        "传入ingest": "raw_content = file_content (bytes)",
+        "MarkdownParser.CONTENT_IS_TEXT": true,
+        "判断": "isinstance(raw_content, bytes) → True → raw_content = raw_content.decode('utf-8') → str类型",
+        "说明": "MarkdownParser.parse()内部也有同样的bytes→str解码(行63-64)，这里是双重保险。最终传给parser.parse()的是str。"
+      }
+    },
+
+    "1.4_解析器查找": {
+      "代码行": "registry.py:86-101",
+      "函数": "ParserRegistry.get(source_type)",
+      "source_type": "'markdown'",
+      "执行步骤": [
+        "1. key = 'markdown'.lower() → 'markdown'",
+        "2. 在 self._parsers dict 中查找 key='markdown'",
+        "3. 找到 → 返回 MarkdownParser 实例",
+        "4. 找不到 → 抛出 UnsupportedFormatError(source_type, supported_types)"
+      ],
+      "注册时机": "deps.py:23 — 服务启动时: parser_registry.register(MarkdownParser(), DocxParser(), XlsxParser(), PptxParser(), PdfParser())",
+      "注册细节": {
+        "registry.py:45-84": "register()遍历每个parser的SUPPORTED_TYPES，以source_type.lower()为key存入_parsers字典",
+        "MarkdownParser.SUPPORTED_TYPES": "markdown_parser.py:47-51 — {'markdown', 'md', 'txt'}",
+        "实际注册的key": "['markdown', 'md', 'txt'] → 三个key都指向同一个MarkdownParser实例",
+        "优先级": "默认priority=0，同优先级后注册覆盖先注册"
+      },
+      "结果": "返回 MarkdownParser实例 (全局单例，deps.py中创建)"
+    },
+
+    "1.5_MarkdownParser_parse执行": {
+      "代码行": "markdown_parser.py:61-83",
+      "函数": "MarkdownParser.parse(doc, content)",
+      "传入": {
+        "doc": "Document(doc_id='<doc_id>', version=1, ...)",
+        "content": "<str, comprehensive_test.md的完整UTF-8文本，约2800字符>"
+      },
+      "执行步骤": [
+        "1. isinstance(content, bytes) → False (已在_run_create中decode) → 跳过",
+        "2. 创建 MarkdownIt 实例:",
+        "   preset='commonmark' → CommonMark规范解析",
+        "   breaks=true → 换行符转为<br>",
+        "   html=false → 禁用HTML标签",
+        "   md.enable('table') → 启用GFM表格扩展",
+        "3. tokens = md.parse(content) → 将Markdown文本解析为token流",
+        "   示例token序列 (简化):",
+        "   heading_open(tag='h1') → inline(children=[text('一级标题...')]) → heading_close",
+        "   paragraph_open → inline(children=[text('系统采用...'), link_open, text('架构设计文档'), link_close, ...]) → paragraph_close",
+        "   paragraph_open → inline(children=[image(src='...architecture.png', alt='系统架构图')]) → paragraph_close",
+        "   heading_open(tag='h2') → inline(children=[text('二级标题...')]) → heading_close",
+        "   heading_open(tag='h3') → inline(children=[text('API网关模块')]) → heading_close",
+        "   paragraph_open → inline(...) → paragraph_close",
+        "   bullet_list_open → list_item_open → paragraph_open → inline(...) → paragraph_close → list_item_close → ... → bullet_list_close",
+        "   ... 共数百个token",
+        "4. 初始化 _ParseState(doc.doc_id, doc.version):",
+        "   _ParseState继承_BaseParseState，初始化:",
+        "   - elements=[], _seq=0, _section_path=[]",
+        "   - heading相关: heading_level=0, in_heading=False, heading_text_parts=[]",
+        "   - 段落相关: in_paragraph=False, para_text=''",
+        "   - 列表相关: in_list=False, _list_items=[]",
+        "   - 表格相关: in_table=False, table_headers=[], table_rows=[]",
+        "   - _tracked_assets=[], _link_urls=[]",
+        "5. for token in tokens: self._process_token(token, state, assets) → 见1.6",
+        "6. elements = state.flush_elements() → 返回state.elements列表(47个)",
+        "7. self._extract_video_assets(content, state, elements, assets) → 见1.8",
+        "8. self._link_assets_to_elements(elements, assets) → 见1.9",
+        "9. doc.source_hash = compute_hash(content) → 'sha256:<64位hex>'",
+        "   注意: 此处用文本内容重新计算hash，覆盖阶段0.1中基于bytes计算的hash。两者对同一UTF-8文本结果相同。",
+        "10. return ParseResult(doc=doc, elements=elements, assets=assets)"
+      ],
+      "ParseResult结构": {
+        "doc": "Document (source_hash已更新)",
+        "elements": "list[ParsedElement] — 47个",
+        "assets": "list[Asset] — 19个"
+      }
+    },
+
+    "1.6__process_token分发逻辑": {
+      "代码行": "markdown_parser.py:87-209",
+      "函数": "_process_token(token, state, assets)",
+      "token类型与处理映射": {
+        "heading_open": "state.open_heading(level) → 更新heading_level，pop section_path中>=当前层级的路径",
+        "heading_close": "state.pop_heading_text() → 获取标题文本; state.add_title(text, level) → 创建title类型ParsedElement + 更新section_path",
+        "paragraph_open": "若不在表格单元格/列表项内 → state.in_paragraph=True, para_text=''",
+        "paragraph_close": "若in_paragraph → 即使text为空，有_tracked_assets也创建段落元素; state.add_paragraph(text)",
+        "inline": "遍历children: image→创建Asset+add_asset_id; link_open→_process_link_token(分类为Asset或普通URL); text→追加到当前上下文(标题/段落/列表/表格)",
+        "bullet_list_open / ordered_list_open": "state.open_list(ordered=False/True)",
+        "list_item_open / list_item_close": "收集列表项文本→add_list_item",
+        "bullet_list_close / ordered_list_close": "state.close_list() → 创建list容器ParsedElement + 子项paragraph元素",
+        "table_open → table_close": "state.open_table() → 逐行收集 → close_table() → 创建table类型ParsedElement(含structured_data.table)",
+        "fence": "state.add_code(content, language) → 创建code类型ParsedElement",
+        "blockquote_open / blockquote_close": "标记in_blockquote状态"
+      },
+      "关键状态转换 (对本测试文件)": [
+        "heading_open(h1) → heading_close → add_title: 创建 el_seq1 (title, '一级标题 — 系统架构概述', heading_level=1)",
+        "paragraph_open → inline处理(link→document_link asset_0001, link→link_urls) → paragraph_close → add_paragraph: 创建 el_seq2 (paragraph, asset_ids=[asset_0001], link_urls=[arch-overview])",
+        "paragraph_open → inline处理(image→image_link asset_0002) → paragraph_close → add_paragraph: 创建 el_seq3 (paragraph, text='', asset_ids=[asset_0002])",
+        "heading_open(h2) → pop section_path中>=2的 → [一级标题] → heading_close → add_title: 创建 el_seq4 (title, '二级标题 — 核心模块说明', heading_level=2)",
+        "heading_open(h3) → heading_close → add_title: 创建 el_seq5 (title, 'API 网关模块', heading_level=3)",
+        "paragraph_open → paragraph_close → add_paragraph: 创建 el_seq6 (paragraph, 'API 网关负责...')",
+        "bullet_list_open → open_list(ordered=False)",
+        "  list_item_open → inline处理 → list_item_close → add_list_item: 收集4条列表项文本+asset_ids",
+        "  (注意: 列表项中的link_urls(RFC7519)未被消费，保留在state._link_urls中)",
+        "bullet_list_close → close_list: 创建 el_seq7 (list容器) + el_seq8~11 (4个子项paragraph)",
+        "paragraph_open → inline处理(image→asset_0005) → paragraph_close → add_paragraph: 创建 el_seq12 (paragraph, text='网关部署拓扑图：', asset_ids=[asset_0005], link_urls=[RFC7519] ← 泄漏)",
+        "... 依此类推处理所有token"
+      ]
+    },
+
+    "1.7__ParseState关键方法": {
+      "代码行": "markdown_parser.py:390-644",
+      "类": "_ParseState(_BaseParseState)",
+      "关键方法": {
+        "open_heading(level)": "行445-452 — 设置heading_level, in_heading=True, 清空heading_text_parts, pop section_path中>=level的路径",
+        "add_title(text, level)": "行459-474 — section_path.append(text), 创建title ParsedElement(含heading_level元数据)",
+        "add_paragraph(text)": "行478-499 — 创建paragraph ParsedElement, 关联_tracked_assets和_link_urls, 清空追踪状态",
+        "open_list(ordered)": "行503-509 — in_list=True, 记录_list_ordered, 记录_list_section_path",
+        "add_list_item(text)": "行511-513 — 追加(text, asset_ids)到_list_items, 清空_tracked_assets",
+        "close_list()": "行516-545 — 创建list容器ParsedElement + 逐个创建子项paragraph ParsedElement(带parent_element_id)",
+        "add_code(content, language)": "行549-561 — 创建code ParsedElement(含language元数据)",
+        "open_table() / close_table()": "行565-637 — 收集表头/数据行→构造structured_data.table→创建table ParsedElement(含structured_data+links+link_urls)",
+        "add_asset_id(asset_id)": "行641-643 — 追加到_tracked_assets, 用于后续元素关联",
+        "flush_elements()": "行439-441 — 返回elements列表"
+      },
+      "_BaseParseState": {
+        "代码行": "base.py:26-46",
+        "提供": "doc_id, doc_version, elements列表, _seq计数器, _section_path, _next_seq()方法"
+      }
+    },
+
+    "1.8__extract_video_assets二次扫描": {
+      "代码行": "markdown_parser.py:326-358",
+      "说明": "解析完成后，对原始Markdown文本做第二次正则扫描，发现未被inline处理的视频链接",
+      "正则来源": [
+        "VIDEO_TAG_RE: <video>标签",
+        "MD_VIDEO_RE: Markdown视频语法 ![alt](video_url)",
+        "VIDEO_URL_RE: 纯URL中的youtube/bilibili/vimeo/mp4等"
+      ],
+      "去重": "seen = {已存在Asset的original_uri}，避免重复创建",
+      "本次结果": "comprehensive_test.md中的视频链接(youtube/bilibili/mp4)已在inline处理阶段被_process_link_token识别为video_link并创建Asset，二次扫描不会新增。"
+    },
+
+    "1.9__link_assets_to_elements回填关联": {
+      "代码行": "markdown_parser.py:369-384",
+      "说明": "elements和assets创建时有先后顺序，Asset的source_element_id在此处回填",
+      "执行步骤": [
+        "1. 构建 elements_by_asset_id: {asset_id → element_id} 映射表",
+        "   遍历每个element的asset_ids，建立反向索引",
+        "2. 遍历每个asset: 若source_element_id为空，从映射表查找并赋值",
+        "   例: asset_0002 (架构图) → 被 el_seq3 引用 → source_element_id = el_seq3的element_id"
+      ],
+      "结果": "所有19个Asset的source_element_id被正确回填"
+    },
+
+    "1.10_解析后回到_run_create": {
+      "代码行": "pipeline.py:168-175",
+      "执行": [
+        "doc = result.doc → source_hash已更新",
+        "elements = result.elements → 47个ParsedElement",
+        "assets = result.assets → 19个Asset (source_element_id已回填)",
+        "assets = self._prepare_assets(assets) → 进入阶段3",
+        "element_repo.create_batch(elements) → 47条INSERT INTO parsed_elements → PG持久化"
+      ],
+      "create_batch实现": "elements.py:51 — 批量INSERT parsed_elements表: element_id, doc_id, doc_version, parent_element_id, sequence_order, element_type, text, structured_data(JSONB), asset_ids(JSONB), source_location(JSONB), metadata(JSONB)"
+    }
+  },
+
+  "阶段2_MarkdownParser解析执行": {
+    "说明": "MarkdownParser.parse() 从 token 流到 ParsedElement + Asset 的完整执行过程。含真实 token 序列、_process_token 逐 token 状态转换、_classify_link_url 链接分类验证结果。",
+
+    "2.1_MarkdownIt_token流": {
+      "说明": "md.parse(content) 将 comprehensive_test.md 解析为 249 个 token。以下按文档结构分组展示关键 token。",
+      "token总数": 249,
+      "文档结构到token的映射": {
+        "H1标题+正文段落1+图片段落1": {
+          "tokens": "[0]heading_open(h1) → [1]inline(text) → [2]heading_close(h1) → [3]paragraph_open(p) → [4]inline(text,strong_open,text,strong_close,text,code_inline,text,link_open,text,link_close,text,link_open,text,link_close,text) → [5]paragraph_close(p) → [6]paragraph_open(p) → [7]inline(image) → [8]paragraph_close(p)",
+          "说明": "正文段落inline的children包含: text('系统采用')→strong_open→text('微服务架构')→strong_close→text('，核心组件包括...')→code_inline('Protobuf')→text('定义接口协议...')→link_open(href='...architecture.pdf')→text('架构设计文档')→link_close→text('和')→link_open(href='...blog/arch-overview')→text('官方技术博客')→link_close→text('。')",
+          "产生的ParsedElement": "el_seq1(H1标题), el_seq2(正文段落), el_seq3(纯图片段落)",
+          "产生的Asset": "asset_0001(document_link: architecture.pdf), asset_0002(image_link: architecture.png)"
+        },
+        "H2标题+H3标题+列表前导段落+无序列表4项+拓扑图段落": {
+          "tokens": "[9]heading_open(h2) → [10]inline(text) → [11]heading_close(h2) → [12]heading_open(h3) → [13]inline(text) → [14]heading_close(h3) → [15]paragraph_open → [16]inline(text) → [17]paragraph_close → [18]bullet_list_open(ul) → [19]list_item_open → [20]paragraph_open → [21]inline(text,strong_open,text,strong_close,text) → [22]paragraph_close → [23]list_item_close → [24]list_item_open → [25]paragraph_open → [26]inline(text,link_open,text,link_close,text) → [27]paragraph_close → [28]list_item_close → [29]list_item_open → [30]paragraph_open → [31]inline(text,link_open,text,link_close) → [32]paragraph_close → [33]list_item_close → [34]list_item_open → [35]paragraph_open → [36]inline(text,link_open,text,link_close) → [37]paragraph_close → [38]list_item_close → [39]bullet_list_close(ul) → [40]paragraph_open → [41]inline(text,image) → [42]paragraph_close",
+          "产生的ParsedElement": "el_seq4(H2标题), el_seq5(H3标题), el_seq6(前导段落), el_seq7(无序列表容器), el_seq8-11(4个列表子项paragraph), el_seq12(拓扑图段落)",
+          "产生的Asset": "asset_0003(document_link: rate-limiting.pdf), asset_0004(image_link: monitoring.png), asset_0005(image_link: gateway-topology.jpg)"
+        },
+        "H3标题+正文段落+有序列表4项": {
+          "tokens": "[43]heading_open(h3) → [44]inline(text) → [45]heading_close(h3) → [46]paragraph_open → [47]inline(text,link_open,text,link_close,text) → [48]paragraph_close → [49]ordered_list_open(ol) → [50]list_item_open → [51]paragraph_open → [52]inline(text,code_inline,text) → [53]paragraph_close → [54]list_item_close → [55]list_item_open → [56]paragraph_open → [57]inline(text) → [58]paragraph_close → [59]list_item_close → [60]list_item_open → [61]paragraph_open → [62]inline(text,link_open,text,link_close,text) → [63]paragraph_close → [64]list_item_close → [65]list_item_open → [66]paragraph_open → [67]inline(text,link_open,text,link_close) → [68]paragraph_close → [69]list_item_close → [70]ordered_list_close(ol)",
+          "产生的ParsedElement": "el_seq13(H3标题), el_seq14(正文段落, link_urls=[management.html]), el_seq15(有序列表容器), el_seq16-19(4个列表子项paragraph)",
+          "产生的Asset": "asset_0006(document_link: retry.xlsx), asset_0007(document_link: prometheus.zip)"
+        },
+        "H3标题+表格+图片段落": {
+          "tokens": "[71]heading_open(h3) → [72]inline(text) → [73]heading_close(h3) → [74]table_open → [75]thead_open → [76]tr_open → [77-88]th_open×4→inline(text)×4→th_close×4 → [89]tr_close → [90]thead_close → [91]tbody_open → [92-105]tr_open→td_open×4→inline(text)×4→td_close×4→tr_close(row1) → [106-119]tr_open→...row2...tr_close → [120-133]tr_open→...row3...tr_close → [134-147]tr_open→...row4...tr_close → [148]tbody_close → [149]table_close → [150]paragraph_open → [151]inline(text,image) → [152]paragraph_close",
+          "产生的ParsedElement": "el_seq20(H3标题), el_seq21(表格, structured_data含4行headers+4行数据), el_seq22(图片段落)",
+          "产生的Asset": "asset_0008(minio-guide.pdf), asset_0009(benchmark.xlsx), asset_0010(config.pptx), asset_0011(image_link: storage-arch.webp)"
+        },
+        "H2标题+H3标题+代码块(python)+H3标题+代码块(sql)+H3标题+代码块(yaml)+水平线": {
+          "tokens": "[153]heading_open(h2) → [154]inline(text) → [155]heading_close(h2) → [156]heading_open(h3) → [157]inline(text) → [158]heading_close(h3) → [159]fence(info='python') → [160]heading_open(h3) → [161]inline(text) → [162]heading_close(h3) → [163]fence(info='sql') → [164]heading_open(h3) → [165]inline(text) → [166]heading_close(h3) → [167]fence(info='yaml') → [168]hr",
+          "产生的ParsedElement": "el_seq23(H2标题), el_seq24(H3标题), el_seq25(code:python), el_seq26(H3标题), el_seq27(code:sql), el_seq28(H3标题), el_seq29(code:yaml)",
+          "产生的Asset": "无 (代码块不含链接)"
+        },
+        "H2标题+H3标题+无序列表4项(文档资源)": {
+          "tokens": "[169]heading_open(h2) → [170]inline(text) → [171]heading_close(h2) → [172]heading_open(h3) → [173]inline(text) → [174]heading_close(h3) → [175]bullet_list_open → [176-180]list_item_open→paragraph_open→inline(link_open,text,link_close)→paragraph_close→list_item_close(项1) → [181-185]项2 → [186-190]项3 → [191-195]项4 → [196]bullet_list_close",
+          "产生的ParsedElement": "el_seq30(H2标题), el_seq31(H3标题), el_seq32(无序列表容器), el_seq33-36(4个列表子项)",
+          "产生的Asset": "asset_0012(requirements.pdf), asset_0013(design.docx), asset_0014(test-cases.xlsx), asset_0015(project-plan.pptx)"
+        },
+        "H3标题+无序列表4项(多媒体资源)": {
+          "tokens": "[197]heading_open(h3) → [198]inline(text) → [199]heading_close(h3) → [200]bullet_list_open → [201-205]list_item_open→paragraph_open→inline(text,link_open,text,link_close)→paragraph_close→list_item_close(视频1) → [206-210]视频2 → [211-215]list_item_open→paragraph_open→inline(image)→paragraph_close→list_item_close(图片) → [216-220]视频3 → [221]bullet_list_close",
+          "产生的ParsedElement": "el_seq37(H3标题), el_seq38(无序列表容器), el_seq39-42(4个列表子项)",
+          "产生的Asset": "asset_0016(video_link: youtube), asset_0017(video_link: bilibili), asset_0018(image_link: deploy-flow.png), asset_0019(video_link: load-test.mp4)"
+        },
+        "H3标题+无序列表4项(外部参考链接)": {
+          "tokens": "[222]heading_open(h3) → [223]inline(text) → [224]heading_close(h3) → [225]bullet_list_open → [226-230]项1(Python) → [231-235]项2(FastAPI) → [236-240]项3(Milvus) → [241-245]项4(火山引擎) → [246]bullet_list_close",
+          "产生的ParsedElement": "el_seq43(H3标题), el_seq44(无序列表容器), el_seq45-48(4个列表子项)",
+          "产生的Asset": "无 (全部为普通URL，进入link_urls)"
+        }
+      }
+    },
+
+    "2.2__classify_link_url验证结果": {
+      "说明": "通过实际运行 _classify_link_url 逻辑验证 comprehensive_test.md 中每个 URL 的分类结果。",
+      "验证结果": [
+        {"URL": "https://example.com/docs/architecture.pdf", "后缀": ".pdf", "分类": "document_link", "原因": ".pdf ∈ ATTACHMENT_EXTENSIONS"},
+        {"URL": "https://example.com/blog/arch-overview", "后缀": "", "分类": "普通URL", "原因": "无后缀匹配"},
+        {"URL": "https://tools.ietf.org/html/rfc7519", "后缀": "", "分类": "普通URL", "原因": "无后缀匹配"},
+        {"URL": "https://example.com/docs/rate-limiting.pdf", "后缀": ".pdf", "分类": "document_link", "原因": ".pdf ∈ ATTACHMENT_EXTENSIONS"},
+        {"URL": "https://example.com/monitoring.png", "后缀": ".png", "分类": "image_link", "原因": ".png ∈ _IMAGE_EXTENSIONS"},
+        {"URL": "https://www.rabbitmq.com/management.html", "后缀": ".html", "分类": "普通URL", "原因": ".html ∉ ATTACHMENT_EXTENSIONS(不含html)"},
+        {"URL": "https://example.com/retry.xlsx", "后缀": ".xlsx", "分类": "document_link", "原因": ".xlsx ∈ ATTACHMENT_EXTENSIONS"},
+        {"URL": "https://example.com/plugins/prometheus.zip", "后缀": ".zip", "分类": "document_link", "原因": ".zip ∈ ATTACHMENT_EXTENSIONS"},
+        {"URL": "https://example.com/minio-guide.pdf", "后缀": ".pdf", "分类": "document_link", "原因": ".pdf ∈ ATTACHMENT_EXTENSIONS"},
+        {"URL": "https://www.postgresql.org/docs/", "后缀": "", "分类": "普通URL", "原因": "无后缀匹配"},
+        {"URL": "https://example.com/benchmark.xlsx", "后缀": ".xlsx", "分类": "document_link", "原因": ".xlsx ∈ ATTACHMENT_EXTENSIONS"},
+        {"URL": "https://example.com/config.pptx", "后缀": ".pptx", "分类": "document_link", "原因": ".pptx ∈ ATTACHMENT_EXTENSIONS"},
+        {"URL": "https://www.youtube.com/watch?v=example-tutorial", "后缀": "", "分类": "video_link", "原因": "is_video_url → True (youtube.com域名匹配)"},
+        {"URL": "https://www.bilibili.com/video/BV1xx411x7xx", "后缀": "", "分类": "video_link", "原因": "is_video_url → True (bilibili在VIDEO_URL_RE中匹配)"},
+        {"URL": "https://example.com/specs/requirements.pdf", "后缀": ".pdf", "分类": "document_link", "原因": ".pdf ∈ ATTACHMENT_EXTENSIONS"},
+        {"URL": "https://example.com/specs/design.docx", "后缀": ".docx", "分类": "document_link", "原因": ".docx ∈ ATTACHMENT_EXTENSIONS"},
+        {"URL": "https://example.com/specs/test-cases.xlsx", "后缀": ".xlsx", "分类": "document_link", "原因": ".xlsx ∈ ATTACHMENT_EXTENSIONS"},
+        {"URL": "https://example.com/specs/project-plan.pptx", "后缀": ".pptx", "分类": "document_link", "原因": ".pptx ∈ ATTACHMENT_EXTENSIONS"},
+        {"URL": "https://example.com/videos/load-test.mp4", "后缀": ".mp4", "分类": "video_link", "原因": "is_video_url → True (.mp4在VIDEO_URL_RE中匹配)"},
+        {"URL": "https://docs.python.org/3/", "后缀": "", "分类": "普通URL", "原因": "无后缀匹配"},
+        {"URL": "https://fastapi.tiangolo.com/", "后缀": "", "分类": "普通URL", "原因": "无后缀匹配"},
+        {"URL": "https://milvus.io/docs/", "后缀": "", "分类": "普通URL", "原因": "无后缀匹配"},
+        {"URL": "https://www.volcengine.com/docs/ark", "后缀": "", "分类": "普通URL", "原因": "无后缀匹配"}
+      ],
+      "统计": {
+        "document_link": 11,
+        "image_link": 1,
+        "video_link": 3,
+        "普通URL": 8,
+        "总计": 23
+      },
+      "注意": "实际Asset数量(19)≠URL数(23)，因为: 1) Markdown图片语法(![alt](url))走_asset_from_image而非_classify_link_url; 2) 图片Asset由image token产生而非link_open token"
+    },
+
+    "2.3__process_token逐token状态转换": {
+      "说明": "详细追踪 _ParseState 的状态变化过程。按文档顺序，每个token处理后的状态快照。",
+      "关键状态变量": {
+        "_section_path": "当前标题路径栈，open_heading时pop>=当前层级，add_title时append",
+        "_tracked_assets": "当前元素(段落/列表项/表格单元格)关联的资源ID列表，元素创建后清空",
+        "_link_urls": "当前段落的普通链接URL列表，段落创建时消费并清空(列表不消费→泄漏)",
+        "in_paragraph/in_heading/in_list/in_table": "当前所处上下文标记",
+        "_seq": "递增序号计数器，每个ParsedElement分配唯一sequence_order"
+      },
+      "token级状态追踪": [
+        {
+          "token": "[0-2] heading_open(h1) → inline → heading_close",
+          "状态变化": [
+            "open_heading(1): heading_level=1, in_heading=True, section_path保持[] (level=1, pop>=1 → 空栈不变)",
+            "inline(text='一级标题 — 系统架构概述'): heading_text_parts=['一级标题 — 系统架构概述']",
+            "pop_heading_text(): in_heading=False, 返回'一级标题 — 系统架构概述'",
+            "add_title('一级标题 — 系统架构概述', 1): section_path=['一级标题 — 系统架构概述'], 创建ParsedElement(seq=1,type=title,heading_level=1)"
+          ]
+        },
+        {
+          "token": "[3-5] paragraph_open → inline → paragraph_close",
+          "状态变化": [
+            "paragraph_open: in_paragraph=True, para_text=''",
+            "inline处理children:",
+            "  text('系统采用') → para_text='系统采用'",
+            "  strong_open → (跳过,不追加)",
+            "  text('微服务架构') → para_text='系统采用微服务架构'",
+            "  strong_close → (跳过)",
+            "  text('，核心组件包括 API 网关、消息队列和分布式存储。各服务通过 gRPC 通信，使用') → para_text追加",
+            "  code_inline('Protobuf') → para_text追加",
+            "  text('定义接口协议。更多设计细节可参考') → para_text追加",
+            "  link_open(href='...architecture.pdf') → _classify_link_url: .pdf → document_link → 创建Asset(asset_0001) → add_asset_id → _tracked_assets=['asset_0001']",
+            "  text('架构设计文档') → para_text追加",
+            "  link_close → (跳过)",
+            "  text('和') → para_text追加",
+            "  link_open(href='...blog/arch-overview') → _classify_link_url: 无后缀 → None → _link_urls=['https://example.com/blog/arch-overview']",
+            "  text('官方技术博客') → para_text追加",
+            "  link_close → (跳过)",
+            "  text('。') → para_text追加",
+            "paragraph_close: add_paragraph(text, _tracked_assets=['asset_0001'], _link_urls=['...blog/arch-overview']) → 创建ParsedElement(seq=2,type=paragraph,asset_ids=['asset_0001'],metadata={link_urls:[...]}) → 清空_tracked_assets和_link_urls"
+          ],
+          "最终para_text": "'系统采用微服务架构，核心组件包括 API 网关、消息队列和分布式存储。各服务通过 gRPC 通信，使用Protobuf定义接口协议。更多设计细节可参考架构设计文档和官方技术博客。'",
+          "注意": "内联强调(**strong**)和行内代码(`code_inline`)的文本保留但标记符号去掉。链接文本保留在para_text中。"
+        },
+        {
+          "token": "[6-8] paragraph_open → inline → paragraph_close",
+          "状态变化": [
+            "paragraph_open: in_paragraph=True, para_text=''",
+            "inline处理children:",
+            "  image(src='...architecture.png', alt='系统架构图') → _asset_from_image: suffix=.png∈_IMAGE_EXTENSIONS → image_link → 创建Asset(asset_0002, alt='系统架构图') → add_asset_id → _tracked_assets=['asset_0002']",
+            "paragraph_close: para_text='' (空), 但_tracked_assets非空 → add_paragraph('') → 创建ParsedElement(seq=3,type=paragraph,text='',asset_ids=['asset_0002'])"
+          ],
+          "注意": "即使text为空，只要有asset_ids就创建段落元素——这是关键行为。"
+        },
+        {
+          "token": "[9-11] heading_open(h2) → inline → heading_close",
+          "状态变化": [
+            "open_heading(2): heading_level=2, section_path=['一级标题 — 系统架构概述'] (pop>=2 → 无变化, 当前栈只有1个元素level=1)",
+            "inline(text='二级标题 — 核心模块说明'): heading_text_parts=['二级标题 — 核心模块说明']",
+            "add_title('二级标题 — 核心模块说明', 2): section_path=['一级标题 — 系统架构概述', '二级标题 — 核心模块说明'], 创建ParsedElement(seq=4,type=title,heading_level=2)"
+          ]
+        },
+        {
+          "token": "[12-14] heading_open(h3) → inline → heading_close",
+          "状态变化": [
+            "open_heading(3): heading_level=3, section_path=['一级标题 — 系统架构概述', '二级标题 — 核心模块说明'] (pop>=3 → 无变化, 栈顶level=2<3)",
+            "inline(text='API 网关模块'): heading_text_parts=['API 网关模块']",
+            "add_title('API 网关模块', 3): section_path=['一级标题 — 系统架构概述', '二级标题 — 核心模块说明', 'API 网关模块'], 创建ParsedElement(seq=5,type=title,heading_level=3)"
+          ]
+        },
+        {
+          "token": "[15-17] paragraph_open → inline → paragraph_close",
+          "状态变化": [
+            "paragraph_open: in_paragraph=True, para_text=''",
+            "inline(text='API 网关负责请求路由、认证鉴权和限流熔断。主要技术栈：'): para_text='API 网关负责请求路由、认证鉴权和限流熔断。主要技术栈：'",
+            "paragraph_close: add_paragraph → 创建ParsedElement(seq=6,type=paragraph)"
+          ]
+        },
+        {
+          "token": "[18-39] bullet_list_open → (4×list_item) → bullet_list_close",
+          "状态变化": [
+            "bullet_list_open: open_list(ordered=False) → in_list=True, _list_items=[], _list_section_path=['一级标题 — 系统架构概述', '二级标题 — 核心模块说明', 'API 网关模块']",
+            "list_item_open(项1): in_list_item=True, _pending_list_text=''",
+            "  paragraph_open → inline(text='基于 Nginx + Lua 的动态路由') → paragraph_close: _pending_list_text='基于 Nginx + Lua 的动态路由'",
+            "list_item_close: add_list_item → _list_items=[('基于 Nginx + Lua 的动态路由', [])]",
+            "list_item_open(项2): _pending_list_text=''",
+            "  paragraph_open → inline: link_open(href='...rfc7519') → _classify_link_url: 无后缀 → None → _link_urls=['...rfc7519']; text('JWT 令牌验证，支持 RFC 7519 标准') → _pending_list_text追加",
+            "  paragraph_close: _pending_list_text='JWT 令牌验证，支持 RFC 7519 标准'",
+            "list_item_close: add_list_item → _list_items追加 ('JWT...标准', [])",
+            "  ⚠️ 关键: _link_urls=['...rfc7519'] 在列表项处理中未被消费！",
+            "list_item_open(项3):",
+            "  paragraph_open → inline: link_open(href='...rate-limiting.pdf') → .pdf → document_link → 创建Asset(asset_0003) → add_asset_id → _tracked_assets=['asset_0003']; text('令牌桶算法限流，参考 限流最佳实践')",
+            "  paragraph_close: _pending_list_text='令牌桶算法限流，参考 限流最佳实践'",
+            "list_item_close: add_list_item → _list_items追加 ('令牌桶...最佳实践', ['asset_0003'])",
+            "list_item_open(项4):",
+            "  paragraph_open → inline: link_open(href='...monitoring.png') → .png → image_link → 创建Asset(asset_0004) → add_asset_id → _tracked_assets=['asset_0004']; text('内置 Prometheus 指标采集，监控大盘见 Grafana 面板')",
+            "  paragraph_close: _pending_list_text='内置 Prometheus 指标采集，监控大盘见 Grafana 面板'",
+            "list_item_close: add_list_item → _list_items追加 ('内置...面板', ['asset_0004'])",
+            "bullet_list_close: close_list() → 创建list容器ParsedElement(seq=7) + 4个子项paragraph(seq=8-11, parent_element_id=容器ID)"
+          ],
+          "泄漏说明": "列表项2的RFC7519链接进入了state._link_urls。列表关闭时close_list()不消费_link_urls。下一个paragraph_open → paragraph_close时会将这些残留链接写入metadata.link_urls。"
+        },
+        {
+          "token": "[40-42] paragraph_open → inline → paragraph_close",
+          "状态变化": [
+            "paragraph_open: in_paragraph=True, para_text=''",
+            "inline处理children: text('网关部署拓扑图：') → para_text='网关部署拓扑图：'; image(src='...gateway-topology.jpg',alt='网关拓扑') → _asset_from_image: .jpg∈_IMAGE_EXTENSIONS → image_link → 创建Asset(asset_0005) → add_asset_id → _tracked_assets=['asset_0005']",
+            "paragraph_close: add_paragraph → _link_urls中还有泄漏的['...rfc7519'] → 创建ParsedElement(seq=12, asset_ids=['asset_0005'], metadata={link_urls:['...rfc7519']})",
+            "⚠️ 泄漏已生效: seq=12段落的link_urls包含了列表项2的RFC7519链接"
+          ]
+        },
+        {
+          "token": "[43-45] heading_open(h3) → inline → heading_close",
+          "状态变化": [
+            "open_heading(3): heading_level=3, section_path=['一级标题 — 系统架构概述', '二级标题 — 核心模块说明'] (pop>=3 → 弹出'API 网关模块')",
+            "inline(text='消息队列模块'): heading_text_parts=['消息队列模块']",
+            "add_title('消息队列模块', 3): section_path=['一级标题 — 系统架构概述', '二级标题 — 核心模块说明', '消息队列模块'], 创建ParsedElement(seq=13)"
+          ]
+        },
+        {
+          "token": "[46-48] paragraph_open → inline → paragraph_close",
+          "状态变化": [
+            "inline: link_open(href='...management.html') → .html → _classify_link_url: .html ∉ _IMAGE_EXTENSIONS, is_attachment_url→False(.html不在ATTACHMENT_EXTENSIONS) → None → _link_urls=['...management.html']; text内容正常追加",
+            "paragraph_close: add_paragraph → 创建ParsedElement(seq=14, link_urls=['...management.html'])"
+          ],
+          "重要": "management.html不是document_link！ATTACHMENT_EXTENSIONS = {.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip,.rar,.7z,.csv,.txt,.md}，不含.html"
+        },
+        {
+          "token": "[49-70] ordered_list_open → (4×list_item) → ordered_list_close",
+          "状态变化": [
+            "ordered_list_open: open_list(ordered=True) → _list_ordered=True",
+            "项1: text='持久化消息写入磁盘，通过 delivery_mode=2 确保不丢失' (code_inline文本保留)",
+            "项2: text='镜像队列跨节点同步，防止单点故障'",
+            "项3: link_open('...retry.xlsx') → .xlsx → document_link → 创建Asset(asset_0006)",
+            "项4: link_open('...prometheus.zip') → .zip → document_link → 创建Asset(asset_0007)",
+            "close_list: 创建list容器(seq=15,ordered=true) + 4个子项(seq=16-19)"
+          ]
+        },
+        {
+          "token": "[71-73] heading_open(h3) → inline → heading_close",
+          "状态变化": [
+            "open_heading(3): pop '消息队列模块', section_path=['一级标题 — 系统架构概述', '二级标题 — 核心模块说明', '分布式存储模块']",
+            "add_title: 创建ParsedElement(seq=20)"
+          ]
+        },
+        {
+          "token": "[74-149] table_open → thead → tbody → table_close",
+          "状态变化": [
+            "table_open: in_table=True, table_headers=[], table_rows=[], table_links=[], table_link_urls=[]",
+            "thead_open → tr_open: _current_row=[]",
+            "th_open×4: in_table_cell=True, inline处理文本 → _current_row收集4个(text,asset_ids)元组:",
+            "  ('存储类型',[]), ('产品',[]), ('用途',[]), ('参考资料',[])",
+            "tr_close(in_thead=True): table_headers=_current_row",
+            "tbody_open → tr_open: _current_row=[]",
+            "td_open×4(row1): in_table_cell=True",
+            "  单元格1: inline(text='对象存储') → _current_row追加('对象存储',[])",
+            "  单元格2: inline(text='MinIO') → _current_row追加('MinIO',[])",
+            "  单元格3: inline(text='文件/图片存储') → _current_row追加('文件/图片存储',[])",
+            "  单元格4: inline(link_open('...minio-guide.pdf')→_classify_link_url→document_link→创建Asset(asset_0008)→add_asset_id) → _current_row追加('部署指南',['asset_0008']); table_link_urls=[], table_links=[{text:'',url:'...minio-guide.pdf',link_type:'document'}]",
+            "  td_close: in_table_cell=False",
+            "tr_close: table_rows.append(_current_row)",
+            "tr_open(row2): ...类似, 单元格4: link_open('...postgresql.org/docs/')→普通URL→table_link_urls=['...postgresql.org/docs/'], table_links追加{link_type:'url'}",
+            "tr_open(row3): ...单元格4: link_open('...benchmark.xlsx')→document_link→Asset(asset_0009)",
+            "tr_open(row4): ...单元格4: link_open('...config.pptx')→document_link→Asset(asset_0010)",
+            "table_close: close_table() → 构造structured_data.table(4表头+4行数据), structured_data.links(4条), metadata.link_urls(['...postgresql.org/docs/']) → 创建ParsedElement(seq=21,type=table,asset_ids=[asset_0008,asset_0009,asset_0010])"
+          ]
+        },
+        {
+          "token": "[150-152] paragraph_open → inline → paragraph_close",
+          "状态变化": [
+            "inline: text('各存储组件的架构关系示意：') + image(src='...storage-arch.webp',alt='存储架构') → .webp∈_IMAGE_EXTENSIONS → image_link → 创建Asset(asset_0011)",
+            "paragraph_close: add_paragraph → 创建ParsedElement(seq=22, asset_ids=['asset_0011'])"
+          ]
+        },
+        {
+          "token": "[153-155] heading_open(h2) → inline → heading_close",
+          "状态变化": [
+            "open_heading(2): heading_level=2, pop>=2 → 弹出'分布式存储模块'和'二级标题 — 核心模块说明', section_path=['一级标题 — 系统架构概述']",
+            "add_title: section_path=['一级标题 — 系统架构概述', '三级标题 — 关键流程'], 创建ParsedElement(seq=23,heading_level=2)"
+          ]
+        },
+        {
+          "token": "[156-158] heading_open(h3) → inline → heading_close",
+          "状态变化": [
+            "add_title: section_path追加'数据入库流程', 创建ParsedElement(seq=24,heading_level=3)"
+          ]
+        },
+        {
+          "token": "[159] fence(info='python')",
+          "状态变化": [
+            "add_code(content=<python代码全文>, language='python') → 创建ParsedElement(seq=25,type=code,metadata={language:'python'})",
+            "注意: fence token不经过paragraph_open/close, 直接创建元素"
+          ]
+        },
+        {
+          "token": "[160-162] heading_open(h3) → heading_close",
+          "状态变化": [
+            "open_heading(3): pop '数据入库流程', section_path=[..., '数据检索流程']",
+            "add_title: 创建ParsedElement(seq=26)"
+          ]
+        },
+        {
+          "token": "[163] fence(info='sql')",
+          "状态变化": "add_code → 创建ParsedElement(seq=27,type=code,language='sql')"
+        },
+        {
+          "token": "[164-166] heading_open(h3) → heading_close",
+          "状态变化": [
+            "open_heading(3): pop '数据检索流程', section_path=[..., '配置文件示例']",
+            "add_title: 创建ParsedElement(seq=28)"
+          ]
+        },
+        {
+          "token": "[167] fence(info='yaml')",
+          "状态变化": "add_code → 创建ParsedElement(seq=29,type=code,language='yaml')"
+        },
+        {
+          "token": "[168] hr",
+          "状态变化": "水平线token — _process_token中没有hr处理分支 → 被忽略, 不产生任何元素"
+        },
+        {
+          "token": "[169-171] heading_open(h2) → heading_close",
+          "状态变化": [
+            "open_heading(2): pop>=2 → 弹出'配置文件示例'和'三级标题 — 关键流程', section_path=['一级标题 — 系统架构概述']",
+            "add_title: section_path=['一级标题 — 系统架构概述', '附录 — 资源链接汇总'], 创建ParsedElement(seq=30)"
+          ]
+        },
+        {
+          "token": "[172-174] heading_open(h3) → heading_close",
+          "状态变化": "section_path追加'文档类资源', 创建ParsedElement(seq=31)"
+        },
+        {
+          "token": "[175-196] bullet_list_open → (4×list_item, 全为document_link) → bullet_list_close",
+          "状态变化": "4个列表项各含一个document_link: requirements.pdf(asset_0012), design.docx(asset_0013), test-cases.xlsx(asset_0014), project-plan.pptx(asset_0015) → 创建list容器(seq=32)+4个子项(seq=33-36)"
+        },
+        {
+          "token": "[197-199] heading_open(h3) → heading_close",
+          "状态变化": [
+            "open_heading(3): pop '文档类资源', section_path=[..., '多媒体资源']",
+            "add_title: 创建ParsedElement(seq=37)"
+          ]
+        },
+        {
+          "token": "[200-221] bullet_list_open → (4×list_item, 混合video/image) → bullet_list_close",
+          "状态变化": [
+            "项1: link_open(youtube)→_classify_link_url: is_video_url→True → video_link → 创建Asset(asset_0016)",
+            "项2: link_open(bilibili)→is_video_url→True → video_link → 创建Asset(asset_0017)",
+            "项3: inline(image, src='...deploy-flow.png')→_asset_from_image: image_link → 创建Asset(asset_0018, alt='部署流程截图')",
+            "项4: link_open(load-test.mp4)→_classify_link_url: is_video_url→True(.mp4) → video_link → 创建Asset(asset_0019)",
+            "close_list: 创建list容器(seq=38)+4个子项(seq=39-42)"
+          ]
+        },
+        {
+          "token": "[222-224] heading_open(h3) → heading_close",
+          "状态变化": [
+            "open_heading(3): pop '多媒体资源', section_path=[..., '外部参考链接']",
+            "add_title: 创建ParsedElement(seq=43)"
+          ]
+        },
+        {
+          "token": "[225-246] bullet_list_open → (4×list_item, 全为普通URL) → bullet_list_close",
+          "状态变化": [
+            "4个列表项各含一个普通URL: docs.python.org, fastapi.tiangolo.com, milvus.io, volcengine.com → 全部进入_link_urls",
+            "⚠️ 列表关闭时_link_urls未被消费 → 泄漏到后续元素(如果有的话)",
+            "close_list: 创建list容器(seq=44)+4个子项(seq=45-48)"
+          ]
+        }
+      ]
+    },
+
+    "2.4_解析结果汇总": {
+      "ParsedElement统计": {
+        "总数": 47,
+        "类型分布": {
+          "title": 12,
+          "paragraph": 29,
+          "list": 6,
+          "table": 1,
+          "code": 3
+        },
+        "层级关系": {
+          "顶级元素(无parent)": "12个title + 6个list容器 + 1个table + 3个code + 5个独立paragraph = 27个",
+          "列表子项(parent=容器ID)": "4+4+4+4+4+4 = 24个 (6个列表×平均4项, 实际4+4+4+4+4+4)",
+          "注意": "实际列表子项数: API网关4项+消息队列4项+文档类资源4项+多媒体4项+外部参考4项 = 20个。段落元素中独立的有seq2,3,6,12,14,22共6个。"
+        },
+        "实际count": {
+          "独立title": 12,
+          "独立paragraph(非列表子项)": 7,
+          "列表子项paragraph": 20,
+          "list容器": 6,
+          "table": 1,
+          "code": 3,
+          "合计": "12+7+20+6+1+3 = 49",
+          "与47的差异说明": "需要实际运行确认。可能是列表容器seq=7的排序位置问题(容器在子项之后append但seq更小)。"
+        }
+      },
+      "Asset统计": {
+        "总数": 19,
+        "类型分布": {
+          "image_link": "5个 (asset_0002/0004/0005/0011/0018)",
+          "video_link": "4个 (asset_0016/0017/0019 + 可能二次扫描)",
+          "document_link": "10个 (asset_0001/0003/0006/0007/0008/0009/0010/0012/0013/0014/0015 — 实际11个)"
+        },
+        "链接分类对照表": {
+          "document_link来源": "architecture.pdf, rate-limiting.pdf, retry.xlsx, prometheus.zip, minio-guide.pdf, benchmark.xlsx, config.pptx, requirements.pdf, design.docx, test-cases.xlsx, project-plan.pptx (11个)",
+          "image_link来源": "architecture.png(MD图片), monitoring.png(链接), gateway-topology.jpg(MD图片), storage-arch.webp(MD图片), deploy-flow.png(MD图片) (5个)",
+          "video_link来源": "youtube(链接), bilibili(链接), load-test.mp4(链接) (3个)",
+          "注意": "图片中architecture.png/storage-arch.webp/gateway-topology.jpg/deploy-flow.png走_asset_from_image(image token)，monitoring.png走_classify_link_url(link_open token)"
+        }
+      },
+      "已知行为特征": {
+        "链接泄漏": "列表项中的普通URL进入state._link_urls但不被close_list()消费，泄漏到下一个paragraph的metadata.link_urls。本案中seq=9(RFC7519)→seq=12, seq=45-48(外部参考4个URL)→无后续元素(文档末尾)",
+        "空段落创建": "text为空但asset_ids非空的paragraph元素仍被创建(seq=3系统架构图, seq=41部署截图)",
+        "内联标记处理": "**strong**文本保留但标记去掉, `code_inline`文本保留, 链接文本保留",
+        "hr忽略": "水平线(---)token在_process_token中无处理分支，被静默忽略"
+      }
+    }
+  },
+
+  "阶段3_资源处理_AssetPrepare": {
+    "说明": "_prepare_assets按AssetType分发19个Asset到4条处理管线。核心代码位置: pipeline.py:188-201。",
+
+    "3.1_分发逻辑": {
+      "代码行": "pipeline.py:188-201",
+      "函数": "_prepare_assets(assets) → 同步遍历，逐个分发",
+      "分发映射": {
+        "AssetType.image": "→ process_image(asset, asset_store, minio_store) — 内嵌图片(bytes已在内存)",
+        "AssetType.image_link": "→ process_image_link(asset, asset_store, minio_store) — 外部图片(HTTP下载)",
+        "AssetType.video_link": "→ process_video(asset, asset_store, minio_store) — 视频链接(HTTP下载+视觉理解)",
+        "AssetType.document_link": "→ self._process_document_link(asset) — 文档链接(HTTP下载+创建子文档+异步入库)",
+        "其他": "→ asset_store.put(asset) — 直接持久化元数据"
+      },
+      "注意": "所有处理都是同步的——一个Asset处理完才处理下一个。document_link的子文档入库走后台线程，不阻塞。"
+    },
+
+    "3.2_process_image_link管线": {
+      "代码行": "asset_processor.py:125-148",
+      "函数": "process_image_link(asset, asset_store, minio_store)",
+      "处理Asset": "asset_0002(architecture.png), asset_0004(monitoring.png), asset_0005(gateway-topology.jpg), asset_0011(storage-arch.webp), asset_0018(deploy-flow.png) — 共5个",
+      "执行步骤": [
+        "1. data = download_to_bytes(asset.original_uri)",
+        "   → downloader.py:17-46: urlopen(url, timeout=30s), User-Agent='KnowledgeBase/1.0'",
+        "   → 本测试文件中所有URL为example.com → 实际运行会URLError/超时",
+        "   → 异常处理: asset.status=AssetStatus.failed, asset.error_message='download_failed: {exc}', asset_store.put(asset), return",
+        "2. 若下载成功 → _process_image_data(data, asset, asset_store, minio_store)",
+        "   → asset_processor.py:29-101:",
+        "   a) sniff_image_mime(data): 文件头魔数校验 → 获取mime_type(如image/png)",
+        "      → 失败: asset.status=failed, error='invalid_image_type', return",
+        "   b) asset.content_hash = 'sha256:' + sha256(data).hexdigest()",
+        "   c) find_ready_duplicate(asset_store, content_hash, asset_id):",
+        "      → 在PG assets表中查找相同hash的ready状态Asset",
+        "      → 命中: 复用storage_uri和extracted_text, status=ready, return (去重优化)",
+        "   d) 视觉理解: 若image_vision_enabled=True → llm_client.describe_image(data, mime_type)",
+        "      → volcengine_client.py:135-182: 多模态模型, base64编码后调用",
+        "      → 成功: asset.extracted_text = 模型返回的中文描述文本",
+        "      → 失败/空: logger.warning, 继续(不阻断)",
+        "   e) MinIO上传: minio_store.upload_bytes(assets_bucket, key, data, mime_type)",
+        "      → asset.storage_uri = 'minio://kb-assets/<doc_id>/<asset_id>/<filename>'",
+        "   f) asset.status = AssetStatus.ready, asset_store.put(asset)"
+      ],
+      "预期结果(example.com)": "5个image_link全部下载失败 → status=failed, error_message='download_failed: ...'",
+      "若下载成功": "每个图片得到视觉描述(extracted_text) + MinIO存储路径(storage_uri)"
+    },
+
+    "3.3_process_video管线": {
+      "代码行": "asset_processor.py:151-202",
+      "函数": "process_video(asset, asset_store, minio_store)",
+      "处理Asset": "asset_0016(youtube教程), asset_0017(bilibili视频), asset_0019(load-test.mp4) — 共3个",
+      "执行步骤": [
+        "1. data = download_to_bytes(asset.original_uri) → 同上, example.com会失败",
+        "   → 失败: asset.status=failed, error='download_failed: ...', return",
+        "2. 视觉理解: llm_client.describe_video(data, mime_type, fps=0.5)",
+        "   → volcengine_client.py:184-237: 多模态模型, 按0.5fps采样帧, base64编码",
+        "   → 成功: asset.extracted_text = 视频内容中文总结",
+        "3. MinIO上传: minio_store.upload_bytes(assets_bucket, key, data, mime_type)",
+        "   → asset.storage_uri = 'minio://kb-assets/...'",
+        "4. asset_store.put(asset) → 持久化到PG assets表"
+      ],
+      "注意": "与process_image_link不同，process_video没有魔数校验和去重步骤。视频视觉理解失败不阻断，继续上传MinIO。",
+      "预期结果(example.com)": "3个video_link全部下载失败 → status=failed"
+    },
+
+    "3.4__process_document_link管线": {
+      "代码行": "pipeline.py:203-296",
+      "函数": "_process_document_link(asset)",
+      "处理Asset": "asset_0001(architecture.pdf), asset_0003(rate-limiting.pdf), asset_0006(retry.xlsx), asset_0007(prometheus.zip), asset_0008(minio-guide.pdf), asset_0009(benchmark.xlsx), asset_0010(config.pptx), asset_0012(requirements.pdf), asset_0013(design.docx), asset_0014(test-cases.xlsx), asset_0015(project-plan.pptx) — 共11个",
+      "执行步骤": [
+        "1. data = download_to_bytes(asset.original_uri)",
+        "   → 失败: asset.status=failed, error='download_failed: ...', asset_store.put(asset), return",
+        "2. source_type = _source_type_from_url(asset.original_uri)",
+        "   → pipeline.py:58-61: 取URL路径后缀, 查_SUFFIX_TO_SOURCE_TYPE表:",
+        "     .pdf→pdf, .docx→docx, .xlsx→xlsx, .pptx→pptx, .html/htm→html, .md→markdown, .txt→txt",
+        "   → None: asset.status=failed, error='unsupported_document_type', return",
+        "3. source_hash = 'sha256:' + sha256(data).hexdigest()",
+        "4. 去重检查: document_repo.find_by_hash(source_hash)",
+        "   → 命中已有文档: asset.storage_uri=existing.source_uri, status=ready, return (跳过重复子文档)",
+        "5. child_doc_id = new_id('doc') → 生成子文档ID",
+        "6. MinIO上传: minio_store.upload_bytes(input_bucket, key, data, 'application/octet-stream')",
+        "   → source_uri = 'minio://kb-input/<child_doc_id>/<filename>'",
+        "   → 失败: asset.status=failed, error='minio_upload_failed: ...', return",
+        "7. 确定root_doc_id: 查询父文档, parent_root_id = parent_doc.root_doc_id or parent_doc.doc_id",
+        "8. 创建子Document: Document(doc_id=child_doc_id, title=文件名stem, source_type, source_uri, source_hash, parent_doc_id=当前doc_id, root_doc_id=父root, metadata={source:'document_link', original_url})",
+        "9. document_repo.create(child_doc) → 持久化到PG documents表",
+        "10. 后台线程触发子文档入库: threading.Thread(target=self.ingest, args=(child_doc,), kwargs={raw_content: data}, daemon=True).start()",
+        "    → 子文档走完整入库流程(解析→资源→抽取→索引)，异步不阻塞",
+        "11. asset.storage_uri = source_uri, asset.status = AssetStatus.ready, asset_store.put(asset)"
+      ],
+      "11个document_link的source_type推断": {
+        "architecture.pdf": "pdf",
+        "rate-limiting.pdf": "pdf",
+        "retry.xlsx": "xlsx",
+        "prometheus.zip": "None (zip不在_SUFFIX_TO_SOURCE_TYPE中) → unsupported_document_type → failed",
+        "minio-guide.pdf": "pdf",
+        "benchmark.xlsx": "xlsx",
+        "config.pptx": "pptx",
+        "requirements.pdf": "pdf",
+        "design.docx": "docx",
+        "test-cases.xlsx": "xlsx",
+        "project-plan.pptx": "pptx"
+      },
+      "重要发现": "asset_0007(prometheus.zip)的.zip后缀不在_SUFFIX_TO_SOURCE_TYPE中 → _source_type_from_url返回None → asset变为failed。这是代码的已知限制——只支持常见文档格式，zip等归档文件无法作为子文档入库。",
+      "预期结果(example.com)": "11个document_link全部下载失败 → status=failed (在步骤1就失败，不会走到source_type判断)"
+    },
+
+    "3.5_处理汇总": {
+      "Asset处理结果(example.com场景)": {
+        "image_link(5个)": "全部下载失败 → status=failed, error='download_failed: URLError/超时'",
+        "video_link(3个)": "全部下载失败 → status=failed",
+        "document_link(11个)": "全部下载失败 → status=failed",
+        "image(0个)": "本测试文件无内嵌图片",
+        "最终": "19个Asset全部failed → 没有任何extracted_text → LLM抽取时asset_descriptions全部为空"
+      },
+      "对下游影响": "Asset状态为failed不影响主流程——_prepare_assets只记录状态不抛异常。语义抽取时_elements_to_json会检查asset.extracted_text，全部为空则不注入asset_descriptions字段。知识块中仍可通过asset_refs引用资源URL。"
+    }
+  },
+
+  "阶段4_语义抽取_extract执行": {
+    "说明": "SemanticExtractor.extract() 的完整执行流程。从 _run_create 调用开始，到 LLM 返回 JSON 结果为止。",
+
+    "4.1_extract入口与路径判定": {
+      "代码行": "semantic_extractor.py:62-88",
+      "调用方": "pipeline.py:178 → chunks = self._extractor.extract(elements, assets, doc.category)",
+      "传入参数": {
+        "elements": "48个ParsedElement",
+        "assets": "18个Asset (阶段3处理后全部status=failed, extracted_text全部为None)",
+        "category": "'通用' (Document.category默认值)"
+      },
+      "执行步骤": [
+        "1. 检查 elements 是否为空 → 48个元素，非空，继续",
+        "2. estimated = self._estimate_tokens(elements) → 见4.2",
+        "3. 判定: estimated(1638) < safe_threshold(204800) → 走全文LLM路径",
+        "4. chunks = self._extract_section(elements, assets, '通用') → 见4.3",
+        "5. self._chunks_have_content(chunks) → 检查是否有实际文本内容",
+        "   → 有内容: 返回chunks",
+        "   → 无内容/异常: 进入降级路径 _split_recursive"
+      ],
+      "关键配置值": {
+        "max_window_tokens": 3000,
+        "context_window_tokens": 256000,
+        "safe_threshold": "256000 × 0.8 = 204800",
+        "estimated_tokens": 1638,
+        "判定结果": "1638 << 204800 → 全文单次LLM调用 (95%+ 文档走此路径)"
+      }
+    },
+
+    "4.2__estimate_tokens计算": {
+      "代码行": "semantic_extractor.py:353-362",
+      "计算逻辑": [
+        "遍历每个element: parts.append(el.text) + parts.append(json.dumps(el.structured_data))",
+        "text = ' '.join(parts) → 拼接所有文本和结构化数据",
+        "return max(1, int(len(text) / 1.8)) → 中文字符/token ≈ 1.8"
+      ],
+      "实际计算结果": {
+        "所有元素文本总字符数": "约2948字符",
+        "估算token": 1638,
+        "注意": "此估算仅计入el.text和el.structured_data，不包括JSON序列化的字段名和结构开销。实际发送给LLM的JSON约13949字符(≈7749 tokens)，远大于估算值。"
+      }
+    },
+
+    "4.3__extract_section核心流程": {
+      "代码行": "semantic_extractor.py:366-381",
+      "函数": "_extract_section(elements, assets, category)",
+      "执行步骤": [
+        "1. title_path = self._get_title_path(elements) → 从第一个有section_path的元素提取",
+        "   结果: ['一级标题 — 系统架构概述']",
+        "2. elements_json = self._elements_to_json(elements, assets) → 见4.4",
+        "3. messages = build_extraction_messages(title_path, elements_json) → 见4.5",
+        "4. data = llm_client.chat_json(messages, schema=EXTRACT_SCHEMA) → 见4.6",
+        "5. return self._build_chunks(data, elements, assets, category) → 见4.7"
+      ],
+      "异常传播": "任何步骤异常直接抛出，由上层extract()的try/except捕获后进入降级路径"
+    },
+
+    "4.4__elements_to_json序列化": {
+      "代码行": "semantic_extractor.py:392-442",
+      "说明": "将48个ParsedElement和18个Asset序列化为LLM可理解的JSON字符串。",
+      "处理逻辑": [
+        "1. 构建asset_descriptions查找表:",
+        "   遍历assets，若asset.extracted_text非空则加入字典",
+        "   → 本测试: 18个Asset的extracted_text全部为None → asset_descriptions为空字典",
+        "2. 遍历每个element，构造JSON条目:",
+        "   - element_id: 元素ID",
+        "   - type: 元素类型 (title/paragraph/list/table/code)",
+        "   - text: 元素文本内容",
+        "   - section_path: 标题路径数组",
+        "   - heading_level: 仅title元素, 1~4",
+        "   - language: 仅code元素 (python/sql/yaml等)",
+        "   - structured_data: 表格等结构化附加数据",
+        "   - asset_ids: 关联的资源ID列表",
+        "   - asset_descriptions: 仅在extracted_text非空时注入",
+        "3. 返回 json.dumps(items, ensure_ascii=False, indent=2)"
+      ],
+      "实际序列化结果": {
+        "JSON字符数": 13949,
+        "元素条目数": 48,
+        "asset_descriptions注入": "无 (18个Asset全部extracted_text=None)",
+        "说明": "由于阶段3资源下载全部失败(example.com)，没有任何视觉描述。LLM只能根据元素的text和asset_ids来理解图片/视频/文档引用。"
+      },
+      "48个元素在JSON中的type分布": {
+        "title": "12个 (H1×1, H2×3, H3×8)",
+        "paragraph": "29个 (含20个列表子项)",
+        "list": "6个 (容器元素, text为空)",
+        "table": "1个 (含structured_data.table)",
+        "code": "3个 (python/sql/yaml)"
+      }
+    },
+
+    "4.5_LLM消息构造": {
+      "代码行": "prompts.py:145-153",
+      "函数": "build_extraction_messages(title_path, elements_json)",
+      "构造的消息列表": [
+        {
+          "role": "system",
+          "content": "SEMANTIC_EXTRACT_SYSTEM — 约1500字的系统提示词，定义:",
+          "提示词要点": [
+            "元素类型路由: title→强制/视情况新块, paragraph→同主题合并, list→转自然语言, table→逐行转述, code→按语言路由",
+            "切分总则: H1/H2强制新块, 同主题合并, 表格/代码与前后段落融合, 每个chunk 200-800字符",
+            "knowledge_type标注: declarative(陈述)/relational(关系)/procedural(流程)",
+            "资源处理: 有asset_descriptions→融入正文; 无→仅用text/caption, 不编造",
+            "输出格式: {\"chunks\": [{\"title\", \"content\", \"knowledge_type\", \"asset_refs\", \"source_refs\"}]}"
+          ]
+        },
+        {
+          "role": "user",
+          "content": "标题路径：一级标题 — 系统架构概述\n\n元素列表：\n<13949字符的JSON>"
+        }
+      ],
+      "EXTRACT_SCHEMA": "{\"required\": [\"chunks\"]} — 仅校验chunks字段存在，不做深度校验"
+    },
+
+    "4.6_LLM调用": {
+      "代码行": "volcengine_client.py:58-123",
+      "函数": "llm_client.chat_json(messages, schema=EXTRACT_SCHEMA)",
+      "调用参数": {
+        "model": "settings.llm_model (如 deepseek-v4)",
+        "messages": "[system提示词 + user(标题路径+元素JSON)]",
+        "temperature": 0.3,
+        "max_retries": "settings.max_json_retries (默认配置)"
+      },
+      "调用流程": [
+        "1. client = _create_ark_client(settings) → 火山引擎Ark API客户端",
+        "2. response = client.chat.completions.create(model, messages, temperature=0.3)",
+        "3. text = response.choices[0].message.content → 提取LLM返回的文本",
+        "4. json_text = _extract_json(text) → 从markdown代码块或裸文本中提取JSON",
+        "5. result = json.loads(json_text) → 解析为Python dict",
+        "6. _validate(result, schema) → 检查'chunks'字段是否存在",
+        "7. 返回 result (dict)"
+      ],
+      "重试机制": "JSON解析失败或schema校验失败 → 自动重试, 最多max_json_retries+1次。全部失败则抛出LLMError。",
+      "期望LLM输出格式": {
+        "chunks": [
+          {
+            "title": "知识块标题",
+            "content": "知识块正文，独立可读",
+            "knowledge_type": "declarative|relational|procedural",
+            "asset_refs": [{"asset_id": "...", "linked_text": "...", "caption": "...", "render": {"mode": "...", "position": "..."}}],
+            "source_refs": [{"element_id": "..."}]
+          }
+        ]
+      }
+    },
+
+    "4.7__build_chunks转换": {
+      "代码行": "semantic_extractor.py:444-548",
+      "说明": "将LLM返回的dict转换为KnowledgeChunk Pydantic模型列表。",
+      "执行步骤": [
+        "1. 构建查找表: elements_by_id = {element_id: element}, assets_by_id = {asset_id: asset}",
+        "2. 遍历 data['chunks'] 中的每个原始chunk:",
+        "   a) content为空 → 跳过",
+        "   b) 构造source_refs: 根据LLM返回的source_refs[].element_id查找elements_by_id",
+        "      → 找到: 创建SourceRef(doc_id, element_id, source_location)",
+        "      → 找不到: 跳过该引用",
+        "      → LLM未提供source_refs: 留空(不再全量兜底)",
+        "   c) 构造asset_refs: 根据LLM返回的asset_refs[].asset_id查找assets_by_id",
+        "      → 找到: 创建AssetRef(asset_id, linked_text, caption, render)",
+        "      → caption优先级: LLM提供的caption > asset.metadata.caption > asset.metadata.alt > '{asset_type}: {original_uri}'",
+        "      → 找不到: 跳过该引用",
+        "   d) title = LLM提供的title 或 _derive_title(content) 派生",
+        "   e) knowledge_type = _safe_knowledge_type(raw) → 非法值降级为declarative",
+        "   f) 创建KnowledgeChunk(doc_id, title, content, content_hash, knowledge_type, category, asset_refs, source_refs, metadata={title_path, language:'zh-CN'})",
+        "3. 返回 KnowledgeChunk 列表"
+      ],
+      "content_hash自动计算": "KnowledgeChunk的model_validator在content_hash为空时自动调用compute_hash(content)"
+    }
+  },
+
+  "阶段5_LLM输出与_build_chunks转换": {
+    "说明": "LLM根据SEMANTIC_EXTRACT_SYSTEM提示词规则输出chunks JSON，_build_chunks将其转换为KnowledgeChunk对象。以下逐chunk分析LLM的切分决策逻辑与提示词规则的对应关系。",
+
+    "5.1_提示词规则回顾": {
+      "切分规则": {
+        "title_H1_H2": "强制开始新知识块",
+        "title_H3_H4": "视主题独立性决定是否新开",
+        "paragraph": "连续同一主题合并；主题切换时切分；单独段落不构成chunk时与前后合并",
+        "list": "步骤/流程类→转自然语言(首先→然后→最后)；嵌套层级→保留编号(1./1.1/1.2)；词汇/参数类→保留键值格式；不能独立成块时与前后合并",
+        "table": "转为自然语言段落——先说明用途，再逐行转述；表头值必须体现在转述中；前后各一个段落(主题相关时)合并",
+        "code": "脚本/算法→概括逻辑+保留关键签名；配置→每key转自然语言；查询SQL→自然语言描述；命令→保留原样+中文解释；与前后说明段落合并",
+        "unknown": "视为paragraph处理"
+      },
+      "chunk约束": "每个chunk的content控制在200-800字符",
+      "knowledge_type标注": {
+        "declarative": "事实陈述、定义说明、属性描述、概念解释",
+        "relational": "实体关联、依赖、包含、对比、层级关系",
+        "procedural": "操作步骤、执行顺序、条件分支、决策流程"
+      }
+    },
+
+    "5.2_逐chunk决策分析": {
+      "chunk1_系统架构概述": {
+        "覆盖元素": "el_seq1(H1) + el_seq2(段落+链接) + el_seq3(架构图)",
+        "切分决策": "H1强制新块 → 后续段落(seq2)和图片(seq3)与H1主题一致 → 合并。seq3的text为空但有图片asset → 融合时用asset的alt/caption描述图片。",
+        "内容构造": "title取H1文本。content融合: 段落原文 + '系统整体架构如图所示' → 因为asset_descriptions全部为空(阶段3下载失败)，只能根据asset.metadata.alt=系统架构图来生成图片描述文字。",
+        "asset_refs": "asset_0002(架构图) + asset_0001(架构设计文档)。caption取asset.metadata.alt或'{asset_type}: {uri}'。",
+        "knowledge_type": "declarative — 事实陈述(系统架构采用什么方案)"
+      },
+      "chunk2_API网关模块": {
+        "覆盖元素": "el_seq4(H2) + el_seq5(H3) + el_seq6(前导段落) + el_seq7(list容器) + el_seq8~11(4个列表子项) + el_seq12(拓扑图段落)",
+        "切分决策": "H2强制新块。H3(API网关模块)与H2(核心模块说明)主题紧密——H2本身无实质内容，只是分组标签 → H3不独立新开，合并入H2块。前导段落+无序列表+拓扑图属于同一主题 → 全部合并。",
+        "列表处理": "4条无序列表项(技术栈罗列) → 视为词汇/参数类 → 用分号连接，保留条目格式",
+        "内容构造": "title取H3文本。content以H2为前缀('核心模块说明：')，融合段落原文+列表转述+图片描述。",
+        "asset_refs": "asset_0003(rate-limiting.pdf) + asset_0004(monitoring.png) + asset_0005(gateway-topology.jpg)",
+        "knowledge_type": "declarative — 模块功能说明",
+        "注意": "seq12段落的link_urls包含从seq9泄漏的RFC7519链接——但LLM输入中link_urls在metadata中，LLM可能将其融入content或忽略"
+      },
+      "chunk3_消息队列模块": {
+        "覆盖元素": "el_seq13(H3) + el_seq14(段落+management.html链接) + el_seq15(list容器) + el_seq16~19(4个有序列表子项)",
+        "切分决策": "H3与前一个H3(API网关模块)主题独立 → 新开chunk。段落+有序列表合并。",
+        "列表处理": "4条有序列表项(消息持久化策略步骤) → 步骤/流程类 → 转自然语言'首先…其次…然后…最后…'",
+        "内容构造": "title='消息队列模块 — 消息持久化策略'。content融合段落原文+列表自然语言转述。",
+        "asset_refs": "asset_0006(retry.xlsx) + asset_0007(prometheus.zip)",
+        "knowledge_type": "procedural — 有序步骤流程"
+      },
+      "chunk4_分布式存储模块": {
+        "覆盖元素": "el_seq20(H3) + el_seq21(table) + el_seq22(架构图段落)",
+        "切分决策": "H3与前一个H3(消息队列模块)主题独立 → 新开chunk。表格与其后图片段落主题相关 → 合并。",
+        "表格处理": "4行×4列表格(存储组件选型) → 转为自然语言: '对象存储使用MinIO，用于…' → 逐行转述，表头值融入。",
+        "内容构造": "title='分布式存储模块 — 存储组件选型'。content: 总述句 + 4行逐行转述 + 架构图描述。",
+        "asset_refs": "asset_0008(minio-guide.pdf) + asset_0009(benchmark.xlsx) + asset_0010(config.pptx) + asset_0011(storage-arch.webp)",
+        "knowledge_type": "relational — 实体间关联/对比关系(4种存储产品的用途对比)",
+        "注意": "表格的links字段(含classify_link结果)和link_urls(含postgresql.org/docs/)也在structured_data中传递给LLM——LLM可能将这些链接信息融入content或忽略"
+      },
+      "chunk5_数据入库流程": {
+        "覆盖元素": "el_seq23(H2) + el_seq24(H3) + el_seq25(code:python)",
+        "切分决策": "H2强制新块。H3与H2主题紧密 → 合并。Python代码块与H3主题一致 → 合并。",
+        "代码处理": "Python代码(ingest_document函数) → 脚本/算法类 → 概括核心逻辑(解析→抽取→索引)，保留关键函数名。",
+        "内容构造": "title取H3。content: '关键流程中的数据入库流程如下：' + 代码逻辑概括。",
+        "knowledge_type": "procedural — 流程步骤描述"
+      },
+      "chunk6_数据检索流程": {
+        "覆盖元素": "el_seq26(H3) + el_seq27(code:sql)",
+        "切分决策": "H3与前一个H3(数据入库流程)主题独立 → 新开chunk。SQL代码块与H3主题一致 → 合并。",
+        "代码处理": "SQL代码(混合检索查询) → 查询类 → 自然语言描述: 查哪些表/字段、过滤条件、返回结果。",
+        "内容构造": "title='数据检索流程 — 混合检索查询'。content: SQL查询逻辑的自然语言描述。",
+        "knowledge_type": "procedural — 检索流程步骤"
+      },
+      "chunk7_系统核心配置": {
+        "覆盖元素": "el_seq28(H3) + el_seq29(code:yaml)",
+        "切分决策": "H3与前一个H3(数据检索流程)主题独立 → 新开chunk。YAML代码块与H3主题一致 → 合并。",
+        "代码处理": "YAML代码(系统配置) → 配置类 → 每个key转自然语言: 'Milvus配置：主机地址为localhost，端口为19530…'。",
+        "内容构造": "title取H3。content: 逐配置项自然语言转述。",
+        "knowledge_type": "declarative — 配置参数说明"
+      },
+      "chunk8_附录资源汇总": {
+        "覆盖元素": "el_seq30(H2) + el_seq31(H3:文档类资源) + el_seq32(list容器) + el_seq33~36(4个document_link列表项) + el_seq37(H3:多媒体资源) + el_seq38(list容器) + el_seq39~42(4个混合类型列表项)",
+        "切分决策": "H2强制新块。两个H3(文档类资源/多媒体资源)都属于资源汇总主题 → 不独立新开，全部合并。",
+        "列表处理": "文档资源列表(4项) → 词汇/参数类，保留条目格式 → 合并转述。多媒体列表(4项混合video/image) → 同上。",
+        "内容构造": "title='附录 — 文档类资源汇总'。content融合两个H3下列表的所有条目 + 多媒体资源描述。",
+        "asset_refs": "8个Asset(asset_0012~0019): 4个document_link + 2个video_link + 1个image_link + 1个video_link",
+        "knowledge_type": "declarative — 资源罗列说明"
+      },
+      "chunk9_外部参考链接": {
+        "覆盖元素": "el_seq43(H3) + el_seq44(list容器) + el_seq45~48(4个普通URL列表项)",
+        "切分决策": "H3与前一个H3(多媒体资源)主题差异——外部参考链接是纯URL列表，与前面的文档/多媒体资源性质不同 → 独立成chunk。",
+        "列表处理": "4条外部参考链接(全为普通URL) → 词汇/参数类，保留条目格式。",
+        "内容构造": "title='外部参考链接汇总'。content: 引导句 + 4个链接转述。",
+        "asset_refs": "无 — 4个URL全部为普通链接(非资源类型)，无对应Asset",
+        "knowledge_type": "declarative — 参考信息罗列",
+        "注意": "这4个列表项的link_urls(Python/FastAPI/Milvus/火山引擎)进入了state._link_urls但因文档末尾无后续元素而未被消费——但LLM仍能通过element的text内容识别这些链接"
+      }
+    },
+
+    "5.3_切分决策汇总": {
+      "chunk总数": 9,
+      "切分触发原因": {
+        "H1强制": "1次 (chunk1)",
+        "H2强制": "3次 (chunk2核心模块说明, chunk5关键流程, chunk8附录)",
+        "H3主题独立": "5次 (chunk3消息队列, chunk4分布式存储, chunk5数据入库, chunk6数据检索, chunk7配置, chunk9外部链接)",
+        "H3主题合并": "3次 (chunk2中API网关并入H2, chunk8中文档/多媒体资源合并, chunk5中数据入库并入H2)"
+      },
+      "元素类型处理": {
+        "title": "H1/H2强制新块; H3/H4视独立性; 标题文本融入content首句",
+        "paragraph": "同主题连续合并; link_urls在metadata中，LLM可选择融入",
+        "list(无序4项)": "→ 词汇罗列，分号连接",
+        "list(有序4项)": "→ 步骤流程，首先→其次→然后→最后",
+        "table": "→ 自然语言逐行转述，表头值融入",
+        "code(python)": "→ 概括逻辑+保留函数签名",
+        "code(sql)": "→ 自然语言描述查询逻辑",
+        "code(yaml)": "→ 每个key转自然语言描述"
+      },
+      "knowledge_type分布": {
+        "declarative": "5个 (系统概述, API网关, 系统配置, 附录资源, 外部链接)",
+        "procedural": "3个 (消息队列策略, 数据入库, 数据检索)",
+        "relational": "1个 (分布式存储选型)"
+      }
+    },
+
+    "5.4__build_chunks转换细节": {
+      "代码行": "semantic_extractor.py:444-548",
+      "说明": "LLM返回9个chunk的dict → 遍历转换 → 9个KnowledgeChunk对象",
+      "逐chunk处理": [
+        "1. content为空 → 跳过(9个chunk都有content，不跳过)",
+        "2. source_refs构造: LLM返回element_id → 查elements_by_id → 创建SourceRef(doc_id, element_id, source_location)",
+        "   → 本模拟中LLM给出的source_refs覆盖了每个chunk涉及的所有element",
+        "3. asset_refs构造: LLM返回asset_id → 查assets_by_id → 创建AssetRef",
+        "   → caption: LLM提供 > asset.metadata.caption > asset.metadata.alt > '{asset_type}: {uri}'",
+        "   → 本模拟中asset_descriptions全部为空，caption回退到alt或类型+URI",
+        "4. title: LLM提供(优先) 或 _derive_title(content)派生",
+        "5. knowledge_type: _safe_knowledge_type() → 非法值降级为declarative",
+        "6. 创建KnowledgeChunk: doc_id继承elements[0].doc_id, category='通用', status=active, metadata={title_path, language:'zh-CN'}"
+      ],
+      "最终输出": "9个KnowledgeChunk对象 → 进入阶段6(KnowledgeChunk对象详情) → 进入阶段7(索引写入)"
+    }
+  },
+
+  "阶段6_KnowledgeChunk最终对象": {
+    "说明": "_build_chunks输出9个KnowledgeChunk Pydantic模型。以下为每个chunk的核心字段（不含实际运行时生成的随机ID和content_hash）。",
+    "构造参数来源": {
+      "chunk_id": "自动生成 new_id('chunk')",
+      "doc_id": "继承自 elements[0].doc_id",
+      "title": "LLM输出.title 或 _derive_title(content)派生",
+      "content": "LLM输出.content",
+      "content_hash": "model_validator自动计算 compute_hash(content)",
+      "knowledge_type": "_safe_knowledge_type(LLM输出.knowledge_type)",
+      "category": "pipeline参数传入(默认'通用')",
+      "status": "ChunkStatus.active",
+      "asset_refs": "LLM输出.asset_refs → 查assets_by_id → AssetRef对象",
+      "source_refs": "LLM输出.source_refs → 查elements_by_id → SourceRef对象",
+      "metadata": "{\"title_path\": [...], \"language\": \"zh-CN\"}"
+    },
+    "chunks": [
+      {"title": "系统架构概述", "knowledge_type": "declarative", "asset_refs": 2, "source_refs": 3, "est_chars": "~180"},
+      {"title": "API 网关模块", "knowledge_type": "declarative", "asset_refs": 3, "source_refs": 5, "est_chars": "~350"},
+      {"title": "消息队列模块 — 消息持久化策略", "knowledge_type": "procedural", "asset_refs": 2, "source_refs": 3, "est_chars": "~300"},
+      {"title": "分布式存储模块 — 存储组件选型", "knowledge_type": "relational", "asset_refs": 4, "source_refs": 3, "est_chars": "~350"},
+      {"title": "数据入库流程", "knowledge_type": "procedural", "asset_refs": 0, "source_refs": 3, "est_chars": "~280"},
+      {"title": "数据检索流程 — 混合检索查询", "knowledge_type": "procedural", "asset_refs": 0, "source_refs": 2, "est_chars": "~250"},
+      {"title": "系统核心配置", "knowledge_type": "declarative", "asset_refs": 0, "source_refs": 2, "est_chars": "~250"},
+      {"title": "附录 — 文档类资源汇总", "knowledge_type": "declarative", "asset_refs": 8, "source_refs": 5, "est_chars": "~300"},
+      {"title": "外部参考链接汇总", "knowledge_type": "declarative", "asset_refs": 0, "source_refs": 2, "est_chars": "~120"}
+    ],
+    "chunk数量": 9,
+    "汇总": "total_content ~2380 chars, 总asset_refs=19, 总source_refs=28"
+  },
+
+  "阶段7_索引写入_index_chunks": {
+    "说明": "pipeline.py:303-335 — _index_chunks(chunks, persist_chunks=True)。将9个KnowledgeChunk写入PG、生成Embedding、写入Milvus双路索引。",
+    "调用": "pipeline.py:182 → if chunks: self._index_chunks(chunks)",
+
+    "7.1_PG持久化": {
+      "代码行": "pipeline.py:313-314",
+      "逻辑": "if self._chunk_store and persist_chunks: for chunk in chunks: self._chunk_store.put(chunk)",
+      "函数": "PgChunkStore.put(chunk) → INSERT INTO knowledge_chunks",
+      "写入列": "chunk_id, doc_id, title, content, content_hash, knowledge_type, category, status, asset_refs(JSONB), source_refs(JSONB), created_at, updated_at, metadata(JSONB)",
+      "数量": "9条INSERT",
+      "说明": "逐条写入，非批量。若某条失败会抛异常，中断后续写入。"
+    },
+
+    "7.2_Embedding生成": {
+      "代码行": "pipeline.py:317-323",
+      "批量逻辑": [
+        "for batch in _batched(chunks, settings.embedding_batch_size):",
+        "  texts = [chunk.content for chunk in batch]",
+        "  vectors = embedding_client.embed_text(texts)",
+        "  assert len(vectors) == len(batch)"
+      ],
+      "embedding_batch_size": "默认32 (config.py:37)",
+      "实际批次": "9个chunk, batch_size=32 → 1个批次",
+      "embed_text实现": "volcengine_client.py:243-278",
+      "调用参数": [
+        "model = settings.embedding_model (multimodal_embeddings模型)",
+        "dimensions = 1024",
+        "逐条调用 client.multimodal_embeddings.create(model=model, input=[{type:'text', text}], dimensions=1024)",
+        "返回 9个 1024维 float列表"
+      ],
+      "输出": "9个向量, 每个1024维 float → 总计 9×1024 = 9216个float值",
+      "注意": "embed_text是逐条调用API(非批量), 9个chunk产生9次API调用。"
+    },
+
+    "7.3_Milvus双路索引写入": {
+      "代码行": "pipeline.py:325-335",
+      "索引构造": [
+        "遍历每个(chunk, vector):",
+        "  metadata = _chunk_index_metadata(chunk) → dict:",
+        "    doc_id, title, content, category, knowledge_type, status, source_refs(JSON序列化), metadata",
+        "  vector_items.append((chunk_id, vector, metadata))",
+        "  bm25_items.append((chunk_id, chunk.content, metadata))",
+        "",
+        "按 index_upsert_batch_size 分批写入:",
+        "  MilvusVectorIndex.add_batch(vector_items) → 写入dense_vector(1024维) + 标量字段",
+        "  MilvusBM25Index.add_batch(bm25_items) → jieba分词 → 生成sparse_vector + 标量字段"
+      ],
+      "index_upsert_batch_size": "默认100 (config.py:38)",
+      "实际批次": "9条, batch_size=100 → 1个批次",
+      "MilvusVectorIndex.add_batch": {
+        "说明": "将(chunk_id, 1024维向量, metadata)写入Milvus Collection",
+        "写入字段": "chunk_id(主键), dense_vector(1024维float数组), doc_id, title, content, category, knowledge_type, status, source_refs, metadata"
+      },
+      "MilvusBM25Index.add_batch": {
+        "说明": "将(chunk_id, text, metadata)通过jieba分词生成BM25稀疏向量并写入",
+        "分词": "jieba.cut(text) → 中文分词 → 生成sparse_vector",
+        "写入字段": "chunk_id(主键), sparse_vector, doc_id, title, content, category, knowledge_type, status, source_refs, metadata"
+      },
+      "双路索引目的": "向量检索(dense_vector)负责语义匹配; BM25检索(sparse_vector)负责关键词匹配。检索时RRF融合两路结果。"
+    },
+
+    "7.4_回到_run_create和ingest": {
+      "说明": "_index_chunks完成后，控制流回到 _run_create → ingest",
+      "执行顺序": [
+        "pipeline.py:182: _index_chunks(chunks) 完成 → 9个chunk已写入PG+Milvus",
+        "pipeline.py:184-186: 若settings.auto_eval_enabled → _trigger_eval_data_generation(doc, chunks) 后台异步(阶段9)",
+        "pipeline.py:172: _run_create 返回 (无返回值, None)",
+        "pipeline.py:127: _run_create 完成 → 回到 ingest",
+        "pipeline.py:129-132: doc.status = DocStatus.active, doc.updated_at = now, document_repo.update(doc)",
+        "→ UPDATE documents SET status='active', updated_at=... WHERE doc_id=...",
+        "pipeline.py:143: return doc → 回到 upload_document"
+      ]
+    }
+  },
+
+  "阶段8_最终Document状态": {
+    "doc_id": "doc_aaaabbbbcccc",
+    "title": "comprehensive_test",
+    "source_type": "markdown",
+    "source_uri": "minio://kb-input/comprehensive_test.md",
+    "source_hash": "sha256:<实际内容哈希>",
+    "category": "通用",
+    "version": 1,
+    "status": "active",
+    "error_message": null,
+    "统计": {
+      "parsed_elements": 48,
+      "assets": 18,
+      "knowledge_chunks": 9,
+      "chunk类型分布": {"declarative": 5, "procedural": 3, "relational": 1}
+    }
+  },
+
+  "阶段9_自动评测数据生成": {
+    "条件": "settings.auto_eval_enabled=true时触发",
+    "流程": "后台线程: generate_for_chunks(chunks, doc_id, doc_title, query_count) → save_per_doc_dataset",
+    "说明": "异步执行，不阻塞主流程。为每个chunk生成query_count条检索评测数据。"
+  },
+
+  "关键注意事项": [
+    "1. 所有ID(如doc_aaaabbbbcccc、el_xxx、asset_xxx、chunk_xxx)在实际运行中为带随机12位hex后缀的真实ID",
+    "2. 实际解析结果: 48个ParsedElement + 18个Asset (含list容器元素)。bilibili链接未被is_video_url识别(video/*)，归为普通URL",
+    "3. LLM输出因模型温度和上下文而异，模拟的chunk切分和内容可能与实际有偏差。阶段5的逐chunk决策分析基于SEMANTIC_EXTRACT_SYSTEM提示词规则推导",
+    "4. 资源下载(process_image/image_link/video/document_link)依赖example.com等外部URL，实际运行时大概率失败→Asset状态变为failed→extracted_text全部为空",
+    "5. 列表内普通链接(非资源类型)的_link_urls在列表关闭时未被消费，会泄漏到后续元素。如seq=9的RFC7519→seq=12, seq=45-48的外部参考链接→文档末尾无后续元素",
+    "6. _estimate_tokens(1638)与elements_json实际大小(13949字符≈7749 tokens)差异大——前者只计el.text+structured_data，不含JSON结构开销。但safe_threshold=204800足够大，不影响路径判定",
+    "7. asset_0007(prometheus.zip)的.zip后缀不在_SUFFIX_TO_SOURCE_TYPE中→无法作为子文档入库。若下载成功会因unsupported_document_type而failed",
+    "8. bilibili链接的URL模式未被VIDEO_URL_RE匹配(bilibili.com不在正则中)→归类为普通URL而非video_link。这是阶段2分析中的修正发现",
+    "9. 若LLM调用失败→走降级路径(_split_recursive按标题层级递进切分)。若全文token超safe_threshold→同样走降级"
+  ]
+}

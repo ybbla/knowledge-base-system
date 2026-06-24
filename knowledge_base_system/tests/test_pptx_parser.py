@@ -124,9 +124,9 @@ class TestPptxParser:
         assert result.assets[0].asset_type == AssetType.image
         assert result.assets[0].content_hash.startswith("sha256:")
         assert getattr(result.assets[0], "_data") == png_bytes
-        image_el = next(el for el in result.elements if el.element_type == ElementType.image)
-        assert image_el.asset_ids == [result.assets[0].asset_id]
-        assert result.assets[0].source_element_id == image_el.element_id
+        image_el = next(el for el in result.elements if el.element_type == ElementType.paragraph)
+        assert image_el.asset_data[0].url == result.assets[0].original_uri
+        assert result.assets[0].element_id == image_el.element_id
 
     def test_video_audio_attachment_links_and_dedup(self):
         prs = Presentation()
@@ -152,8 +152,8 @@ class TestPptxParser:
             for el in result.elements
             if el.element_type == ElementType.paragraph and "演示视频" in el.text
         )
-        assert len(paragraph.asset_ids) == 3
-        assert all(asset.source_element_id == paragraph.element_id for asset in result.assets)
+        assert len(paragraph.asset_data) == 3
+        assert all(asset.element_id == paragraph.element_id for asset in result.assets)
 
     def test_unsupported_chart_becomes_unknown_element(self):
         prs = Presentation()
@@ -286,7 +286,7 @@ class TestPptxParser:
         finally:
             os.unlink(image_file.name)
 
-        image_el = next(el for el in result.elements if el.element_type == ElementType.image)
+        image_el = next(el for el in result.elements if el.element_type == ElementType.paragraph)
         assert image_el.structured_data is not None
         links = image_el.structured_data["links"]
         assert len(links) == 1

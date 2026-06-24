@@ -1,6 +1,7 @@
 """知识块仓储 — KnowledgeChunk 的 PostgreSQL 持久化与查询。
 
 提供知识块的 CRUD、分页过滤、批量状态更新、软删除/恢复等功能。
+doc_id 不再作为独立列，改为通过 source_refs JSONB 中的 doc_id 查询。
 """
 
 from __future__ import annotations
@@ -8,11 +9,12 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from sqlalchemy import func, text
+
 from app.core.models import (
     AssetRef,
     KnowledgeChunk,
     KnowledgeType,
-    Render,
     SourceRef,
     SourceLocation,
 )
@@ -22,6 +24,11 @@ from app.db.repositories.base import BaseRepository
 logger = logging.getLogger(__name__)
 
 
+def _source_refs_contains_doc(doc_id: str):
+    """构造参数化的 JSONB 包含表达式，避免拼接文档 ID。"""
+    return DbKnowledgeChunk.source_refs.contains([{"doc_id": doc_id}])
+
+
 class PgChunkStore(BaseRepository):
     """知识块仓储 — 实现 PostgreSQL 下的 KnowledgeChunk 持久化存储。"""
 
@@ -29,7 +36,7 @@ class PgChunkStore(BaseRepository):
         """将领域模型 KnowledgeChunk 转换为 ORM 对象 DbKnowledgeChunk。"""
         return DbKnowledgeChunk(
             chunk_id=chunk.chunk_id,
-            doc_id=chunk.doc_id,
+            doc_id=chunk.doc_id or (chunk.source_refs[0].doc_id if chunk.source_refs else ""),
             title=chunk.title,
             content=chunk.content,
             content_hash=chunk.content_hash,
@@ -47,16 +54,10 @@ class PgChunkStore(BaseRepository):
         """将 ORM 对象 DbKnowledgeChunk 还原为领域模型 KnowledgeChunk。"""
         asset_refs = []
         for raw in db_chunk.asset_refs or []:
-            render_data = raw.get("render") or {}
             asset_refs.append(
                 AssetRef(
                     asset_id=raw["asset_id"],
-                    linked_text=raw.get("linked_text"),
                     caption=raw.get("caption"),
-                    render=Render(
-                        mode=render_data.get("mode", "inline"),
-                        position=render_data.get("position", "after_linked_text"),
-                    ),
                 )
             )
 
@@ -75,7 +76,7 @@ class PgChunkStore(BaseRepository):
 
         return KnowledgeChunk(
             chunk_id=db_chunk.chunk_id,
-            doc_id=db_chunk.doc_id,
+            doc_id=db_chunk.doc_id or "",
             title=db_chunk.title,
             content=db_chunk.content,
             content_hash=db_chunk.content_hash,
@@ -95,7 +96,7 @@ class PgChunkStore(BaseRepository):
             existing = session.get(DbKnowledgeChunk, chunk.chunk_id)
             if existing is not None:
                 # 更新已有记录 — 保留原始 created_at，刷新 updated_at
-                existing.doc_id = chunk.doc_id
+                existing.doc_id = chunk.doc_id or (chunk.source_refs[0].doc_id if chunk.source_refs else "")
                 existing.title = chunk.title
                 existing.content = chunk.content
                 existing.content_hash = chunk.content_hash
@@ -136,22 +137,22 @@ class PgChunkStore(BaseRepository):
             return [self._from_db(c) for c in db_chunks]
 
     def list_by_doc_id(self, doc_id: str) -> list[KnowledgeChunk]:
-        """按文档 ID 查找所有知识块。"""
+        """按文档 ID 查找所有知识块（通过 source_refs JSONB 查询）。"""
         with self._session() as session:
             db_chunks = (
                 session.query(DbKnowledgeChunk)
-                .filter_by(doc_id=doc_id)
+                .filter(_source_refs_contains_doc(doc_id))
                 .order_by(DbKnowledgeChunk.chunk_id)
                 .all()
             )
             return [self._from_db(c) for c in db_chunks]
 
     def bulk_update_status_by_doc_id(self, doc_id: str, status: str) -> None:
-        """将指定文档下所有 chunk 批量更新为目标状态（删/恢通用）。"""
+        """将指定文档下所有 chunk 批量更新为目标状态（通过 source_refs 查询）。"""
         with self._session() as session:
             rows = (
                 session.query(DbKnowledgeChunk)
-                .filter(DbKnowledgeChunk.doc_id == doc_id)
+                .filter(_source_refs_contains_doc(doc_id))
                 .all()
             )
             for row in rows:
@@ -159,11 +160,11 @@ class PgChunkStore(BaseRepository):
             session.commit()
 
     def bulk_update_fields_by_doc_id(self, doc_id: str, fields: dict) -> list[KnowledgeChunk]:
-        """批量更新指定文档下所有 chunk 的元数据字段（如 title、category），返回更新后的 chunk 列表。"""
+        """批量更新指定文档下所有 chunk 的元数据字段，返回更新后的 chunk 列表。"""
         with self._session() as session:
             rows = (
                 session.query(DbKnowledgeChunk)
-                .filter(DbKnowledgeChunk.doc_id == doc_id)
+                .filter(_source_refs_contains_doc(doc_id))
                 .all()
             )
             for row in rows:
@@ -203,6 +204,8 @@ class PgChunkStore(BaseRepository):
             - "chunk_title": 关键词匹配知识块标题和内容（默认）
             - "doc_title": 关键词匹配来源文档标题（需 JOIN documents 表）
 
+        doc_id 和 source_type 筛选通过 source_refs JSONB 或 JOIN documents 实现。
+
         Returns:
             (知识块列表, 总条数)
         """
@@ -212,11 +215,13 @@ class PgChunkStore(BaseRepository):
             query = session.query(DbKnowledgeChunk)
 
             # ── 按文档标题搜索 / 按文档来源类型筛选需要 JOIN documents 表 ──
-            need_join = (keyword and search_mode == "doc_title") or (source_type is not None)
+            # 通过 source_refs JSONB 中的 doc_id 提取并 JOIN
+            need_join = (keyword and search_mode == "doc_title") or (source_type is not None) or (doc_id is not None and source_type is not None)
             if need_join:
+                # 语义抽取保证同一知识块的首个 source_ref 指向所属文档。
                 query = query.join(
                     DbDocument,
-                    DbKnowledgeChunk.doc_id == DbDocument.doc_id,
+                    text("documents.doc_id = (knowledge_chunks.source_refs->0->>'doc_id')"),
                 )
 
             # ── 关键词搜索 ──
@@ -224,6 +229,12 @@ class PgChunkStore(BaseRepository):
                 kw_pattern = f"%{keyword}%"
                 from sqlalchemy import or_
                 if search_mode == "doc_title":
+                    if not need_join:
+                        # 延迟 JOIN
+                        query = query.join(
+                            DbDocument,
+                            text("documents.doc_id = (knowledge_chunks.source_refs->0->>'doc_id')"),
+                        )
                     query = query.filter(DbDocument.title.ilike(kw_pattern))
                 else:
                     query = query.filter(
@@ -237,7 +248,7 @@ class PgChunkStore(BaseRepository):
             if source_type is not None:
                 query = query.filter(DbDocument.source_type == source_type)
             if doc_id is not None:
-                query = query.filter(DbKnowledgeChunk.doc_id == doc_id)
+                query = query.filter(_source_refs_contains_doc(doc_id))
             if category is not None:
                 query = query.filter(DbKnowledgeChunk.category == category)
             if knowledge_type is not None:
@@ -247,37 +258,21 @@ class PgChunkStore(BaseRepository):
 
             # ── 有关联资源/来源过滤（JSON 数组非空） ──
             if has_assets is True:
-                from sqlalchemy import func, type_coerce
-                from sqlalchemy import String as SAString
                 query = query.filter(
-                    func.json_array_length(
-                        type_coerce(DbKnowledgeChunk.asset_refs, SAString)
-                    ) > 0
+                    func.jsonb_array_length(DbKnowledgeChunk.asset_refs) > 0
                 )
             elif has_assets is False:
-                from sqlalchemy import func, type_coerce
-                from sqlalchemy import String as SAString
                 query = query.filter(
-                    func.json_array_length(
-                        type_coerce(DbKnowledgeChunk.asset_refs, SAString)
-                    ) == 0
+                    func.jsonb_array_length(DbKnowledgeChunk.asset_refs) == 0
                 )
 
             if has_sources is True:
-                from sqlalchemy import func, type_coerce
-                from sqlalchemy import String as SAString
                 query = query.filter(
-                    func.json_array_length(
-                        type_coerce(DbKnowledgeChunk.source_refs, SAString)
-                    ) > 0
+                    func.jsonb_array_length(DbKnowledgeChunk.source_refs) > 0
                 )
             elif has_sources is False:
-                from sqlalchemy import func, type_coerce
-                from sqlalchemy import String as SAString
                 query = query.filter(
-                    func.json_array_length(
-                        type_coerce(DbKnowledgeChunk.source_refs, SAString)
-                    ) == 0
+                    func.jsonb_array_length(DbKnowledgeChunk.source_refs) == 0
                 )
 
             # ── 总数 ──
@@ -353,11 +348,11 @@ class PgChunkStore(BaseRepository):
             return self._from_db(db_chunk)
 
     def count_by_doc_id(self, doc_id: str) -> int:
-        """统计某文档下的知识块数量。"""
+        """统计某文档下的知识块数量（通过 source_refs JSONB 查询）。"""
         with self._session() as session:
             return (
                 session.query(DbKnowledgeChunk)
-                .filter_by(doc_id=doc_id)
+                .filter(_source_refs_contains_doc(doc_id))
                 .count()
             )
 

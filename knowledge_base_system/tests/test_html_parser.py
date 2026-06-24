@@ -174,7 +174,7 @@ class TestHtmlParser:
         assert assets["https://docs.example.com/manual/files/manual.pdf"].asset_type == AssetType.document_link
         assert assets["https://example.com/report.pdf"].asset_type == AssetType.document_link
         assert assets["https://example.com/slides.pptx"].asset_type == AssetType.document_link
-        assert any(el.asset_ids for el in result.elements)
+        assert any(el.asset_data for el in result.elements)
 
     def test_duplicate_urls_create_single_asset(self):
         html = """

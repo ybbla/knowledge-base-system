@@ -8,7 +8,6 @@
 import hashlib
 import logging
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -26,7 +25,12 @@ from app.core.models import (
 from app.core.paths import resolve_file_uri
 from assets.base import AssetStore
 from assets.downloader import download_to_bytes
-from assets.image_processor import process_image, process_image_link, process_video
+from assets.asset_processor import (
+    process_image,
+    process_image_link,
+    process_video,
+    process_video_link,
+)
 from assets.minio_store import MinioAssetStore, make_minio_key, read_uri_bytes
 from indexing.base import BM25Index, VectorIndex
 from llm.semantic_extractor import SemanticExtractor
@@ -90,7 +94,7 @@ class IngestionPipeline:
         self._minio_store = asset_store if isinstance(asset_store, MinioAssetStore) else None
 
     def _cleanup_old_chunks(self, doc_id: str) -> None:
-        """重入库前清理旧知识块：PG 硬删除 + Milvus 真删。"""
+        """重入库前清理旧知识块，从向量索引、BM25 索引和 PostgreSQL 中删除。"""
         if not self._chunk_store or not hasattr(self._chunk_store, "list_by_doc_id"):
             return
         old_chunks = self._chunk_store.list_by_doc_id(doc_id)
@@ -98,10 +102,29 @@ class IngestionPipeline:
             return
         for c in old_chunks:
             try:
-                self._chunk_store.hard_delete(c.chunk_id)
                 self._vector_index.delete(c.chunk_id)
-            except Exception:
-                logger.exception("清理旧知识块失败: %s", c.chunk_id)
+                self._bm25_index.delete(c.chunk_id)
+                self._chunk_store.hard_delete(c.chunk_id)
+            except Exception as exc:
+                raise RuntimeError(f"清理旧知识块失败: {c.chunk_id}") from exc
+
+    def _cleanup_old_elements(self, doc_id: str) -> None:
+        """删除重入库文档的旧解析元素，防止解析结果缩短后残留旧元素。"""
+        if self._element_repo and hasattr(self._element_repo, "delete_by_doc_id"):
+            self._element_repo.delete_by_doc_id(doc_id)
+
+    def _cleanup_old_assets(self, doc_id: str) -> None:
+        """删除重入库文档的旧资源对象与元数据，防止产生失效资源引用。"""
+        if not hasattr(self._asset_store, "get_by_doc_id"):
+            return
+        for asset in self._asset_store.get_by_doc_id(doc_id):
+            self._asset_store.delete(asset.asset_id)
+
+    def _cleanup_previous_artifacts(self, doc_id: str) -> None:
+        """按知识块、解析元素、资源的依赖顺序清理旧入库产物。"""
+        self._cleanup_old_chunks(doc_id)
+        self._cleanup_old_elements(doc_id)
+        self._cleanup_old_assets(doc_id)
 
     def ingest(
         self,
@@ -111,22 +134,32 @@ class IngestionPipeline:
     ) -> Document:
         """同步执行文档入库，返回更新后的 Document（status=active 或 failed）。
 
-        重入库场景：先清理旧知识块（PG 硬删除 + Milvus 真删），再走完整流水线。
+        重入库场景先清理旧知识块、解析元素和资源，再走完整流水线。
         """
         try:
             doc.status = DocStatus.processing
+            doc.error_message = None
             doc.updated_at = datetime.now(timezone.utc)
 
             # ── 清除删除前状态标记（恢复流程写入，重入库后失效） ──
             if doc.metadata and "previous_status" in doc.metadata:
                 del doc.metadata["previous_status"]
 
-            # ── 重入库前清理旧知识块（PG + Milvus + BM25） ──
-            self._cleanup_old_chunks(doc.doc_id)
+            # 先持久化 processing，确保进程异常退出时数据库不会停留在旧状态。
+            if self._document_repo:
+                existing = self._document_repo.get(doc.doc_id)
+                if existing is None:
+                    doc = self._document_repo.create(doc)
+                else:
+                    doc = self._document_repo.update(doc)
 
-            self._run_create(doc, raw_content, options or {})
+            # ── 重入库前清理旧知识块、解析元素和资源 ──
+            self._cleanup_previous_artifacts(doc.doc_id)
+
+            self._run_create(doc, raw_content)
 
             doc.status = DocStatus.active
+            doc.error_message = None
             doc.updated_at = datetime.now(timezone.utc)
             if self._document_repo:
                 self._document_repo.update(doc)
@@ -146,30 +179,28 @@ class IngestionPipeline:
         self,
         doc: Document,
         raw_content: bytes | str | None,
-        options: dict[str, Any],
     ) -> None:
         """文档入库流程（解析 → 资源处理 → 抽取 → 索引）。"""
-        if self._document_repo and self._document_repo.get(doc.doc_id) is None:
-            self._document_repo.create(doc)
-
         # 1. 解析文档
         parser = self._parser_registry.get(doc.source_type)
 
-        # 降级路径：调用方未传内容时从 MinIO / file:// 读取
+        # 降级路径：调用方未传内容时从 MinIO / file:// / http(s):// 读取
         if raw_content is None:
             if doc.source_uri.startswith("minio://"):
                 raw_content = read_uri_bytes(doc.source_uri, self._minio_store)
             elif doc.source_uri.startswith("file://"):
                 raw_content = resolve_file_uri(doc.source_uri).read_bytes()
-
-            if parser.CONTENT_IS_TEXT and isinstance(raw_content, bytes):
-                raw_content = raw_content.decode("utf-8")
+            elif doc.source_uri.startswith("http://") or doc.source_uri.startswith("https://"):
+                raw_content = read_uri_bytes(doc.source_uri)
+            else:
+                raise ValueError(
+                    f"无法读取文档内容：不支持的 source_uri 协议: {doc.source_uri[:80]}"
+                )
 
         result = parser.parse(doc, raw_content)
-        doc = result.doc
         elements = result.elements
         assets = result.assets
-        assets = self._prepare_assets(assets)
+        self._prepare_assets(assets)
 
         if self._element_repo and elements:
             self._element_repo.create_batch(elements)
@@ -185,20 +216,28 @@ class IngestionPipeline:
         if settings.auto_eval_enabled and chunks:
             self._trigger_eval_data_generation(doc, chunks)
 
-    def _prepare_assets(self, assets: list[Asset]) -> list[Asset]:
-        """按资源类型分发到对应的处理函数。"""
+    def _prepare_assets(self, assets: list[Asset]) -> None:
+        """按资源类型分发到对应的处理函数。
+
+        五路分发：
+        - image / video：内嵌资源，读取字节后提取视觉描述
+        - image_link / video_link：外部链接，下载后提取视觉描述
+        - document_link：文档链接，下载后创建子文档并异步入库
+        - 其他类型：直接存储
+        """
         for asset in assets:
             if asset.asset_type == AssetType.image:
                 process_image(asset, self._asset_store, self._minio_store)
+            elif asset.asset_type == AssetType.video:
+                process_video(asset, self._asset_store, self._minio_store)
             elif asset.asset_type == AssetType.image_link:
                 process_image_link(asset, self._asset_store, self._minio_store)
             elif asset.asset_type == AssetType.video_link:
-                process_video(asset, self._asset_store, self._minio_store)
+                process_video_link(asset, self._asset_store, self._minio_store)
             elif asset.asset_type == AssetType.document_link:
                 self._process_document_link(asset)
             else:
                 self._asset_store.put(asset)
-        return assets
 
     def _process_document_link(self, asset: Asset) -> None:
         """处理文档链接 Asset：HTTP 下载、上传 MinIO、创建子 Document 并触发入库。
@@ -338,11 +377,12 @@ class IngestionPipeline:
     def _chunk_index_metadata(chunk: KnowledgeChunk) -> dict[str, Any]:
         """构造写入 Milvus 检索索引的知识块元数据字典。
 
-        包含 doc_id、title、content、category 等标量字段，以及序列化为
-        JSON 字符串的 source_refs、asset_refs 和 metadata。
+        包含 doc_id（从 KnowledgeChunk.doc_id 冗余字段直接读取）、title、content、
+        category 等标量字段，以及序列化为 JSON 字符串的 source_refs 和 metadata。
         """
+        doc_id = chunk.doc_id or (chunk.source_refs[0].doc_id if chunk.source_refs else "")
         return {
-            "doc_id": chunk.doc_id,
+            "doc_id": doc_id,
             "title": chunk.title,
             "content": chunk.content,
             "category": chunk.category,
@@ -352,13 +392,7 @@ class IngestionPipeline:
                 ref.model_dump(mode="json")
                 for ref in chunk.source_refs
             ],
-            "asset_refs": [
-                ref.model_dump(mode="json")
-                for ref in chunk.asset_refs
-            ],
             "metadata": chunk.metadata,
-            "created_at": int(chunk.created_at.timestamp()) if chunk.created_at else int(time.time()),
-            "updated_at": int(chunk.updated_at.timestamp()) if chunk.updated_at else int(time.time()),
         }
 
     def _trigger_eval_data_generation(self, doc: Document, chunks: list[KnowledgeChunk]) -> None:

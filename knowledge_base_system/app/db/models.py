@@ -6,18 +6,17 @@
 - assets: 资源文件表
 - knowledge_chunks: 知识块表
 
-注意：knowledge_chunks 表中 index_status / indexed_at / index_error 三列已废弃，
-仅 engine.py 中的 ensure_runtime_schema() 会为旧表补建（向后兼容），代码层不再读写。
+表结构由 scripts/setup_services.py 一次性创建，项目代码不再自动建表。
 """
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
-JSONBType = JSON().with_variant(JSONB(), "postgresql")
+JSONBType = JSONB
 
 
 def _now() -> datetime:
@@ -32,6 +31,11 @@ class DbDocument(Base):
     """文档 ORM 模型 — 对应 documents 表。"""
 
     __tablename__ = "documents"
+    __table_args__ = (
+        Index("idx_documents_source_hash_active", "source_hash", unique=True,
+              postgresql_where=text("status IN ('active', 'processing')")),
+        Index("idx_documents_source_uri", "source_uri"),
+    )
 
     doc_id = Column(String(64), primary_key=True)
     title = Column(String(512), nullable=False)
@@ -39,11 +43,10 @@ class DbDocument(Base):
     source_uri = Column(Text, nullable=False)
     source_hash = Column(String(128), default="")
     version = Column(Integer, default=1)
-    status = Column(String(32), default="processing")
+    status = Column(String(32), default="pending")
     category = Column(String(128), default="通用")
     parent_doc_id = Column(String(64), nullable=True)
     root_doc_id = Column(String(64), nullable=True)
-    ingest_job_id = Column(String(64), default="")  # 保留旧字段用于向后兼容
     previous_doc_id = Column(String(64), nullable=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
@@ -68,9 +71,9 @@ class DbParsedElement(Base):
     element_type = Column(String(32), nullable=False)
     text = Column(Text, default="")
     structured_data = Column(JSONBType, nullable=True)
-    asset_ids = Column(JSONBType, default=list)
-    embedded_doc_id = Column(String(64), nullable=True)
+    asset_data = Column(JSONBType, default=list)
     source_location = Column(JSONBType, default=dict)
+    created_at = Column(DateTime(timezone=True), default=_now)
     meta = Column("metadata", JSONBType, default=dict)
 
 
@@ -85,14 +88,13 @@ class DbAsset(Base):
 
     asset_id = Column(String(64), primary_key=True)
     doc_id = Column(String(64), ForeignKey("documents.doc_id"), nullable=False)
-    source_element_id = Column(String(64), default="")
+    element_id = Column(String(64), default="")
+    doc_version = Column(Integer, default=1)
     asset_type = Column(String(32), nullable=False)
     original_uri = Column(Text, nullable=False)
     storage_uri = Column(Text, nullable=True)
-    mime_type = Column(String(128), default="")
     content_hash = Column(String(128), default="")
     created_at = Column(DateTime(timezone=True), default=_now)
-    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
     status = Column(String(32), default="ready")
     extracted_text = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
@@ -104,13 +106,13 @@ class DbKnowledgeChunk(Base):
 
     知识块是语义抽取后的最小检索单元，按 knowledge_type 区分为陈述型、
     关系型、流程型三种。通过 source_refs 和 asset_refs 关联到源元素和资源。
+    doc_id 作为冗余字段存储归属文档 ID，加速按文档查询和 JOIN 操作。
     """
 
     __tablename__ = "knowledge_chunks"
 
     chunk_id = Column(String(64), primary_key=True)
-    doc_id = Column(String(64), ForeignKey("documents.doc_id"), nullable=False)
-    doc_version = Column(Integer, default=1)
+    doc_id = Column(String(64), default="")
     title = Column(String(512), default="")
     content = Column(Text, nullable=False)
     content_hash = Column(String(128), default="")

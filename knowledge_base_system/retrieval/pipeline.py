@@ -105,6 +105,9 @@ class RetrievalPipeline:
         category: str | None = None,
         knowledge_type: str | None = None,
         debug: bool = False,
+        rewrite: bool = True,
+        hybrid: bool = True,
+        rerank: bool = True,
     ) -> SearchResult | tuple[SearchResult, RetrievalDebugInfo]:
         """执行完整检索流水线。
 
@@ -114,6 +117,9 @@ class RetrievalPipeline:
             category: 知识块分类过滤（Milvus expr）
             knowledge_type: 知识类型过滤（Milvus expr）
             debug: 为 True 时返回 (SearchResult, RetrievalDebugInfo) 元组
+            rewrite: 是否执行查询改写
+            hybrid: 是否启用 BM25；为 False 时仅执行向量检索
+            rerank: 是否执行 LLM 重排
 
         返回:
             debug=False 时返回 SearchResult
@@ -127,10 +133,13 @@ class RetrievalPipeline:
         if debug:
             debug_info = RetrievalDebugInfo(original_query=query, rewritten_query=query)
 
-        # 1. Query rewrite
-        rewrite_result = self._rewriter.rewrite(query)
-        rewritten = rewrite_result["rewritten_query"]
-        keywords = rewrite_result.get("keywords", [query])
+        # 1. 查询改写；关闭时保持原查询，确保 API 策略开关真实生效。
+        if rewrite:
+            rewrite_result = self._rewriter.rewrite(query)
+        else:
+            rewrite_result = {"rewritten_query": query, "keywords": [query]}
+        rewritten = rewrite_result.get("rewritten_query") or query
+        keywords = rewrite_result.get("keywords") or [query]
         keywords_str = " ".join(keywords)
 
         if debug and debug_info:
@@ -173,15 +182,16 @@ class RetrievalPipeline:
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             future_vec = executor.submit(_search_vector) if query_vec is not None else None
-            future_bm25 = executor.submit(_search_bm25)
+            future_bm25 = executor.submit(_search_bm25) if hybrid else None
 
-            try:
-                bm25_results = future_bm25.result()
-            except Exception as e:
-                err_msg = f"BM25 retrieval failed: {e}"
-                logger.exception(err_msg)
-                if debug and debug_info:
-                    debug_info.errors.append(err_msg)
+            if future_bm25 is not None:
+                try:
+                    bm25_results = future_bm25.result()
+                except Exception as e:
+                    err_msg = f"BM25 retrieval failed: {e}"
+                    logger.exception(err_msg)
+                    if debug and debug_info:
+                        debug_info.errors.append(err_msg)
 
             if future_vec is not None:
                 try:
@@ -229,27 +239,61 @@ class RetrievalPipeline:
                 return result, debug_info
             return result
 
-        # 5. LLM Rerank（用 Milvus 字段构建轻量 chunk 对象）
+        # 5. 从 PostgreSQL 批量补齐完整领域模型。Milvus 负责召回，PG 负责返回
+        # asset_refs/source_refs 等模型字段，避免索引副本字段不完整。
         top_chunk_ids = [cid for cid, _ in top_fused]
-        candidates = [
-            KnowledgeChunk(
-                chunk_id=cid,
-                doc_id=fields_map.get(cid, {}).get("doc_id", ""),
-                title=fields_map.get(cid, {}).get("title", ""),
-                content=fields_map.get(cid, {}).get("content", ""),
-                knowledge_type=KnowledgeType(fields_map.get(cid, {}).get("knowledge_type", "declarative")),
-                category=fields_map.get(cid, {}).get("category", "通用"),
+        stored_chunks: dict[str, KnowledgeChunk] = {}
+        if self._chunk_store is not None and hasattr(self._chunk_store, "get_batch"):
+            try:
+                stored_chunks = {
+                    chunk.chunk_id: chunk
+                    for chunk in self._chunk_store.get_batch(top_chunk_ids)
+                }
+            except Exception:
+                logger.exception("批量读取知识块详情失败，回退使用 Milvus 字段")
+
+        candidates: list[KnowledgeChunk] = []
+        for cid in top_chunk_ids:
+            stored = stored_chunks.get(cid)
+            if stored is not None:
+                candidates.append(stored)
+                continue
+            fields = fields_map.get(cid)
+            if not fields:
+                continue
+            try:
+                candidate_type = KnowledgeType(fields.get("knowledge_type", "declarative"))
+            except ValueError:
+                candidate_type = KnowledgeType.declarative
+            candidates.append(
+                KnowledgeChunk(
+                    chunk_id=cid,
+                    title=fields.get("title", ""),
+                    content=fields.get("content", ""),
+                    knowledge_type=candidate_type,
+                    category=fields.get("category", "通用"),
+                )
             )
-            for cid in top_chunk_ids if cid in fields_map
-        ]
-        reranked = self._reranker.rerank(query, candidates)
+
+        if rerank:
+            try:
+                reranked = self._reranker.rerank(query, candidates)
+            except Exception:
+                logger.exception("LLM 重排失败，回退使用 RRF 顺序")
+                reranked = [{"chunk_id": chunk.chunk_id} for chunk in candidates]
+        else:
+            reranked = [{"chunk_id": chunk.chunk_id} for chunk in candidates]
 
         if debug and debug_info:
             debug_info.rerank_results = reranked
             debug_info.rerank_count = len(reranked)
 
         # Rerank 全部成功才用 LLM 分排序，否则统一回退 RRF 分（避免不同量纲混排）
-        all_reranked = all("relevance_score" in r for r in reranked) if reranked else False
+        all_reranked = (
+            rerank
+            and len(reranked) == len(candidates)
+            and all("relevance_score" in entry for entry in reranked)
+        )
 
         # 6. 构建结果（直接用 Milvus 字段，不查 PG）
         items: list[SearchResultItem] = []
@@ -271,24 +315,54 @@ class RetrievalPipeline:
             if not fields:
                 continue
 
-            # Milvus VARCHAR 字段需解析 JSON
-            src_refs = _parse_json_field(fields.get("source_refs"), [])
-            meta = _parse_json_field(fields.get("metadata"), {})
+            stored = stored_chunks.get(cid)
+            if stored is not None:
+                title = stored.title
+                content = stored.content
+                category_value = stored.category
+                knowledge_type_value = stored.knowledge_type
+                asset_refs = [ref.model_dump(mode="json") for ref in stored.asset_refs]
+                src_refs = [ref.model_dump(mode="json") for ref in stored.source_refs]
+                meta = stored.metadata
+            else:
+                title = fields.get("title", "")
+                content = fields.get("content", "")
+                category_value = fields.get("category", "通用")
+                try:
+                    knowledge_type_value = KnowledgeType(
+                        fields.get("knowledge_type", "declarative")
+                    )
+                except ValueError:
+                    knowledge_type_value = KnowledgeType.declarative
+                asset_refs = []
+                raw_src = _parse_json_field(fields.get("source_refs"), [])
+                src_refs = [
+                    SourceRef(
+                        doc_id=r.get("doc_id", ""),
+                        doc_version=r.get("doc_version", 1),
+                        element_id=r.get("element_id", ""),
+                        source_location=SourceLocation.model_validate(r.get("source_location") or {}),
+                    )
+                    if isinstance(r, dict) else r
+                    for r in raw_src
+                ]
+                meta = _parse_json_field(fields.get("metadata"), {})
 
             items.append(
                 SearchResultItem(
                     chunk_id=cid,
-                    title=fields.get("title", ""),
-                    content=fields.get("content", ""),
+                    title=title,
+                    content=content,
                     score=rank_entry.get("relevance_score") if all_reranked else score_map.get(cid, 0.0),
-                    category=fields.get("category", "通用"),
-                    knowledge_type=KnowledgeType(fields.get("knowledge_type", "declarative")),
+                    category=category_value,
+                    knowledge_type=knowledge_type_value,
                     score_components=ScoreComponents(
                         vector=vec_map.get(cid, 0.0),
                         bm25=bm25_map.get(cid, 0.0),
                         rrf=score_map.get(cid, 0.0),
                         rerank=rank_entry.get("relevance_score"),
                     ),
+                    asset_refs=asset_refs,
                     source_refs=src_refs,
                     metadata=meta,
                 )
@@ -297,7 +371,7 @@ class RetrievalPipeline:
         result = SearchResult(
             query=query,
             rewritten_query=rewritten,
-            total_count=len(candidates),
+            total_count=len(top_fused),
             results=items,
         )
 

@@ -36,6 +36,7 @@ from app.core.models import (
     ChunkStatus,
     KnowledgeChunk,
     KnowledgeType,
+    SourceRef,
     compute_hash,
 )
 from llm.volcengine_client import embedding_client
@@ -46,8 +47,19 @@ logger = logging.getLogger(__name__)
 
 # ── 辅助函数 ──────────────────────────────────────────────────────
 
+def _get_primary_doc_id(chunk: KnowledgeChunk) -> str:
+    """获取主要关联文档 ID，优先使用 doc_id 冗余字段。"""
+    if chunk.doc_id:
+        return chunk.doc_id
+    if chunk.source_refs:
+        return chunk.source_refs[0].doc_id
+    return ""
+
+
 def _get_doc_title(doc_id: str) -> str | None:
     """获取文档标题，用于列表展示。"""
+    if not doc_id:
+        return None
     if document_repo is not None:
         doc = document_repo.get(doc_id)
         if doc:
@@ -57,6 +69,8 @@ def _get_doc_title(doc_id: str) -> str | None:
 
 def _get_doc_source_type(doc_id: str) -> str:
     """获取文档来源类型，用于列表展示。"""
+    if not doc_id:
+        return ""
     if document_repo is not None:
         doc = document_repo.get(doc_id)
         if doc:
@@ -67,11 +81,12 @@ def _get_doc_source_type(doc_id: str) -> str:
 def _chunk_to_list_item(chunk: KnowledgeChunk) -> dict[str, Any]:
     """将知识块转为列表条目（含内容摘要、时间等展示字段）。"""
     preview = chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content
+    doc_id = _get_primary_doc_id(chunk)
     return {
         "chunk_id": chunk.chunk_id,
-        "doc_id": chunk.doc_id,
-        "doc_title": _get_doc_title(chunk.doc_id),
-        "doc_source_type": _get_doc_source_type(chunk.doc_id),
+        "doc_id": doc_id,
+        "doc_title": _get_doc_title(doc_id),
+        "doc_source_type": _get_doc_source_type(doc_id),
         "title": chunk.title,
         "content_preview": preview,
         "knowledge_type": chunk.knowledge_type.value if hasattr(chunk.knowledge_type, "value") else chunk.knowledge_type,
@@ -91,6 +106,7 @@ def _chunk_to_detail(chunk: KnowledgeChunk) -> dict[str, Any]:
     asset_refs 会附带资源的 asset_type（image/video/audio/attachment），
     便于前端按类型分组展示。
     """
+    doc_id = _get_primary_doc_id(chunk)
     enriched_assets: list[dict[str, Any]] = []
     for r in (chunk.asset_refs or []):
         item = r.model_dump(mode="json") if hasattr(r, "model_dump") else dict(r)
@@ -107,8 +123,8 @@ def _chunk_to_detail(chunk: KnowledgeChunk) -> dict[str, Any]:
 
     return {
         "chunk_id": chunk.chunk_id,
-        "doc_id": chunk.doc_id,
-        "doc_title": _get_doc_title(chunk.doc_id),
+        "doc_id": doc_id,
+        "doc_title": _get_doc_title(doc_id),
         "title": chunk.title,
         "content": chunk.content,
         "content_hash": chunk.content_hash,
@@ -188,7 +204,9 @@ async def create_chunk(
     category: str = Query(default="通用"),
     metadata: str | None = Query(default=None),
 ):
-    """创建人工知识块，计算 content_hash。"""
+    """创建人工知识块，计算 content_hash。
+    doc_id 通过 source_refs 关联，不再作为独立字段。
+    """
     # 校验文档存在性
     if document_repo is not None:
         doc = document_repo.get(doc_id)
@@ -207,11 +225,11 @@ async def create_chunk(
             pass
 
     chunk = KnowledgeChunk(
-        doc_id=doc_id,
         title=title,
         content=content,
         knowledge_type=KnowledgeType(knowledge_type),
         category=category,
+        source_refs=[SourceRef(doc_id=doc_id, element_id="")],
         metadata=meta_dict,
     )
 

@@ -3,7 +3,7 @@
 提供两级健康检查：
 - /live：进程存活探针（供 K8s liveness probe 等外部监控使用，前端不使用）
 - /    ：整体状态 + 外部依赖详情（前端仪表盘 + banner 状态灯使用）
-         PostgreSQL、Milvus、MinIO、LLM 逐一真实探测，任一异常返回 degraded
+         PostgreSQL、Milvus、MinIO、LLM 四路并行探测，任一异常返回 degraded
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from app.api.v1.schemas import APIResponse
+from app.utils.thread_pool import health_executor
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -39,7 +40,7 @@ async def health_live():
 
 
 # ── 整体健康检查 / ───────────────────────────────────────────────────
-# 真实探测四个外部服务，每个有 _CHECK_TIMEOUT 秒超时保护。
+# 并行探测四个外部服务（kb-health 线程池 + asyncio.gather），每个有 _CHECK_TIMEOUT 秒超时保护。
 # 前端仪表盘和顶部 banner 状态灯均使用此端点。
 
 
@@ -47,7 +48,7 @@ async def health_live():
 async def health():
     """返回系统整体状态和外部依赖详情。
 
-    逐一探测 PostgreSQL、Milvus、MinIO、LLM。
+    并行探测 PostgreSQL、Milvus、MinIO、LLM（asyncio.gather + kb-health 线程池）。
     隐藏敏感信息：不暴露密钥、连接密码或完整堆栈。
     任一依赖 error 时 data.status 为 degraded，HTTP 仍返回 200。
     """
@@ -57,18 +58,25 @@ async def health():
         """在线程池中运行同步检查，带超时保护。"""
         try:
             return await asyncio.wait_for(
-                loop.run_in_executor(None, check_fn),
+                loop.run_in_executor(health_executor, check_fn),
                 timeout=_CHECK_TIMEOUT,
             )
         except asyncio.TimeoutError:
             logger.warning("%s 健康检查超时（%s 秒）", name, _CHECK_TIMEOUT)
             return {"status": "error", "name": name, "summary": "健康检查超时"}
 
+    # 四路并行探测，总耗时 = 最慢依赖的耗时（上限 _CHECK_TIMEOUT 秒）
+    postgresql, milvus, minio, llm = await asyncio.gather(
+        _run_check("PostgreSQL", _check_postgresql),
+        _run_check("Milvus", _check_milvus),
+        _run_check("MinIO", _check_minio),
+        _run_check("LLM", _check_llm),
+    )
     deps: dict[str, dict[str, Any]] = {
-        "postgresql": await _run_check("PostgreSQL", _check_postgresql),
-        "milvus": await _run_check("Milvus", _check_milvus),
-        "minio": await _run_check("MinIO", _check_minio),
-        "llm": await _run_check("LLM", _check_llm),
+        "postgresql": postgresql,
+        "milvus": milvus,
+        "minio": minio,
+        "llm": llm,
     }
 
     error_deps = [k for k, v in deps.items() if v.get("status") == "error"]

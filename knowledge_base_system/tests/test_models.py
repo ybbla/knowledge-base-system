@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from app.core.models import (
     Asset,
+    AssetData,
     AssetRef,
     AssetStatus,
     AssetType,
@@ -25,7 +26,6 @@ from app.core.models import (
     KnowledgeType,
     new_id,
     ParsedElement,
-    Render,
     ScoreComponents,
     SearchResult,
     SearchResultItem,
@@ -107,21 +107,14 @@ class TestAssetRef:
     def test_minimal(self):
         ref = AssetRef(asset_id="asset_001")
         assert ref.asset_id == "asset_001"
-        assert ref.linked_text is None
         assert ref.caption is None
-        assert ref.render.mode == "inline"
 
     def test_full_fields(self):
         ref = AssetRef(
             asset_id="asset_001",
-            linked_text="如图所示的界面",
             caption="上传状态截图",
-            render=Render(mode="gallery", position="after_element"),
         )
-        assert ref.linked_text == "如图所示的界面"
         assert ref.caption == "上传状态截图"
-        assert ref.render.mode == "gallery"
-        assert ref.render.position == "after_element"
 
     def test_json_round_trip(self):
         ref = AssetRef(
@@ -132,21 +125,6 @@ class TestAssetRef:
         restored = AssetRef.model_validate(data)
         assert restored.asset_id == "asset_001"
         assert restored.caption == "A screenshot"
-        assert restored.caption == "A screenshot"
-
-
-# ── Render ────────────────────────────────────────────────────────────
-
-class TestRender:
-    def test_defaults(self):
-        r = Render()
-        assert r.mode == "inline"
-        assert r.position == "after_linked_text"
-
-    def test_custom(self):
-        r = Render(mode="gallery", position="before_element")
-        assert r.mode == "gallery"
-        assert r.position == "before_element"
 
 
 # ── SourceRef ─────────────────────────────────────────────────────────
@@ -289,7 +267,7 @@ class TestParsedElement:
         assert el.sequence_order == 0
         assert el.text == ""
         assert el.structured_data is None
-        assert el.asset_ids == []
+        assert el.asset_data == []
         assert el.source_location.page is None
         assert el.metadata == {}
 
@@ -332,17 +310,19 @@ class TestParsedElement:
         assert el.structured_data is not None
         assert len(el.structured_data["headers"]) == 2
 
-    def test_image_element_with_asset_ids(self):
+    def test_element_with_asset_data(self):
         el = ParsedElement(
             doc_id="doc_001",
             sequence_order=1,
-            element_type=ElementType.image,
-            text="",
-            asset_ids=["asset_001"],
+            element_type=ElementType.paragraph,
+            text="[图片: 产品截图]",
+            asset_data=[AssetData(placeholder="[image1]", asset_id="asset_001")],
             metadata={"alt": "产品截图"},
         )
-        assert el.element_type == ElementType.image
-        assert el.asset_ids == ["asset_001"]
+        assert el.element_type == ElementType.paragraph
+        assert len(el.asset_data) == 1
+        assert el.asset_data[0].placeholder == "[image1]"
+        assert el.asset_data[0].asset_id == "asset_001"
         assert el.metadata["alt"] == "产品截图"
 
     def test_list_element_with_parent(self):
@@ -384,7 +364,10 @@ class TestParsedElement:
             element_type=ElementType.table,
             text="H1 | H2\n1 | 2",
             structured_data={"headers": ["H1", "H2"], "rows": []},
-            asset_ids=["asset_001", "asset_002"],
+            asset_data=[
+                AssetData(placeholder="[image1]", asset_id="asset_001"),
+                AssetData(placeholder="[doc1]", asset_id="asset_002"),
+            ],
             source_location=SourceLocation(page=3, section_path=["H1"]),
             metadata={"table_caption": "表1"},
         )
@@ -397,7 +380,9 @@ class TestParsedElement:
         assert restored.element_type == ElementType.table
         assert restored.text == "H1 | H2\n1 | 2"
         assert restored.structured_data == {"headers": ["H1", "H2"], "rows": []}
-        assert restored.asset_ids == ["asset_001", "asset_002"]
+        assert len(restored.asset_data) == 2
+        assert restored.asset_data[0].placeholder == "[image1]"
+        assert restored.asset_data[1].placeholder == "[doc1]"
         assert restored.source_location.page == 3
         assert restored.metadata["table_caption"] == "表1"
 
@@ -427,12 +412,10 @@ class TestAsset:
         asset = Asset(doc_id="doc_001", asset_type=AssetType.image,
                       original_uri="https://example.com/a.png")
         assert asset.asset_id.startswith("asset_")
-        assert asset.source_element_id == ""
+        assert asset.element_id == ""
         assert asset.storage_uri is None
-        assert asset.mime_type == ""
         assert asset.content_hash == ""
         assert isinstance(asset.created_at, datetime)
-        assert isinstance(asset.updated_at, datetime)
         assert asset.status == AssetStatus.ready
         assert asset.extracted_text is None
         assert asset.error_message is None
@@ -442,19 +425,18 @@ class TestAsset:
         asset = Asset(
             asset_id="asset_001",
             doc_id="doc_001",
-            source_element_id="el_003",
+            element_id="el_003",
             asset_type=AssetType.image,
             original_uri="https://example.com/a.png",
             storage_uri="minio://kb-assets/doc_001/a.png",
-            mime_type="image/png",
             content_hash="sha256:abc123",
             status=AssetStatus.ready,
             extracted_text="图片展示了用户上传文档后的解析状态",
-            metadata={"width": 1200, "height": 800},
+            metadata={"width": 1200, "height": 800, "mime_type": "image/png"},
         )
         assert asset.asset_type == AssetType.image
         assert asset.storage_uri == "minio://kb-assets/doc_001/a.png"
-        assert asset.mime_type == "image/png"
+        assert asset.metadata.get("mime_type") == "image/png"
         assert asset.content_hash == "sha256:abc123"
         assert asset.status == AssetStatus.ready
         assert asset.extracted_text == "图片展示了用户上传文档后的解析状态"
@@ -463,7 +445,7 @@ class TestAsset:
     def test_video_asset(self):
         asset = Asset(doc_id="doc_001", asset_type=AssetType.video_link,
                       original_uri="https://example.com/video.mp4",
-                      mime_type="video/mp4")
+                      metadata={"mime_type": "video/mp4"})
         assert asset.asset_type == AssetType.video_link
 
     def test_url_asset(self):
@@ -501,16 +483,15 @@ class TestAsset:
     def test_json_round_trip_full(self):
         asset = Asset(
             doc_id="doc_001",
-            source_element_id="el_003",
+            element_id="el_003",
             asset_type=AssetType.image,
             original_uri="https://example.com/a.png",
             storage_uri="minio://kb-assets/doc_001/a.png",
-            mime_type="image/png",
             content_hash="sha256:abc123",
             status=AssetStatus.ready,
             extracted_text="图片描述",
             error_message=None,
-            metadata={"width": 1200, "height": 800},
+            metadata={"width": 1200, "height": 800, "mime_type": "image/png"},
         )
         data = asset.model_dump(mode="json")
         restored = Asset.model_validate(data)
@@ -520,21 +501,21 @@ class TestAsset:
         assert restored.extracted_text == "图片描述"
         assert restored.metadata["width"] == 1200
 
-    def test_source_element_id_traceability(self):
+    def test_element_id_traceability(self):
         """验证 Asset → Element 的溯源关联。"""
         el = ParsedElement(doc_id="doc_001",
-                           element_type=ElementType.image)
+                           element_type=ElementType.paragraph)
         asset = Asset(doc_id="doc_001", asset_type=AssetType.image,
                       original_uri="https://x.com/a.png",
-                      source_element_id=el.element_id)
-        assert asset.source_element_id == el.element_id
+                      element_id=el.element_id)
+        assert asset.element_id == el.element_id
 
 
 # ── KnowledgeChunk ────────────────────────────────────────────────────
 
 class TestKnowledgeChunk:
     def test_defaults(self):
-        chunk = KnowledgeChunk(doc_id="doc_001", content="内容")
+        chunk = KnowledgeChunk(content="内容")
         assert chunk.chunk_id.startswith("chunk_")
         assert chunk.title == ""
         assert chunk.knowledge_type == KnowledgeType.declarative
@@ -545,49 +526,44 @@ class TestKnowledgeChunk:
         assert chunk.metadata == {}
 
     def test_content_hash_auto_computed(self):
-        chunk = KnowledgeChunk(doc_id="doc_001", content="Hello World")
+        chunk = KnowledgeChunk(content="Hello World")
         assert chunk.content_hash
         assert chunk.content_hash.startswith("sha256:")
 
     def test_content_hash_stable(self):
         """相同内容产生相同 hash。"""
-        c1 = KnowledgeChunk(doc_id="doc_001", content="same")
-        c2 = KnowledgeChunk(doc_id="doc_001", content="same")
+        c1 = KnowledgeChunk(content="same")
+        c2 = KnowledgeChunk(content="same")
         assert c1.content_hash == c2.content_hash
 
     def test_content_hash_different_for_different_content(self):
-        c1 = KnowledgeChunk(doc_id="doc_001", content="A")
-        c2 = KnowledgeChunk(doc_id="doc_001", content="B")
+        c1 = KnowledgeChunk(content="A")
+        c2 = KnowledgeChunk(content="B")
         assert c1.content_hash != c2.content_hash
 
     def test_explicit_content_hash(self):
         """显式设置 content_hash 时不被覆盖。"""
-        chunk = KnowledgeChunk(doc_id="doc_001", content="X",
+        chunk = KnowledgeChunk(content="X",
                                content_hash="sha256:custom")
         assert chunk.content_hash == "sha256:custom"
 
     def test_asset_refs(self):
         chunk = KnowledgeChunk(
-            doc_id="doc_001",
             content="Some content with image.",
             title="Test Chunk",
             asset_refs=[
                 AssetRef(
                     asset_id="asset_001",
-                    linked_text="界面截图展示了上传状态列表",
                     caption="上传状态列表截图",
-                    render=Render(mode="inline", position="after_linked_text"),
                 )
             ],
         )
         assert len(chunk.asset_refs) == 1
         assert chunk.asset_refs[0].asset_id == "asset_001"
-        assert chunk.asset_refs[0].linked_text == "界面截图展示了上传状态列表"
-        assert chunk.asset_refs[0].render.mode == "inline"
+        assert chunk.asset_refs[0].caption == "上传状态列表截图"
 
     def test_source_refs(self):
         chunk = KnowledgeChunk(
-            doc_id="doc_001",
             content="Content",
             title="Test",
             source_refs=[
@@ -609,7 +585,6 @@ class TestKnowledgeChunk:
     def test_multiple_source_refs(self):
         """一个 chunk 引用多个来源元素。"""
         chunk = KnowledgeChunk(
-            doc_id="doc_001",
             content="综合内容",
             source_refs=[
                 SourceRef(doc_id="doc_001", element_id="el_001"),
@@ -621,25 +596,24 @@ class TestKnowledgeChunk:
 
     def test_all_knowledge_types(self):
         for ktype in KnowledgeType:
-            chunk = KnowledgeChunk(doc_id="doc_001", content="X",
+            chunk = KnowledgeChunk(content="X",
                                    knowledge_type=ktype)
             assert chunk.knowledge_type == ktype
 
     def test_all_chunk_status_values(self):
         for status in ChunkStatus:
-            chunk = KnowledgeChunk(doc_id="doc_001", content="X",
+            chunk = KnowledgeChunk(content="X",
                                    status=status)
             assert chunk.status == status
 
     def test_chunk_status_deleted(self):
-        chunk = KnowledgeChunk(doc_id="doc_001", content="X",
+        chunk = KnowledgeChunk(content="X",
                                status=ChunkStatus.deleted)
         assert chunk.status == ChunkStatus.deleted
 
     def test_json_round_trip_full(self):
         """全字段 JSON 序列化往返。"""
         chunk = KnowledgeChunk(
-            doc_id="doc_001",
             title="上传文档解析状态判断",
             content="系统支持通过网页端上传知识文档...",
             knowledge_type=KnowledgeType.declarative,
@@ -814,19 +788,18 @@ class TestSearchResult:
 
 class TestEnums:
     def test_doc_status_values(self):
-        assert {s.value for s in DocStatus} == {"processing", "active", "failed", "deleted"}
+        assert {s.value for s in DocStatus} == {"pending", "processing", "active", "failed", "deleted"}
 
     def test_element_type_values(self):
         values = {t.value for t in ElementType}
-        expected = {"paragraph", "title", "table", "image", "list",
-                    "code", "video", "unknown"}
+        expected = {"paragraph", "title", "table", "list", "code", "unknown"}
         assert values == expected
 
     def test_asset_type_values(self):
-        assert {t.value for t in AssetType} == {"image", "image_link", "video_link", "document_link"}
+        assert {t.value for t in AssetType} == {"image", "image_link", "video", "video_link", "document_link"}
 
     def test_asset_status_values(self):
-        assert {s.value for s in AssetStatus} == {"ready", "failed"}
+        assert {s.value for s in AssetStatus} == {"downloading", "ready", "failed"}
 
     def test_asset_relation_removed(self):
         """AssetRelation 枚举已删除，AssetRef 不再有 relation 字段。"""

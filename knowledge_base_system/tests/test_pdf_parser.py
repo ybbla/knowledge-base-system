@@ -428,9 +428,9 @@ class TestPdfParser:
         assert asset.status.value == "ready"
         assert hasattr(asset, "_data")
 
-        image_elements = [el for el in result.elements if el.element_type == ElementType.image]
+        image_elements = [el for el in result.elements if el.element_type == ElementType.paragraph and "[图片" in el.text]
         assert len(image_elements) >= 1
-        assert image_assets[0].asset_id in image_elements[0].asset_ids
+        assert any(ad.url == image_assets[0].original_uri for ad in image_elements[0].asset_data)
 
     # 4.8 ──────────────────────────────────────────────────────────
 
@@ -566,17 +566,17 @@ class TestPdfParser:
         assert "https://docs.example.com/manual.pdf" in all_uris
         assert "https://cdn.example.com/chart.png" in all_uris
 
-        # Asset 应关联到正确的元素（source_element_id 指向文本块元素）
+        # Asset 应关联到正确的元素（element_id 指向文本块元素）
         for a in result.assets:
             if a.metadata.get("source") in ("pdf_link_bbox_match", "pdf_text_url"):
-                assert a.source_element_id, f"Asset {a.original_uri} 应有关联元素"
+                assert a.element_id, f"Asset {a.original_uri} 应有关联元素"
                 # 验证锚文本在 Asset metadata 中
                 if a.metadata.get("anchor_text"):
                     assert a.metadata["anchor_text"], "锚文本不应为空"
 
         # 元素的 asset_ids 包含对应 Asset
-        linked_elements = [el for el in result.elements if el.asset_ids]
-        assert len(linked_elements) >= 2, f"至少 2 个元素有 asset_ids，实际 {len(linked_elements)}"
+        linked_elements = [el for el in result.elements if el.asset_data]
+        assert len(linked_elements) >= 2, f"至少 2 个元素有 asset_data，实际 {len(linked_elements)}"
 
     # 3.2
 
@@ -592,8 +592,8 @@ class TestPdfParser:
         # 不同链接应关联到不同元素
         linked = set()
         for a in result.assets:
-            if a.source_element_id:
-                linked.add(a.source_element_id)
+            if a.element_id:
+                linked.add(a.element_id)
         assert len(linked) >= 2, "两个链接应关联到不同元素"
 
     # 3.3
@@ -643,7 +643,7 @@ class TestPdfParser:
         pdf_bytes = _make_pdf_with_header_footer_image()
         result = self.parser.parse(*_doc(pdf_bytes))
 
-        image_elements = [el for el in result.elements if el.element_type == ElementType.image]
+        image_elements = [el for el in result.elements if el.element_type == ElementType.paragraph and "[图片" in el.text]
         assert len(image_elements) >= 1, "至少正文区域图片应被保留"
 
     # 3.7

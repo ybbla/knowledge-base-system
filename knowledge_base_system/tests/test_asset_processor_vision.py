@@ -1,4 +1,4 @@
-"""测试 process_image() 和 process_video() 中的视觉提取行为。
+"""测试 process_image() 和 process_video_link() 中的视觉提取行为（asset_processor 模块）。
 
 验证视觉成功/失败/禁用等场景下的正确行为。
 """
@@ -9,7 +9,7 @@ import pytest
 
 from app.core.models import Asset, AssetStatus, AssetType
 from assets.base import AssetStore
-from assets.image_processor import process_image, process_video
+from assets.asset_processor import process_image, process_video_link
 
 
 FAKE_PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x00\x00\x00\x00\x00"
@@ -41,7 +41,7 @@ class TestProcessImageVision:
 
     def test_vision_extraction_sets_extracted_text(self, image_asset, asset_store):
         """视觉提取成功时应将描述文本写入 Asset.extracted_text。"""
-        with patch("assets.image_processor.get_settings") as mock_cfg:
+        with patch("assets.asset_processor.get_settings") as mock_cfg:
             mock_cfg.return_value = MagicMock(image_vision_enabled=True)
             with patch("llm.volcengine_client.llm_client") as mock_llm:
                 mock_llm.describe_image.return_value = "测试图片描述"
@@ -52,7 +52,7 @@ class TestProcessImageVision:
 
     def test_vision_disabled_skips_extraction(self, image_asset, asset_store):
         """image_vision_enabled=false 时不调用视觉提取。"""
-        with patch("assets.image_processor.get_settings") as mock_cfg:
+        with patch("assets.asset_processor.get_settings") as mock_cfg:
             mock_cfg.return_value = MagicMock(image_vision_enabled=False)
             with patch("llm.volcengine_client.llm_client") as mock_llm:
                 process_image(image_asset, asset_store)
@@ -61,7 +61,7 @@ class TestProcessImageVision:
 
     def test_vision_failure_continues_upload(self, image_asset, asset_store):
         """视觉提取失败时图片仍应正常上传 MinIO。"""
-        with patch("assets.image_processor.get_settings") as mock_cfg:
+        with patch("assets.asset_processor.get_settings") as mock_cfg:
             mock_cfg.return_value = MagicMock(image_vision_enabled=True)
             with patch("llm.volcengine_client.llm_client") as mock_llm:
                 mock_llm.describe_image.side_effect = Exception("Vision API Error")
@@ -75,7 +75,7 @@ class TestProcessImageVision:
 
     def test_vision_none_result_keeps_none_text(self, image_asset, asset_store):
         """视觉提取返回 None 时 extracted_text 保持 None。"""
-        with patch("assets.image_processor.get_settings") as mock_cfg:
+        with patch("assets.asset_processor.get_settings") as mock_cfg:
             mock_cfg.return_value = MagicMock(image_vision_enabled=True)
             with patch("llm.volcengine_client.llm_client") as mock_llm:
                 mock_llm.describe_image.return_value = None
@@ -86,8 +86,8 @@ class TestProcessImageVision:
                 assert result.status == AssetStatus.ready
 
 
-class TestProcessVideo:
-    """process_video 视觉提取测试。"""
+class TestProcessVideoLink:
+    """process_video_link 视觉提取测试 — 视频链接下载后视觉理解。"""
 
     @pytest.fixture
     def asset_store(self):
@@ -113,15 +113,15 @@ class TestProcessVideo:
             mime_type="video/*",
         )
 
-    def test_process_video_calls_describe(self, video_asset, asset_store):
+    def test_process_video_link_calls_describe(self, video_asset, asset_store):
         """下载成功 + 视觉理解成功。"""
         with (
-            patch("assets.image_processor.download_to_bytes", return_value=FAKE_MP4),
+            patch("assets.asset_processor.download_to_bytes", return_value=FAKE_MP4),
             patch("llm.volcengine_client.llm_client") as mock_llm,
         ):
             mock_llm.describe_video.return_value = "视频总结内容"
 
-            result = process_video(video_asset, asset_store)
+            result = process_video_link(video_asset, asset_store)
 
             assert result.extracted_text == "视频总结内容"
             mock_llm.describe_video.assert_called_once()
@@ -129,8 +129,8 @@ class TestProcessVideo:
     def test_external_video_download_fails_marks_failed(self, external_video_asset, asset_store):
         """外链视频下载失败时标记为 failed，不调用视觉提取。"""
         with patch("llm.volcengine_client.llm_client") as mock_llm:
-            with patch("assets.image_processor.download_to_bytes", side_effect=OSError("timeout")):
-                result = process_video(external_video_asset, asset_store)
+            with patch("assets.asset_processor.download_to_bytes", side_effect=OSError("timeout")):
+                result = process_video_link(external_video_asset, asset_store)
 
             mock_llm.describe_video.assert_not_called()
             assert result.status.value == "failed"
@@ -139,12 +139,12 @@ class TestProcessVideo:
     def test_video_vision_failure_does_not_block(self, video_asset, asset_store):
         """视频视觉提取失败不应抛出异常。"""
         with (
-            patch("assets.image_processor.download_to_bytes", return_value=FAKE_MP4),
+            patch("assets.asset_processor.download_to_bytes", return_value=FAKE_MP4),
             patch("llm.volcengine_client.llm_client") as mock_llm,
         ):
             mock_llm.describe_video.side_effect = Exception("API Error")
 
-            result = process_video(video_asset, asset_store)
+            result = process_video_link(video_asset, asset_store)
 
             assert result.extracted_text is None
             asset_store.put.assert_called_once()

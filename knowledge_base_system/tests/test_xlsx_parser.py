@@ -214,8 +214,8 @@ class TestXlsxParser:
 
         assert asset_types["https://example.com/demo.mp4"] == AssetType.video_link
         assert asset_types["https://example.com/manual.pdf"] == AssetType.document_link
-        assert len(table.asset_ids) == 2
-        assert all(asset.source_element_id == table.element_id for asset in result.assets)
+        assert len(table.asset_data) == 2
+        assert all(asset.element_id == table.element_id for asset in result.assets)
 
     def test_read_from_file_uri(self, tmp_path):
         wb = Workbook()
@@ -448,11 +448,11 @@ class TestEmbeddedImageExtraction:
         result, _ = _parse(wb)
         table = next(el for el in result.elements if el.element_type == ElementType.table)
 
-        # 图片 asset_id 应该出现在表格的 asset_ids 中
+        # 图片 asset 的 original_uri 应该出现在表格的 asset_data 中
         image_asset = next(a for a in result.assets if a.asset_type == AssetType.image)
-        assert image_asset.asset_id in table.asset_ids
-        # source_element_id 回链到表格元素
-        assert image_asset.source_element_id == table.element_id
+        assert any(ad.url == image_asset.original_uri for ad in table.asset_data)
+        # element_id 回链到表格元素
+        assert image_asset.element_id == table.element_id
 
 
 class TestGenericWebLinks:

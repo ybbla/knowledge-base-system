@@ -156,3 +156,14 @@
 - **WHEN** 提交文档入库
 - **THEN** 系统创建 Asset 并与 ParsedElement 关联
 - **AND** 不要求下载到 MinIO、不要求生成 `storage_uri`，后续资源处理可异步补齐
+
+### Requirement: 上传工具函数独立模块
+
+系统 SHALL 将 `_hash_upload()`、`save_upload_file()`、`DEFAULT_CATEGORY` 等工具函数维护在 `app/api/upload_utils.py` 中，供 v1 接口复用。
+
+#### Scenario: v1 上传接口正常使用工具函数
+
+- **GIVEN** 用户通过 `POST /api/v1/documents/upload` 上传文件
+- **WHEN** v1 接口调用 `upload_utils._hash_upload(file)` 和 `upload_utils.save_upload_file(file)`
+- **THEN** 行为与迁移前完全一致
+- **AND** 文件写入 MinIO，返回 `source_uri` 和 `source_hash`

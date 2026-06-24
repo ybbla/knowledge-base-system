@@ -31,8 +31,6 @@ def _init_postgres_backend() -> None:
     try:
         from app.db.engine import get_engine
         from app.db.engine import create_session_factory as pg_create_session_factory
-        from app.db.engine import ensure_runtime_schema
-        from app.db.models import Base
         from app.db.repositories.assets import PgAssetStore
         from app.db.repositories.chunks import PgChunkStore
         from app.db.repositories.documents import DocumentRepository
@@ -41,9 +39,6 @@ def _init_postgres_backend() -> None:
         engine = get_engine()
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-
-        Base.metadata.create_all(engine)
-        ensure_runtime_schema()
 
         sf = pg_create_session_factory()
         globals()["session_factory"] = sf
@@ -75,7 +70,6 @@ if not settings.minio_enabled:
 
 try:
     minio_asset_store = MinioAssetStore(asset_store)
-    minio_asset_store.ensure_buckets()
     asset_store = minio_asset_store
 except Exception as exc:
     logger.exception("MinIO 初始化失败")
@@ -132,22 +126,18 @@ def rebuild_retrieval_indexes_from_chunks(category: str | None = None) -> int:
     if not chunks:
         return 0
 
-    import time
-
     # 批量写入 BM25 索引
     bm25_items = []
     for c in chunks:
+        doc_id = c.doc_id or (c.source_refs[0].doc_id if c.source_refs else "")
         metadata = {
-            "doc_id": c.doc_id,
+            "doc_id": doc_id,
             "title": c.title,
             "category": c.category,
             "knowledge_type": c.knowledge_type.value,
             "status": "active",
             "source_refs": [ref.model_dump(mode="json") for ref in c.source_refs],
-            "asset_refs": [ref.model_dump(mode="json") for ref in c.asset_refs],
             "metadata": c.metadata,
-            "created_at": int(c.created_at.timestamp()) if c.created_at else int(time.time()),
-            "updated_at": int(c.updated_at.timestamp()) if c.updated_at else int(time.time()),
         }
         bm25_items.append((c.chunk_id, c.content, metadata))
     bm25_index.add_batch(bm25_items)
@@ -156,18 +146,16 @@ def rebuild_retrieval_indexes_from_chunks(category: str | None = None) -> int:
     vectors = embedding_client.embed_text([c.content for c in chunks])
     vector_items = []
     for chunk, vector in zip(chunks, vectors):
+        doc_id = chunk.doc_id or (chunk.source_refs[0].doc_id if chunk.source_refs else "")
         metadata = {
-            "doc_id": chunk.doc_id,
+            "doc_id": doc_id,
             "title": chunk.title,
             "content": chunk.content,
             "category": chunk.category,
             "knowledge_type": chunk.knowledge_type.value,
             "status": chunk.status.value,
             "source_refs": [ref.model_dump(mode="json") for ref in chunk.source_refs],
-            "asset_refs": [ref.model_dump(mode="json") for ref in chunk.asset_refs],
             "metadata": chunk.metadata,
-            "created_at": int(chunk.created_at.timestamp()) if chunk.created_at else int(time.time()),
-            "updated_at": int(chunk.updated_at.timestamp()) if chunk.updated_at else int(time.time()),
         }
         vector_items.append((chunk.chunk_id, vector, metadata))
     vector_index.add_batch(vector_items)
@@ -189,18 +177,6 @@ def recover_pending_chunk_indexes(limit: int | None = None) -> int:
 
     ingestion_pipeline.index_existing_chunks(chunks)
     return len(chunks)
-
-
-def startup_resources() -> None:
-    """FastAPI 启动时确认外部资源可用。"""
-    if minio_asset_store is not None:
-        minio_asset_store.ensure_buckets()
-    if milvus_manager is not None:
-        milvus_manager.ensure_collection()
-        # 启动时不再自动全量重建索引。
-        # Milvus 数据由 Docker 持久卷保障，不会因服务重启丢失。
-        # 如需手动恢复，调用 POST /api/v1/chunks/batch/reindex 或
-        # 管理接口 rebuild_retrieval_indexes_from_chunks()。
 
 
 def shutdown_resources() -> None:

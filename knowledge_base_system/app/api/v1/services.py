@@ -107,18 +107,16 @@ def reindex_chunk(
         bm25_index: 未使用（保留参数兼容），BM25 由 Milvus 内置 Function 自动处理
         embedding_client: embedding 客户端，需要 embed_text 方法
     """
+    doc_id = chunk.doc_id or (chunk.source_refs[0].doc_id if chunk.source_refs else "")
     metadata = {
-        "doc_id": chunk.doc_id,
+        "doc_id": doc_id,
         "title": chunk.title,
         "content": chunk.content,
         "category": chunk.category,
         "knowledge_type": chunk.knowledge_type.value if hasattr(chunk.knowledge_type, "value") else str(chunk.knowledge_type),
         "status": chunk.status.value if hasattr(chunk.status, "value") else str(chunk.status),
         "source_refs": [ref.model_dump(mode="json") for ref in chunk.source_refs],
-        "asset_refs": [ref.model_dump(mode="json") for ref in chunk.asset_refs],
         "metadata": chunk.metadata,
-        "created_at": int(chunk.created_at.timestamp()) if chunk.created_at else 0,
-        "updated_at": int(chunk.updated_at.timestamp()) if chunk.updated_at else 0,
     }
 
     # 生成 embedding 并一次写入 Milvus（dense_vector + content→sparse_vector + 标量）

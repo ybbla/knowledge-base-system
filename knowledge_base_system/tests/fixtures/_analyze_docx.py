@@ -77,26 +77,26 @@ for i, section in enumerate(sections):
         meta_parts = []
         if el.metadata.get("heading_level"):
             meta_parts.append(f"H{el.metadata['heading_level']}")
-        if el.asset_ids:
-            meta_parts.append(f"assets:{len(el.asset_ids)}")
+        if el.asset_data:
+            meta_parts.append(f"assets:{len(el.asset_data)}")
         if el.metadata.get("link_urls"):
             meta_parts.append(f"links:{len(el.metadata['link_urls'])}")
         meta_str = " [" + ", ".join(meta_parts) + "]" if meta_parts else ""
 
         print(f"  [输出] 类型: {etype}{meta_str}")
         print(f"  [输出] text: {el.text[:80]!r}")
-        if el.asset_ids:
-            print(f"  [输出] asset_ids: {el.asset_ids}")
+        if el.asset_data:
+            print(f"  [输出] asset_data: {el.asset_data}")
         if el.metadata.get("link_urls"):
             print(f"  [输出] link_urls: {el.metadata['link_urls']}")
 
         if el.element_type == ElementType.table:
             sd = el.structured_data["table"]
             print(f"  [输出] 表格结构化:")
-            print(f"         表头: {[(h['text'][:15], h['asset_ids']) for h in sd['headers']]}")
+            print(f"         表头: {[(h['text'][:15], h['asset_data']) for h in sd['headers']]}")
             for ri, row in enumerate(sd["rows"]):
-                print(f"         行{ri}: {[(c['text'][:15], c['asset_ids']) for c in row['cells']]}")
-            print(f"         表格级 asset_ids: {el.asset_ids}")
+                print(f"         行{ri}: {[(c['text'][:15], c['asset_data']) for c in row['cells']]}")
+            print(f"         表格级 asset_data: {el.asset_data}")
 
 # ═══════════════════════════════════════════════════════════════════
 # 3. 资源汇总
@@ -105,15 +105,15 @@ print(f"\n{'=' * 70}")
 print("  资源汇总 (state.assets)")
 print(f"{'=' * 70}")
 for a in result.assets:
-    print(f"  [{a.asset_type.value:11s}] uri={a.original_uri[:55]!r}  -> el={a.source_element_id[:25]}")
+    print(f"  [{a.asset_type.value:11s}] uri={a.original_uri[:55]!r}  -> el={a.element_id[:25]}")
 
 # ═══════════════════════════════════════════════════════════════════
 # 4. 回填验证
 # ═══════════════════════════════════════════════════════════════════
 print(f"\n{'=' * 70}")
-print("  source_element_id 回填验证")
+print("  element_id 回填验证")
 print(f"{'=' * 70}")
 el_ids = {el.element_id for el in result.elements}
 for a in result.assets:
-    ok = "OK" if a.source_element_id in el_ids else "MISSING!"
-    print(f"  [{ok}]  {a.asset_id[:25]}  ->  {a.source_element_id[:25]}")
+    ok = "OK" if a.element_id in el_ids else "MISSING!"
+    print(f"  [{ok}]  {a.asset_id[:25]}  ->  {a.element_id[:25]}")

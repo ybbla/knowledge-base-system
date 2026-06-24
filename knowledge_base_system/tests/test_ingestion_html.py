@@ -128,7 +128,6 @@ def test_ingestion_pipeline_dispatches_html_parser(monkeypatch):
         ElementType.title,
         ElementType.paragraph,
         ElementType.table,
-        ElementType.video,
     }
     assert [asset.asset_type for asset in extractor.seen_assets] == [AssetType.video_link]
     assert len(chunk_store.chunks) == 1

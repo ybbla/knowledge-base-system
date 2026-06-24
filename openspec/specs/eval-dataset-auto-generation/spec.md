@@ -25,21 +25,21 @@
 
 ### Requirement: 为单个文档生成评测查询
 
-系统 SHALL 为每个新入库的文档生成 3-5 条评测查询。
+系统 SHALL 为每个新入库的文档生成评测查询，数量由 `auto_eval_queries_per_doc` 配置项决定（默认 3），每条查询覆盖不同的提问角度。
 
-#### Scenario: 生成查询的数量和质量
+#### Scenario: 生成查询覆盖多个角度
 
-- **GIVEN** 一篇包含多个知识块的文档
+- **GIVEN** 一篇包含知识块的文档
 - **WHEN** 触发生成评测数据
-- **THEN** 系统 SHALL 调用 LLM 生成 3-5 条不同角度的查询
-- **AND** 查询 SHALL 覆盖文档的主要知识点
-- **AND** 查询 SHALL 包含直接询问、口语化表达等多样化形式
+- **THEN** 系统 SHALL 调用 LLM 生成配置数量的查询
+- **AND** 查询 SHALL 覆盖：直接询问（X 是什么？）、口语化改写（怎么判断 X？）、模糊查询（用不精确表述问同一问题）三类角度
+- **AND** 查询 SHALL 来源于文档的实际知识块内容
 
-#### Scenario: 空文档或单 chunk 文档处理
+#### Scenario: 单 chunk 文档处理
 
 - **GIVEN** 一篇文档仅包含 1 个知识块
 - **WHEN** 触发生成评测数据
-- **THEN** 系统 SHALL 至少生成 3 条查询
+- **THEN** 系统 SHALL 仍然生成 3 条查询
 - **AND** 查询 SHALL 从不同角度提问该知识块的内容
 
 ### Requirement: 自动标注预期 chunk ID
@@ -50,7 +50,7 @@
 
 - **GIVEN** 一条查询明确对应某个知识块
 - **WHEN** LLM 生成标注
-- **THEN** 系统 SHALL 在 `expected_chunk_ids` 中包含对应的 chunk ID
+- **THEN** 系统 SHALL 在 `expected_chunk_ids` 中包含该 chunk ID
 
 #### Scenario: 跨 chunk 查询标注
 
@@ -85,7 +85,24 @@
 
 - **WHEN** 保存评测数据文件
 - **THEN** 文件 SHALL 包含 `metadata` 字段（文档 ID、标题、生成时间、chunk 数量、查询数量）
-- **AND** 文件 SHALL 包含 `items` 数组（每条查询的详细内容）
+- **AND** 文件 SHALL 包含 `items` 数组（评测查询的详细内容）
+
+### Requirement: 生成失败不影响主流程
+
+评测数据生成失败 SHALL 不影响文档入库的成功状态。
+
+#### Scenario: LLM 调用失败
+
+- **WHEN** 生成评测数据时 LLM 调用失败
+- **THEN** 系统 SHALL 记录错误日志
+- **AND** 系统 SHALL 终止生成流程
+- **AND** 文档入库状态 SHALL 保持为成功
+
+#### Scenario: 存储写入失败
+
+- **WHEN** 保存评测数据文件时发生 IO 错误
+- **THEN** 系统 SHALL 记录错误日志
+- **AND** 系统 SHALL 终止保存流程
 
 ### Requirement: 合并到全局评测集
 
@@ -104,21 +121,3 @@
 - **WHEN** 合并新生成的数据
 - **THEN** 人工标注的数据 SHALL 保持不变
 - **AND** 自动生成的数据 SHALL 不会覆盖或修改人工标注
-
-### Requirement: 生成失败不影响主流程
-
-评测数据生成失败 SHALL 不影响文档入库的成功状态。
-
-#### Scenario: LLM 调用失败
-
-- **WHEN** 生成评测数据时 LLM 调用失败
-- **THEN** 系统 SHALL 记录错误日志
-- **AND** 系统 SHALL 终止生成流程
-- **AND** 文档入库状态 SHALL 保持为成功
-
-#### Scenario: 存储写入失败
-
-- **WHEN** 保存评测数据文件时发生 IO 错误
-- **THEN** 系统 SHALL 记录错误日志
-- **AND** 系统 SHALL 终止保存流程
-- **AND** 已生成的数据 SHALL 不会写入损坏的文件

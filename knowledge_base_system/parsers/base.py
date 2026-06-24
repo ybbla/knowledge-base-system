@@ -49,13 +49,8 @@ class DocumentParser(ABC):
     所有格式解析器需实现 supports() 和 parse() 两个方法。
     通过 ParserRegistry 按 source_type 注册和分发。
 
-    类属性:
-        CONTENT_IS_TEXT: 声明解析器是否期望文本内容。
-            True → 降级路径将 bytes decode 为 str
-            False（默认）→ 降级路径保持 bytes
+    parse() 签名接受 bytes | str，各解析器内部自行处理类型转换。
     """
-
-    CONTENT_IS_TEXT: bool = False
 
     @abstractmethod
     def supports(self, source_type: str) -> bool:

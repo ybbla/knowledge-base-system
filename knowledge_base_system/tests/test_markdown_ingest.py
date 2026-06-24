@@ -198,7 +198,7 @@ class TestLinkUrlExtraction:
 
         # 确认对应段落关联了该 Asset
         para = [e for e in result.elements if e.element_type == ElementType.paragraph][0]
-        assert attachment_assets[0].asset_id in para.asset_ids
+        assert any(ad.url == attachment_assets[0].original_uri for ad in para.asset_data)
 
     def test_video_link_creates_asset(self):
         """视频链接 [演示视频](*.mp4) 创建 video 类型 Asset。"""
@@ -281,8 +281,8 @@ class TestTableCellResourceAssociation:
         rows = table.structured_data["table"]["rows"]
         assert len(rows) == 2
 
-        cell_a_assets = rows[0]["cells"][1]["asset_ids"]
-        cell_b_assets = rows[1]["cells"][1]["asset_ids"]
+        cell_a_assets = rows[0]["cells"][1]["asset_data"]
+        cell_b_assets = rows[1]["cells"][1]["asset_data"]
         assert len(cell_a_assets) == 1
         assert len(cell_b_assets) == 1
         assert "a.png" in image_assets[0].original_uri or "a.png" in image_assets[1].original_uri
@@ -305,7 +305,7 @@ class TestTableCellResourceAssociation:
         rows = table.structured_data["table"]["rows"]
         for row in rows:
             doc_cell = row["cells"][1]
-            assert len(doc_cell["asset_ids"]) == 1
+            assert len(doc_cell["asset_data"]) == 1
 
     def test_table_level_asset_ids_aggregation(self):
         """表格级 asset_ids 汇总所有单元格的资源。"""
@@ -319,7 +319,7 @@ class TestTableCellResourceAssociation:
         table = [e for e in result.elements if e.element_type == ElementType.table][0]
 
         # 表格级 asset_ids 应包含两个单元格的全部图片
-        assert len(table.asset_ids) == 2
+        assert len(table.asset_data) == 2
 
     def test_regular_link_in_table_cell_not_asset(self):
         """表格单元格中的普通网页链接不创建 Asset（保留在 metadata 中时不适用，仅段落有此功能）。

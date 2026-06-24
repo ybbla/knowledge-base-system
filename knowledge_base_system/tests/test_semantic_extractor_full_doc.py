@@ -14,6 +14,7 @@ import pytest
 
 from app.core.models import (
     Asset,
+    AssetData,
     AssetRef,
     AssetStatus,
     AssetType,
@@ -21,7 +22,6 @@ from app.core.models import (
     KnowledgeChunk,
     KnowledgeType,
     ParsedElement,
-    Render,
     SourceLocation,
     SourceRef,
 )
@@ -37,7 +37,7 @@ def _make_el(
     doc_id: str = "doc_test",
     heading_level: int | None = None,
     structured_data: dict | None = None,
-    asset_ids: list[str] | None = None,
+    asset_data: list | None = None,
     section_path: list[str] | None = None,
 ) -> ParsedElement:
     """创建 ParsedElement 快捷工厂。"""
@@ -50,7 +50,7 @@ def _make_el(
         element_type=element_type,
         text=text,
         structured_data=structured_data,
-        asset_ids=asset_ids or [],
+        asset_data=asset_data or [],
         source_location=SourceLocation(section_path=section_path or []),
         metadata=meta,
     )
@@ -212,7 +212,7 @@ class TestSplitRecursive:
         ]
         call_elements: list[list] = []
 
-        def mock_extract_section(els, assets, category):
+        def mock_extract_section(els, assets, category, resources=None):
             call_elements.append(els)
             return [
                 KnowledgeChunk(
@@ -254,7 +254,7 @@ class TestSplitRecursive:
 
         processed_sections: list[list] = []
 
-        def mock_extract_section(els, assets, category):
+        def mock_extract_section(els, assets, category, resources=None):
             processed_sections.append(els)
             return [
                 KnowledgeChunk(
@@ -292,7 +292,7 @@ class TestSplitRecursive:
 
         processed: list[list] = []
 
-        def mock_extract_section(els, assets, category):
+        def mock_extract_section(els, assets, category, resources=None):
             processed.append(els)
             return [
                 KnowledgeChunk(
@@ -410,7 +410,7 @@ class TestSectionLLMFailureFurtherSplit:
 
         call_count = 0
 
-        def mock_extract_section(els, assets, category):
+        def mock_extract_section(els, assets, category, resources=None):
             nonlocal call_count
             call_count += 1
             # 前两次抛异常模拟失败，第三次成功
@@ -516,8 +516,8 @@ class TestBuildChunksEmptySourceRefs:
         chunks = extractor._build_chunks(data, elements, [], "通用")
 
         assert len(chunks) == 1
-        assert chunks[0].source_refs == [], (
-            "LLM 不提供 source_refs 时不应强行全量兜底"
+        assert chunks[0].source_refs != [], (
+            "LLM 不提供 source_refs 时，应回退到当前分段的全部元素，避免孤儿知识块"
         )
 
     def test_source_refs_with_element_ids(self):
@@ -545,8 +545,8 @@ class TestBuildChunksEmptySourceRefs:
         assert len(chunks[0].source_refs) == 2
         assert chunks[0].source_refs[0].element_id == "el_1"
 
-    def test_old_format_source_element_ids_compat(self):
-        """旧格式 source_element_ids 兼容处理。"""
+    def test_old_format_element_ids_compat(self):
+        """旧格式 element_ids 兼容处理。"""
         extractor = SemanticExtractor()
         elements = [
             _make_el("el_1", ElementType.paragraph, "旧格式内容。"),
@@ -557,7 +557,7 @@ class TestBuildChunksEmptySourceRefs:
                 "title": "测试",
                 "content": "兼容旧格式。",
                 "knowledge_type": "declarative",
-                "source_element_ids": ["el_1"],
+                "element_ids": ["el_1"],
             }
         ])
 
@@ -576,8 +576,8 @@ class TestAssetRefNoRelation:
         """构造 KnowledgeChunk 后 asset_refs 条目不含 relation。"""
         extractor = SemanticExtractor()
         elements = [
-            _make_el("el_1", ElementType.image, "图片",
-                     asset_ids=["asset_001"]),
+            _make_el("el_1", ElementType.paragraph, "图片",
+                     ),
         ]
         assets = [
             _make_asset("asset_001", extracted_text="图片描述"),
@@ -603,7 +603,7 @@ class TestAssetRefNoRelation:
         assert len(chunks[0].asset_refs) == 1
         ref = chunks[0].asset_refs[0]
         assert ref.asset_id == "asset_001"
-        assert ref.linked_text == "相关图片"
+        assert ref.caption == "图1"
         # 不应有 relation 属性
         ref_dict = ref.model_dump(mode="json")
         assert "relation" not in ref_dict, (
@@ -614,8 +614,8 @@ class TestAssetRefNoRelation:
         """fallback chunk 的 asset_refs 也不含 relation。"""
         extractor = SemanticExtractor()
         elements = [
-            _make_el("el_1", ElementType.image, "图片",
-                     asset_ids=["asset_001"]),
+            _make_el("el_1", ElementType.paragraph, "图片",
+                     asset_data=[AssetData(placeholder="[图片]", asset_id="asset_001")]),
             _make_el("el_2", ElementType.paragraph, "文本内容。"),
         ]
         assets = [
@@ -721,14 +721,14 @@ class TestChunksHaveContent:
 
     def test_all_empty_content(self):
         chunks = [
-            KnowledgeChunk(doc_id="d1", title="t", content="", category="通用"),
-            KnowledgeChunk(doc_id="d1", title="t2", content="  ", category="通用"),
+            KnowledgeChunk(content="", title="t", category="通用"),
+            KnowledgeChunk(content="  ", title="t2", category="通用"),
         ]
         assert SemanticExtractor._chunks_have_content(chunks) is False
 
     def test_one_has_content(self):
         chunks = [
-            KnowledgeChunk(doc_id="d1", title="t", content="", category="通用"),
-            KnowledgeChunk(doc_id="d1", title="t2", content="有效内容", category="通用"),
+            KnowledgeChunk(content="", title="t", category="通用"),
+            KnowledgeChunk(content="有效内容", title="t2", category="通用"),
         ]
         assert SemanticExtractor._chunks_have_content(chunks) is True

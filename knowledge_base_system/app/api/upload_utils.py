@@ -62,7 +62,6 @@ def save_upload_file(
         raise RuntimeError("MinIO 未启用，文件上传失败")
 
     key = make_minio_key(resolved_doc_id, original_name)
-    minio_asset_store.ensure_buckets()
     try:
         minio_asset_store.client.put_object(
             cfg.minio_bucket_input,

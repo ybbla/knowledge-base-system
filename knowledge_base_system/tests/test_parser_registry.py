@@ -167,22 +167,7 @@ class TestParserRegistry:
 
 
 class TestDocumentParserBase:
-    """DocumentParser 基类新增属性和方法测试。"""
-
-    def test_content_is_text_default(self):
-        """默认 CONTENT_IS_TEXT 为 False。"""
-        class _DefaultFormat(DocumentParser):
-            def supports(self, s): return True
-            def parse(self, doc, content): return ParseResult(doc=doc)
-        assert _DefaultFormat.CONTENT_IS_TEXT is False
-
-    def test_content_is_text_override(self):
-        """子类可覆写 CONTENT_IS_TEXT。"""
-        class _TextFormat(DocumentParser):
-            CONTENT_IS_TEXT = True
-            def supports(self, s): return True
-            def parse(self, doc, content): return ParseResult(doc=doc)
-        assert _TextFormat.CONTENT_IS_TEXT is True
+    """DocumentParser 基类测试。"""
 
 
 class TestBaseParseState:

@@ -104,20 +104,13 @@ class MinioAssetStore(AssetStore):
             )
         return self._client
 
-    def ensure_buckets(self) -> None:
-        """确保 input 和 assets 两个 Bucket 存在，不存在则自动创建。"""
-        for bucket in (self.input_bucket, self.assets_bucket):
-            if not self.client.bucket_exists(bucket):
-                self.client.make_bucket(bucket)
-                logger.info("已创建 MinIO bucket: %s", bucket)
-
     def put(self, asset: Asset) -> None:
         """存储 Asset：上传二进制数据到 MinIO，元数据委托给 metadata_store。"""
         data = getattr(asset, "_data", None)
         if data is not None and not asset.storage_uri:
             file_name = asset.metadata.get("file_name") or Path(asset.original_uri).name
             key = make_minio_key(asset.doc_id, file_name, asset.asset_id)
-            self.upload_bytes(self.assets_bucket, key, data, asset.mime_type)
+            self.upload_bytes(self.assets_bucket, key, data, "application/octet-stream")
             asset.storage_uri = f"minio://{self.assets_bucket}/{key}"
         self._metadata_store.put(asset)
 
@@ -127,6 +120,12 @@ class MinioAssetStore(AssetStore):
         if asset is None:
             return None
         return self.with_presigned_url(asset)
+
+    def get_by_doc_id(self, doc_id: str) -> list[Asset]:
+        """获取指定文档的全部资源元数据，供重入库清理使用。"""
+        if not hasattr(self._metadata_store, "get_by_doc_id"):
+            return []
+        return self._metadata_store.get_by_doc_id(doc_id)
 
     def delete(self, asset_id: str) -> None:
         """删除 Asset：从 MinIO 移除对象文件，再从元数据存储中删除。"""
@@ -157,7 +156,6 @@ class MinioAssetStore(AssetStore):
         Returns:
             minio://<bucket>/<key> 格式的存储 URI。
         """
-        self.ensure_buckets()
         self.client.put_object(
             bucket,
             key,

@@ -37,6 +37,7 @@ from app.core.errors import (
     DuplicateDocumentError,
 )
 from app.core.models import DocStatus, Document, compute_hash, new_id
+from app.utils.thread_pool import upload_executor
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 logger = logging.getLogger(__name__)
@@ -112,7 +113,7 @@ def _element_to_item(element: Any) -> dict[str, Any]:
         "element_type": element.element_type.value if hasattr(element.element_type, "value") else element.element_type,
         "text": element.text,
         "structured_data": element.structured_data,
-        "asset_ids": element.asset_ids,
+        "asset_data": [ad.model_dump(mode="json") for ad in element.asset_data],
         "source_location": (
             element.source_location.model_dump(mode="json")
             if hasattr(element.source_location, "model_dump")
@@ -215,13 +216,13 @@ async def list_documents(
 
 @router.post("", status_code=http_status.HTTP_201_CREATED)
 async def create_document(
-    title: str = Query(...),
-    source_type: str = Query(...),
-    source_uri: str = Query(...),
-    source_hash: str = Query(default=""),
-    category: str = Query(default="通用"),
-    metadata: str | None = Query(default=None, description="JSON 格式的元数据"),
-    ingest_after_create: bool = Query(default=False),
+    title: str = Body(...),
+    source_type: str = Body(...),
+    source_uri: str = Body(...),
+    source_hash: str = Body(default=""),
+    category: str = Body(default="通用"),
+    metadata: str | None = Body(default=None, description="JSON 格式的元数据"),
+    ingest_after_create: bool = Body(default=False),
 ):
     """创建新文档，支持创建后立即触发入库。
 
@@ -291,29 +292,34 @@ async def upload_document(
     file: UploadFile = File(...),
     title: str | None = Form(default=None),
     category: str = Form(default=upload_api.DEFAULT_CATEGORY),
-    ingest_after_create: bool = Query(default=True),
     replace_doc_id: str | None = Query(default=None, description="要替换的文档 ID"),
     confirm_replace: bool = Query(default=False, description="确认替换同名文档"),
 ):
-    """上传文件，创建文档，并立即提交入库任务。
+    """上传文件，创建文档并立即入库。
 
     支持同名文件检测和更新：
-    - 如果检测到同名文档且没有确认替换，返回 suggested_replace 提示
-    - 如果提供 replace_doc_id 且 confirm_replace=True，则执行更新流程
+    - 检测到同名文档且未确认替换 → 返回 suggested_replace 提示
+    - 提供 replace_doc_id 且 confirm_replace=True → 更新流程
 
-    流程：先创建 Document 预占位（利用数据库唯一索引防竞态），
-    再写文件；文件写入失败时回滚已创建的 Document 记录，
-    杜绝并发重复上传产生的孤儿文件。
+    上传必定触发入库（ingest），不可跳过。
+    热路径在 upload 线程池中执行，不阻塞事件循环。
+
+    流程：
+    1-3) 参数解析 + 重复/同名检测（事件循环中，轻量 DB 查询）
+    4-9) 预占位 → MinIO → 旧文档清理 → ingest（线程池，I/O 密集）
     """
     original_name = file.filename or "upload"
     file.file.seek(0)
     file_content = file.file.read()
     source_hash = compute_hash(file_content)
     size = len(file_content)
+    content_type = file.content_type or "application/octet-stream"
+
+    # ── 参数解析：title/category 默认值 ──
     resolved_title = title or Path(original_name).stem
     resolved_category = category or upload_api.DEFAULT_CATEGORY
 
-    # 检查重复内容
+    # ── 重复内容检测（事件循环中快速返回） ──
     if document_repo is not None:
         existing = document_repo.find_by_hash(source_hash)
         if existing is not None:
@@ -332,11 +338,9 @@ async def upload_document(
                 meta={"duplicate": True},
             ).model_dump(mode="json")
 
-    # 检查同名文档
-    similar_docs = []
+    # ── 同名文档检测（仅上传新文件时） ──
     if document_repo is not None and not replace_doc_id:
         similar_docs = document_repo.find_similar_by_filename(original_name)
-        # 如果只有一个同名文档且没有确认替换，返回提示
         if len(similar_docs) == 1 and not confirm_replace:
             suggested_doc = similar_docs[0]
             return APIResponse(
@@ -353,8 +357,7 @@ async def upload_document(
                 meta={"suggested_replace": True},
             ).model_dump(mode="json")
 
-    # ── 处理替换流程 ──
-    old_doc = None
+    # ── 更新场景：旧文档校验 + 默认值回填 ──
     if replace_doc_id and confirm_replace and document_repo is not None:
         old_doc = document_repo.get(replace_doc_id)
         if old_doc is None:
@@ -363,24 +366,59 @@ async def upload_document(
                 f"要替换的文档 {replace_doc_id} 不存在",
                 http_status.HTTP_404_NOT_FOUND,
             )
-        # 软删除旧文档及其知识块
-        try:
-            document_repo.soft_delete(replace_doc_id)
-            # 同时软删除知识块并同步索引
-            if hasattr(chunk_store, "bulk_update_status_by_doc_id"):
-                chunk_store.bulk_update_status_by_doc_id(replace_doc_id, "deleted")
-            if hasattr(chunk_store, "list_by_doc_id"):
-                chunks_to_sync = chunk_store.list_by_doc_id(replace_doc_id)
-                if chunks_to_sync:
-                    for c in chunks_to_sync:
-                        try:
-                            sync_index_metadata(c, vector_index, bm25_index)
-                        except Exception:
-                            logger.exception("同步删除状态失败: %s", c.chunk_id)
-        except Exception:
-            logger.exception("软删除旧文档失败")
+        if old_doc.status != DocStatus.active:
+            return error_json(
+                ErrorCode.DOCUMENT_NOT_FOUND,
+                f"文档 {replace_doc_id} 状态不是 active，无法替换",
+                http_status.HTTP_409_CONFLICT,
+            )
+        # 更新时 title/category 未填 → 沿用旧文档的值
+        resolved_title = title or old_doc.title
+        resolved_category = category or old_doc.category
+        replace_doc_id_typed: str | None = replace_doc_id
+    else:
+        old_doc = None
+        replace_doc_id_typed = None
 
-    # ── 先创建 Document 预占位，再写文件 ──
+    # ── 热路径：提交到 upload 线程池 ──
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        upload_executor,
+        _do_upload,
+        file_content,
+        original_name,
+        size,
+        source_hash,
+        resolved_title,
+        resolved_category,
+        content_type,
+        old_doc,
+        replace_doc_id_typed,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 上传热路径（在线程池中同步执行）
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _do_upload(
+    file_content: bytes,
+    original_name: str,
+    size: int,
+    source_hash: str,
+    resolved_title: str,
+    resolved_category: str,
+    content_type: str,
+    old_doc: Document | None,
+    replace_doc_id: str | None,
+) -> dict[str, Any]:
+    """上传热路径：预占位 → MinIO → 旧文档清理 → ingest。
+
+    在 upload 线程池中同步执行，不阻塞事件循环。
+    返回完整的 API 响应 dict（success 或 error）。
+    """
+    # ── [5] 创建 Document 预占位 ──
     pre_doc_id = new_id("doc")
     doc = Document(
         doc_id=pre_doc_id,
@@ -402,7 +440,8 @@ async def upload_document(
                 http_status.HTTP_409_CONFLICT,
             )
 
-    # ── 写文件 ──
+    # ── [6] 写文件到 MinIO ──
+    upload_data: dict[str, Any] = {}
     try:
         upload_data = upload_api.save_upload_file(
             file_content,
@@ -410,45 +449,72 @@ async def upload_document(
             size,
             title=resolved_title,
             category=resolved_category,
-            content_type=file.content_type or "application/octet-stream",
+            content_type=content_type,
             doc_id=pre_doc_id,
         )
     except Exception:
-        logger.exception("文件写入失败")
-        # 回滚已创建的 Document 记录
+        logger.exception("文件写入 MinIO 失败: %s", pre_doc_id)
         if document_repo is not None:
             try:
-                document_repo.soft_delete(pre_doc_id)
+                document_repo.hard_delete(pre_doc_id)
             except Exception:
-                logger.exception("回滚 Document 记录失败")
+                logger.exception("回滚预占位失败: %s", pre_doc_id)
         return error_json(
             ErrorCode.INTERNAL_ERROR,
             "文件保存失败",
             http_status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-    # 更新 source_uri（文件写入后的真实路径）
+    # ── [7] 更新 source_uri ──
     doc.source_uri = upload_data["source_uri"]
     if document_repo is not None:
         try:
             doc = document_repo.update(doc)
         except Exception:
-            logger.exception("更新文档 source_uri 失败")
+            logger.exception("更新 source_uri 失败: %s", pre_doc_id)
 
-    response_data = _doc_to_item(doc)
+    # ── [8] 软删除旧文档（更新场景，MinIO 成功后执行） ──
+    replaced = old_doc is not None
+    if old_doc is not None:
+        try:
+            document_repo.soft_delete(old_doc.doc_id)
+            if hasattr(chunk_store, "bulk_update_status_by_doc_id"):
+                chunk_store.bulk_update_status_by_doc_id(old_doc.doc_id, "deleted")
+            if hasattr(chunk_store, "list_by_doc_id"):
+                old_chunks = chunk_store.list_by_doc_id(old_doc.doc_id)
+                if old_chunks:
+                    for c in old_chunks:
+                        try:
+                            sync_index_metadata(c, vector_index, bm25_index)
+                        except Exception:
+                            logger.exception("同步旧 chunk 删除状态失败: %s", c.chunk_id)
+        except Exception:
+            logger.exception("软删除旧文档失败: %s（新文档已就位，可手动清理）", old_doc.doc_id)
+
+    # ── [9] 入库（必定执行，失败标记 failed 不抛异常） ──
+    try:
+        doc = ingestion_pipeline.ingest(doc, raw_content=file_content)
+        response_data = _doc_to_item(doc)
+    except Exception:
+        logger.exception("入库失败: %s", pre_doc_id)
+        doc.status = DocStatus.failed
+        doc.error_message = "入库失败，可稍后重试"
+        if document_repo is not None:
+            try:
+                document_repo.update(doc)
+            except Exception:
+                logger.exception("持久化失败状态时出错: %s", pre_doc_id)
+        response_data = _doc_to_item(doc)
+        response_data["ingest_error"] = True
+
     response_data.update({
         "duplicate": False,
         "suggested_replace": False,
-        "replaced": old_doc is not None,
-        "replaced_doc_id": replace_doc_id if old_doc else None,
+        "replaced": replaced,
+        "replaced_doc_id": replace_doc_id if replaced else None,
         "file_name": original_name,
         "size": upload_data["size"],
     })
-
-    if ingest_after_create:
-        doc = ingestion_pipeline.ingest(doc, raw_content=file_content)
-        response_data = _doc_to_item(doc)
-
     return APIResponse(data=response_data).model_dump(mode="json")
 
 
@@ -635,6 +701,14 @@ async def restore_document(doc_id: str):
     doc = document_repo.get(doc_id)
     if doc is None:
         return error_json(ErrorCode.DOCUMENT_NOT_FOUND, f"文档 {doc_id} 不存在", 404)
+
+    # 只有 deleted 状态的文档才能恢复
+    if doc.status != DocStatus.deleted:
+        return error_json(
+            ErrorCode.VALIDATION_ERROR,
+            f"文档 {doc_id} 当前状态为 {doc.status.value}，只能恢复已删除的文档",
+            400,
+        )
 
     # 读取删前状态（由 soft_delete 写入 metadata）
     previous_status = (doc.metadata or {}).get("previous_status", "active")

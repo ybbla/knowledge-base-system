@@ -21,16 +21,18 @@ def compute_hash(content: str | bytes) -> str:
 
 # ── 枚举类型 ──────────────────────────────────────────────────────
 
-# 文档生命周期：processing → active | failed
+# 文档生命周期：pending → processing → active | failed
 class DocStatus(str, Enum):
+    pending = "pending"          # 待处理：已创建但尚未开始入库流程
     active = "active"
     deleted = "deleted"          # 软删除状态，可通过 restore 恢复为 active
     failed = "failed"
     processing = "processing"
 
 
-# 资源处理状态：ready | failed
+# 资源处理状态：downloading → ready | failed
 class AssetStatus(str, Enum):
+    downloading = "downloading"   # 下载中：外部链接资源正在下载
     ready = "ready"
     failed = "failed"
 
@@ -49,12 +51,11 @@ class KnowledgeType(str, Enum):
 
 
 class ElementType(str, Enum):
+    """文档解析元素类型。"""
     title = "title"
     paragraph = "paragraph"
     list = "list"
     table = "table"
-    image = "image"
-    video = "video"
     code = "code"
     unknown = "unknown"
 
@@ -62,6 +63,7 @@ class ElementType(str, Enum):
 class AssetType(str, Enum):
     image = "image"                   # 内嵌图片（解析器提供了实际字节 _data）
     image_link = "image_link"         # 外部图片链接（仅有 URL，需下载）
+    video = "video"                   # 内嵌视频（解析器提供了实际字节 _data）
     video_link = "video_link"         # 视频链接（仅有 URL，需下载）
     document_link = "document_link"   # 文档链接（仅有 URL，需下载后触发子文档入库）
 
@@ -74,17 +76,10 @@ class SourceLocation(BaseModel):
     table_path: list[dict] = Field(default_factory=list)
 
 
-class Render(BaseModel):
-    mode: str = "inline"
-    position: str = "after_linked_text"
-
-
 class AssetRef(BaseModel):
-    """知识块关联的资源引用。不包含关联关系标签（下游无行为差异）。"""
+    """知识块关联的资源引用。前端通过资源类型+占位符展示，不包含渲染信息。"""
     asset_id: str
-    linked_text: str | None = None
     caption: str | None = None
-    render: Render = Field(default_factory=Render)
 
 
 class SourceRef(BaseModel):
@@ -121,6 +116,16 @@ class Document(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class AssetData(BaseModel):
+    """元素内关联的资源信息。
+
+    由解析器在解析时填入，记录正文中占位符与实际 Asset 的对应关系。
+    表格单元格也通过 structured_data 内的同名字段关联。
+    """
+    placeholder: str = ""                         # 占位符，如 "[image1]"，旧解析器可为空
+    asset_id: str                                 # 关联的 Asset.asset_id
+
+
 class ParsedElement(BaseModel):
     element_id: str = Field(default_factory=lambda: new_id("el"))
     doc_id: str
@@ -130,22 +135,22 @@ class ParsedElement(BaseModel):
     element_type: ElementType
     text: str = ""
     structured_data: dict[str, Any] | None = None
-    asset_ids: list[str] = Field(default_factory=list)
+    asset_data: list[AssetData] = Field(default_factory=list)
     source_location: SourceLocation = Field(default_factory=SourceLocation)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class Asset(BaseModel):
     asset_id: str = Field(default_factory=lambda: new_id("asset"))
     doc_id: str
-    source_element_id: str = ""
+    element_id: str = ""
+    doc_version: int = 1
     asset_type: AssetType
     original_uri: str
     storage_uri: str | None = None
-    mime_type: str = ""
     content_hash: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: AssetStatus = AssetStatus.ready
     extracted_text: str | None = None
     error_message: str | None = None
@@ -154,7 +159,7 @@ class Asset(BaseModel):
 
 class KnowledgeChunk(BaseModel):
     chunk_id: str = Field(default_factory=lambda: new_id("chunk"))
-    doc_id: str
+    doc_id: str = ""                           # \u5f52\u5c5e\u6587\u6863 ID\uff0c\u4ece source_refs[0].doc_id \u5197\u4f59\uff0c\u52a0\u901f\u67e5\u8be2
     title: str = ""
     content: str
     content_hash: str = ""
@@ -171,6 +176,13 @@ class KnowledgeChunk(BaseModel):
     def _set_content_hash(self) -> "KnowledgeChunk":
         if not self.content_hash and self.content:
             self.content_hash = compute_hash(self.content)
+        return self
+
+    @model_validator(mode="after")
+    def _set_doc_id(self) -> "KnowledgeChunk":
+        """从 source_refs[0].doc_id 自动填充 doc_id 冗余字段。"""
+        if not self.doc_id and self.source_refs:
+            self.doc_id = self.source_refs[0].doc_id
         return self
 
 

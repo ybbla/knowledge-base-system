@@ -55,7 +55,7 @@ class TestJsonbColumns:
         jsonb_columns = [
             DbDocument.__table__.c.metadata,
             DbParsedElement.__table__.c.structured_data,
-            DbParsedElement.__table__.c.asset_ids,
+            DbParsedElement.__table__.c.asset_data,
             DbParsedElement.__table__.c.source_location,
             DbParsedElement.__table__.c.metadata,
             DbAsset.__table__.c.metadata,
@@ -275,7 +275,7 @@ class TestDbParsedElement:
         assert result.sequence_order == 0
         assert result.text == ""
         assert result.structured_data is None
-        assert result.asset_ids == []
+        assert result.asset_data == []
         assert result.source_location == {}
         assert result.meta == {}
 
@@ -299,7 +299,7 @@ class TestDbParsedElement:
         assert result.structured_data["headers"] == ["A", "B"]
         assert len(result.structured_data["rows"]) == 1
 
-    def test_image_element_with_asset_ids(self, doc_fixture, db_session):
+    def test_image_element_with_asset_data(self, doc_fixture, db_session):
         el = DbParsedElement(
             element_id="el_image",
             doc_id="doc_001",
@@ -312,7 +312,7 @@ class TestDbParsedElement:
         db_session.commit()
 
         result = db_session.get(DbParsedElement, "el_image")
-        assert result.asset_ids == ["asset_001", "asset_002"]
+        assert result.asset_data == ["asset_001", "asset_002"]
         assert result.meta["alt"] == "产品截图"
 
     def test_list_with_parent(self, doc_fixture, db_session):
@@ -436,7 +436,7 @@ class TestDbParsedElement:
         assert result.sequence_order == 5
         assert result.element_type == "table"
         assert result.structured_data["headers"] == ["H1", "H2"]
-        assert result.asset_ids == ["asset_001", "asset_002"]
+        assert result.asset_data == ["asset_001", "asset_002"]
         assert result.source_location["page"] == 3
         assert result.meta["table_caption"] == "表1"
 
@@ -472,7 +472,7 @@ class TestDbAsset:
         db_session.commit()
 
         result = db_session.get(DbAsset, "asset_default")
-        assert result.source_element_id == ""
+        assert result.element_id == ""
         assert result.storage_uri is None
         assert result.mime_type == ""
         assert result.content_hash == ""
@@ -550,19 +550,19 @@ class TestDbAsset:
         assert result.status == "failed"
         assert result.error_message == "invalid_image_type"
 
-    def test_source_element_id_traceability(self, doc_fixture, db_session):
+    def test_element_id_traceability(self, doc_fixture, db_session):
         asset = DbAsset(
             asset_id="asset_trace",
             doc_id="doc_001",
             asset_type="image",
             original_uri="https://example.com/a.png",
-            source_element_id="el_003",
+            element_id="el_003",
         )
         db_session.add(asset)
         db_session.commit()
 
         result = db_session.get(DbAsset, "asset_trace")
-        assert result.source_element_id == "el_003"
+        assert result.element_id == "el_003"
 
     def test_created_at_is_set(self, doc_fixture, db_session):
         asset = DbAsset(

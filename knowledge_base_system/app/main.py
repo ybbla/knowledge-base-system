@@ -5,7 +5,11 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import mount_v1_sub_routers, register_v1_exception_handlers, router as v1_router
-from app.core.deps import shutdown_resources, startup_resources
+from app.core.deps import shutdown_resources
+from app.utils.thread_pool import (
+    startup_health_pool, shutdown_health_pool,
+    startup_upload_pool, shutdown_upload_pool,
+)
 
 # 前端静态文件目录
 _FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
@@ -13,11 +17,14 @@ _FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    startup_resources()
+    startup_health_pool()
+    startup_upload_pool()
     try:
         yield
     finally:
         shutdown_resources()
+        shutdown_upload_pool()
+        shutdown_health_pool()
 
 
 app = FastAPI(

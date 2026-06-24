@@ -1,14 +1,14 @@
-"""检索 API v1 — 标准检索、调试检索和筛选项。
+"""检索 API v1 — 标准检索和筛选项。
 
 POST /api/v1/search         — 标准检索，支持完整过滤和选项
-POST /api/v1/search/debug   — 调试模式，返回分阶段候选
 GET  /api/v1/search/filters — 可用筛选项
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, status
@@ -85,11 +85,16 @@ async def _execute_search(request: SearchRequest) -> dict[str, Any]:
     # 对每个 category 分别检索，合并结果
     all_results: dict[str, dict[str, Any]] = {}
     for cat in categories:
-        result = retrieval_pipeline.search(
+        # 检索包含 LLM、Embedding 和外部索引 I/O，在线程中执行以免阻塞事件循环。
+        result = await asyncio.to_thread(
+            retrieval_pipeline.search,
             request.query,
             top_k=retrieval_top_k,
             category=cat,
             knowledge_type=kt,
+            rewrite=request.options.rewrite,
+            hybrid=request.options.hybrid,
+            rerank=request.options.rerank,
         )
         result_dict = result.model_dump(mode="json")
         for item in result_dict.get("results", []):
@@ -129,14 +134,16 @@ def _parse_dt(raw: str | None) -> datetime | None:
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
     except ValueError:
         return None
 
 
 def _matches_filters(chunk, doc, filters: SearchFilters) -> bool:
     """判断知识块和文档是否满足 v1 检索过滤条件。"""
-    if filters.doc_ids and chunk.doc_id not in filters.doc_ids:
+    chunk_doc_id = chunk.doc_id or (chunk.source_refs[0].doc_id if chunk.source_refs else "")
+    if filters.doc_ids and chunk_doc_id not in filters.doc_ids:
         return False
     if filters.categories and chunk.category not in filters.categories:
         return False
@@ -156,6 +163,8 @@ def _matches_filters(chunk, doc, filters: SearchFilters) -> bool:
     created_after = _parse_dt(filters.created_after)
     created_before = _parse_dt(filters.created_before)
     created_at = getattr(doc, "created_at", None)
+    if created_at is not None and created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
     if created_after and (created_at is None or created_at < created_after):
         return False
     if created_before and (created_at is None or created_at > created_before):
@@ -189,13 +198,18 @@ def _filter_and_enrich_result(result_dict: dict, request: SearchRequest) -> dict
         chunk = _get_chunk(item.get("chunk_id", ""))
         if chunk is None:
             continue
-        doc = _get_doc(chunk.doc_id)
+        chunk_doc_id = chunk.doc_id or (chunk.source_refs[0].doc_id if chunk.source_refs else "")
+        doc = _get_doc(chunk_doc_id)
         if not _matches_filters(chunk, doc, request.filters):
             continue
 
-        item["doc_id"] = chunk.doc_id
-        item["doc_title"] = getattr(doc, "title", None) or chunk.metadata.get("title", chunk.doc_id)
+        item["doc_id"] = chunk_doc_id
+        item["doc_title"] = getattr(doc, "title", None) or chunk.metadata.get("title", chunk_doc_id)
         item["doc_version"] = getattr(doc, "version", 1)
+        # 以 PostgreSQL 中的领域模型为准，补齐索引未保存的完整资源与溯源引用。
+        item["asset_refs"] = [ref.model_dump(mode="json") for ref in chunk.asset_refs]
+        item["source_refs"] = [ref.model_dump(mode="json") for ref in chunk.source_refs]
+        item["metadata"] = chunk.metadata
         if request.options.highlight:
             item["highlight"] = _make_highlight(item.get("content", ""), request.query)
         filtered_items.append(item)

@@ -239,13 +239,30 @@ class DocumentRepository(BaseRepository):
             db_doc = session.get(DbDocument, doc_id)
             if db_doc is None:
                 raise DocumentNotFoundError(f"文档 {doc_id} 不存在")
-            meta = db_doc.meta or {}
+            # 复制 JSONB 字典后再赋值，确保 SQLAlchemy 能检测到字段变更。
+            meta = dict(db_doc.meta or {})
             meta["previous_status"] = db_doc.status
             db_doc.meta = meta
             db_doc.status = "deleted"
             db_doc.updated_at = datetime.now(timezone.utc)
             session.commit()
             return self._from_db(db_doc)
+
+    def hard_delete(self, doc_id: str) -> None:
+        """物理删除文档记录，仅用于预占位回滚等内部场景。
+
+        调用方必须确保该文档没有关联数据（知识块、解析元素、MinIO 文件等），
+        否则会因外键约束删除失败或产生孤儿数据。
+
+        Raises:
+            DocumentNotFoundError: 文档不存在
+        """
+        with self._session() as session:
+            db_doc = session.get(DbDocument, doc_id)
+            if db_doc is None:
+                raise DocumentNotFoundError(f"文档 {doc_id} 不存在")
+            session.delete(db_doc)
+            session.commit()
 
     def restore(self, doc_id: str) -> Document:
         """恢复软删除的文档到 active 状态（仅活跃文档删除后恢复使用）。
@@ -257,7 +274,8 @@ class DocumentRepository(BaseRepository):
             db_doc = session.get(DbDocument, doc_id)
             if db_doc is None:
                 raise DocumentNotFoundError(f"文档 {doc_id} 不存在")
-            meta = db_doc.meta or {}
+            # 复制 JSONB 字典后再赋值，确保 previous_status 的删除会持久化。
+            meta = dict(db_doc.meta or {})
             meta.pop("previous_status", None)  # 清除临时标记
             db_doc.status = "active"
             db_doc.meta = meta
@@ -296,7 +314,7 @@ class DocumentRepository(BaseRepository):
 
             stats["chunk_count"] = (
                 session.query(DbKnowledgeChunk)
-                .filter_by(doc_id=doc_id)
+                .filter(DbKnowledgeChunk.source_refs.contains([{"doc_id": doc_id}]))
                 .count()
             )
             stats["element_count"] = (

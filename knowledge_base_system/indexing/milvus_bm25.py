@@ -19,7 +19,7 @@ from indexing.milvus_vector import (
 
 logger = logging.getLogger(__name__)
 
-JSON_TEXT_FIELDS = {"source_refs", "asset_refs", "metadata"}
+JSON_TEXT_FIELDS = {"source_refs", "metadata"}
 
 
 class MilvusBM25Index(BM25Index):
@@ -66,8 +66,6 @@ class MilvusBM25Index(BM25Index):
                 "category": str(meta.get("category", "")),
                 "knowledge_type": str(meta.get("knowledge_type", "")),
                 "status": str(meta.get("status", "active")),
-                "created_at": meta.get("created_at", 0),
-                "updated_at": meta.get("updated_at", 0),
             }
             for key in JSON_TEXT_FIELDS:
                 fields[key] = _json_dumps(meta.get(key, {} if key == "metadata" else []))
@@ -86,11 +84,10 @@ class MilvusBM25Index(BM25Index):
         """批量更新标量字段。"""
         self._manager.upsert_fields_batch(items)
 
-    # 与 vector_index 共享同一 collection，检索时返回全量标量字段（省去 PG 查询）
+    # 与 vector_index 共享同一 collection，检索 pipeline 实际使用的标量字段
     _SEARCH_OUTPUT_FIELDS = [
         "chunk_id", "doc_id", "title", "content", "category",
-        "knowledge_type", "status", "source_refs", "asset_refs",
-        "metadata", "created_at", "updated_at",
+        "knowledge_type", "source_refs", "metadata",
     ]
 
     def search(

@@ -1,8 +1,5 @@
-"""XLSX 工作簿解析器。
-
-使用 openpyxl 将 .xlsx 文件解析为统一的 ParsedElement 和 Asset，
-支持按区域自动检测表格与散列数据，处理合并单元格、超链接、公式和嵌入图片。
-"""
+"""XLSX 工作簿解析器
+使用 openpyxl .xlsx 文件解析为统一ParsedElement Asset支持按区域自动检测表格与散列数据，处理合并单元格、超链接、公式和嵌入图片"""
 
 import io
 import re
@@ -18,6 +15,7 @@ from openpyxl.utils.exceptions import InvalidFileException
 
 from app.core.models import (
     Asset,
+    AssetData,
     AssetStatus,
     AssetType,
     Document,
@@ -35,7 +33,7 @@ from parsers.utils import (
     is_video_url,
 )
 
-# 图片链接扩展名（与 docx_parser 的 _IMAGE_EXTENSIONS 保持一致）
+# 图片链接扩展名（docx_parser _IMAGE_EXTENSIONS 保持一致）
 _IMAGE_EXTENSIONS: set[str] = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".tiff", ".tif",
 }
@@ -48,13 +46,13 @@ class _CellInfo:
     col: int
     coordinate: str
     text: str = ""
-    asset_ids: list[str] = field(default_factory=list)
+    asset_data: list[AssetData] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class _Region:
-    """连续数据区域（用于区域检测和表格/段落判别）。"""
+    """连续数据区域，用于区域检测和表格或段落判别。"""
     min_row: int
     max_row: int
     min_col: int
@@ -76,22 +74,18 @@ class _Region:
 
 
 class XlsxParser(DocumentParser):
-    """将 XLSX 工作簿解析为统一的 ParsedElement 和 Asset。
-
-    支持的 source_type：xlsx。
-    逐工作表处理，多行多列区域视为表格，否则视为段落。
-    支持提取嵌入图片、超链接资源、合并单元格和公式。
-    """
+    """XLSX 工作簿解析为统一ParsedElement Asset
+    支持source_type：xlsx    逐工作表处理，多行多列区域视为表格，否则视为段落    支持提取嵌入图片、超链接资源、合并单元格和公式    """
 
     SUPPORTED_TYPES = {"xlsx"}
 
     def supports(self, source_type: str) -> bool:
         return source_type.lower() in self.SUPPORTED_TYPES
 
-    # ── 主解析入口 ──────────────────────────────────────────────────
+    # ── 主解析入──────────────────────────────────────────────────
 
     def parse(self, doc: Document, content: bytes | str) -> ParseResult:
-        """主解析入口：将 XLSX 工作簿解析为结构化元素和资源列表。"""
+        """将 XLSX 工作簿解析为结构化元素和资源列表。"""
         if isinstance(content, str):
             content = content.encode("utf-8")
         if not content:
@@ -112,12 +106,12 @@ class XlsxParser(DocumentParser):
 
             state.add_sheet_title(ws.title, sheet_index)
 
-            # 先提取嵌入图片（在收集单元格之前，以便图片 asset_id 能合并到单元格）
+            # 先提取嵌入图片（在收集单元格之前，以便图asset_id 能合并到单元格）
             image_cell_map = self._extract_sheet_images(
                 ws, doc, ws.title, sheet_index, assets,
             )
 
-            # 从 zip 预提取所有公式（无论缓存值是否存在）
+            # zip 预提取所有公式（无论缓存值是否存在）
             formulas_map = self._extract_all_formulas_from_zip(content, sheet_index)
 
             cells = self._collect_cells(
@@ -142,22 +136,14 @@ class XlsxParser(DocumentParser):
         sheet_name: str,
         sheet_index: int,
         assets: list[Asset],
-    ) -> dict[tuple[int, int], list[str]]:
-        """提取工作表中嵌入的图片，创建 Asset 并返回 单元格→asset_id 映射。
-
+    ) -> dict[tuple[int, int], list[AssetData]]:
+        """提取工作表中嵌入的图片，创建 Asset 并返单元格→AssetData 映射
         Args:
-            ws: openpyxl 工作表对象。
-            doc: 文档对象。
-            sheet_name: 工作表名称。
-            sheet_index: 工作表序号（1-based）。
-            assets: 资源列表（就地追加）。
-
+            ws: openpyxl 工作表对象            doc: 文档对象            sheet_name: 工作表名称            sheet_index: 工作表序号（1-based）            assets: 资源列表（就地追加）
         Returns:
-            {(row, col): [asset_id, ...]}  将图片关联到锚定单元格。
-            后续 _collect_cells() 会将图片 asset_id 合并到对应 _CellInfo 中，
-            最终通过 ParsedElement.asset_ids → Asset.source_element_id 完成溯源。
-        """
-        image_cell_map: dict[tuple[int, int], list[str]] = {}
+            {(row, col): [AssetData, ...]}  将图片关联到锚定单元格            后续 _collect_cells() 会将图片 AssetData 合并到对_CellInfo 中，
+            最终通过 ParsedElement.asset_data Asset.element_id 完成溯源        """
+        image_cell_map: dict[tuple[int, int], list[AssetData]] = {}
 
         for idx, img in enumerate(ws._images):
             try:
@@ -165,7 +151,7 @@ class XlsxParser(DocumentParser):
             except Exception:
                 continue
 
-            # 获取锚定位置（0-based → 1-based）
+            # 将零基锚点转换为一基行列坐标。
             row, col = 0, 0
             try:
                 anchor = img.anchor
@@ -183,10 +169,10 @@ class XlsxParser(DocumentParser):
                 doc_id=doc.doc_id,
                 asset_type=AssetType.image,
                 original_uri=f"xlsx://{doc.doc_id}/media/{filename}",
-                mime_type=guess_mime(f".{ext}", AssetType.image),
                 status=AssetStatus.ready,
                 metadata={
                     "source": "xlsx_image",
+                    "mime_type": guess_mime(f".{ext}", AssetType.image),
                     "sheet_name": sheet_name,
                     "sheet_index": sheet_index,
                     "cell": f"{get_column_letter(col)}{row}" if row and col else None,
@@ -198,11 +184,13 @@ class XlsxParser(DocumentParser):
             assets.append(asset)
 
             if row and col:
-                image_cell_map.setdefault((row, col), []).append(asset.asset_id)
+                image_cell_map.setdefault((row, col), []).append(
+                    AssetData(placeholder="", asset_id=asset.asset_id)
+                )
 
         return image_cell_map
 
-    # ── 单元格收集 ──────────────────────────────────────────────────
+    # ── 单元格收──────────────────────────────────────────────────
 
     def _collect_cells(
         self,
@@ -212,14 +200,10 @@ class XlsxParser(DocumentParser):
         assets: list[Asset],
         assets_by_uri: dict[str, Asset],
         formulas_map: dict[str, str],
-        image_cell_map: dict[tuple[int, int], list[str]] | None = None,
+        image_cell_map: dict[tuple[int, int], list[AssetData]] | None = None,
     ) -> dict[tuple[int, int], _CellInfo]:
-        """遍历工作表中的所有单元格，收集文本、公式、超链接和资源。
-
-        公式文本通过预提取的 formulas_map 查询，
-        无论缓存值是否存在都能记录公式信息。
-        嵌入图片的 asset_id 合并到对应位置的 _CellInfo 中。
-        """
+        """遍历工作表中的所有单元格，收集文本、公式、超链接和资源
+        公式文本通过预提取的 formulas_map 查询        无论缓存值是否存在都能记录公式信息        嵌入图片asset_id 合并到对应位置的 _CellInfo 中        """
         merged_map = self._build_merged_map(ws)
         cells: dict[tuple[int, int], _CellInfo] = {}
         if image_cell_map is None:
@@ -256,18 +240,18 @@ class XlsxParser(DocumentParser):
                     if not text and hyperlink.startswith(("http://", "https://")):
                         text = hyperlink
 
-                # 提取链接资源（asset_ids + 普通网页 link_urls）
-                link_asset_ids, link_urls = self._assets_from_cell(
+                # 提取可下载资源引用；普通网页链接单独写入 link_urls。
+                link_asset_data, link_urls = self._assets_from_cell(
                     doc, ws.title, coordinate, text, hyperlink,
                     assets, assets_by_uri,
                 )
                 if link_urls:
                     metadata["link_urls"] = link_urls
 
-                # 合并嵌入图片的 asset_id（图片优先排在前面）
-                cell_asset_ids = image_cell_map.get((row, col), []) + link_asset_ids
+                # 合并嵌入图片AssetData（图片优先排在前面）
+                cell_asset_data = image_cell_map.get((row, col), []) + link_asset_data
 
-                if not text and not cell_asset_ids and not formula and not hyperlink:
+                if not text and not cell_asset_data and not formula and not hyperlink:
                     continue
 
                 metadata["text"] = text
@@ -276,34 +260,25 @@ class XlsxParser(DocumentParser):
                     col=col,
                     coordinate=coordinate,
                     text=text,
-                    asset_ids=cell_asset_ids,
+                    asset_data=cell_asset_data,
                     metadata=metadata,
                 )
 
         return cells
 
-    # ── 公式预提取 ────────────────────────────────────────────────
+    # ── 公式预提────────────────────────────────────────────────
 
     @staticmethod
     def _extract_all_formulas_from_zip(
         raw: bytes, sheet_index: int,
     ) -> dict[str, str]:
-        """从 zip 原始 XML 中预提取当前工作表所有公式。
-
-        一次性解析 xl/worksheets/sheet{sheet_index}.xml，
-        提取所有 <c r="..."><f>...</f></c> 节点，
-        返回 {cell_ref: formula_text} 映射。
-
-        无论缓存值是否存在都提取公式文本，
-        确保 metadata 中始终记录公式信息。
-
+        """zip 原始 XML 中预提取当前工作表所有公式
+        一次性解xl/worksheets/sheet{sheet_index}.xml        提取所<c r="..."><f>...</f></c> 节点        返回 {cell_ref: formula_text} 映射
+        无论缓存值是否存在都提取公式文本        确保 metadata 中始终记录公式信息
         Args:
-            raw: 原始 xlsx 文件字节。
-            sheet_index: 工作表序号（1-based）。
-
+            raw: 原始 xlsx 文件字节            sheet_index: 工作表序号（1-based）
         Returns:
-            {cell_ref: formula_text} 映射（如 {"B2": "=SUM(A2:A3)"}）。
-        """
+            {cell_ref: formula_text} 映射（如 {"B2": "=SUM(A2:A3)"}）        """
         formulas: dict[str, str] = {}
         try:
             sheet_xml_path = f"xl/worksheets/sheet{sheet_index}.xml"
@@ -312,7 +287,7 @@ class XlsxParser(DocumentParser):
                     return formulas
                 sheet_xml = zf.read(sheet_xml_path).decode("utf-8")
 
-            # 匹配所有 <c r="B2"><f>SUM(A2:A3)</f> 节点
+            # 匹配所<c r="B2"><f>SUM(A2:A3)</f> 节点
             for match in re.finditer(
                 r'<c\s+r="([A-Z]+[0-9]+)"[^>]*>\s*<f[^>]*>(.*?)</f>',
                 sheet_xml,
@@ -328,14 +303,12 @@ class XlsxParser(DocumentParser):
 
         return formulas
 
-    # ── 合并单元格映射 ──────────────────────────────────────────────
+    # ── 合并单元格映──────────────────────────────────────────────
 
     @staticmethod
     def _build_merged_map(ws) -> dict[tuple[int, int], tuple[int, int]]:
-        """构建合并单元格到源单元格的映射。
-
-        合并区域中所有单元格映射到左上角源单元格 (min_row, min_col)。
-        """
+        """构建合并单元格到源单元格的映射
+        合并区域中所有单元格映射到左上角源单元格 (min_row, min_col)        """
         merged_map: dict[tuple[int, int], tuple[int, int]] = {}
         for merged_range in ws.merged_cells.ranges:
             min_col, min_row, max_col, max_row = range_boundaries(str(merged_range))
@@ -344,15 +317,13 @@ class XlsxParser(DocumentParser):
                     merged_map[(row, col)] = (min_row, min_col)
         return merged_map
 
-    # ── 超链接 ──────────────────────────────────────────────────────
+    # ── 超链──────────────────────────────────────────────────────
 
     @staticmethod
     def _hyperlink_target(cell) -> str | None:
-        """获取单元格的超链接目标 URL。
-
-        优先返回 hyperlink.target（外部 URL），
-        其次返回 hyperlink.location（内部跳转）。
-        """
+        """获取单元格的超链接目URL
+        优先返回 hyperlink.target（外URL），
+        其次返回 hyperlink.location（内部跳转）        """
         if cell.hyperlink is None:
             return None
         return cell.hyperlink.target or cell.hyperlink.location
@@ -361,10 +332,8 @@ class XlsxParser(DocumentParser):
 
     @staticmethod
     def _stringify(value: Any) -> str:
-        """将单元格值安全转换为字符串。
-
-        None → 空字符串，datetime/date → ISO 格式，其余 → str.strip()。
-        """
+        """将单元格值安全转换为字符串
+        None 空字符串，datetime/date ISO 格式，其str.strip()        """
         if value is None:
             return ""
         if isinstance(value, datetime):
@@ -384,30 +353,25 @@ class XlsxParser(DocumentParser):
         hyperlink: str | None,
         assets: list[Asset],
         assets_by_uri: dict[str, Asset],
-    ) -> tuple[list[str], list[str]]:
-        """从单元格文本和超链接中提取 URL 并创建 Asset。
-
-        按 video > image > attachment 分类创建 Asset，
-        普通网页链接不创建 Asset，返回为 link_urls。
-        已存在的 URL 通过 assets_by_uri 去重。
-
+    ) -> tuple[list[AssetData], list[str]]:
+        """从单元格文本和超链接中提URL 并创Asset
+        video > image > attachment 分类创建 Asset        普通网页链接不创建 Asset，返回为 link_urls        已存在的 URL 通过 assets_by_uri 去重
         Returns:
-            (asset_ids, link_urls) — 资源 ID 列表和普通网页链接列表。
-        """
+            (asset_data_list, link_urls) 资源数据列表和普通网页链接列表        """
         urls: list[str] = []
         if text:
             urls.extend(match.group(0) for match in HTTP_URL_RE.finditer(text))
         if hyperlink and hyperlink.startswith(("http://", "https://")):
             urls.append(hyperlink)
 
-        asset_ids: list[str] = []
+        asset_data_list: list[AssetData] = []
         link_urls: list[str] = []
         for url in dict.fromkeys(urls):  # 去重保序
             asset = assets_by_uri.get(url)
             if asset is None:
                 asset_type = self._classify_link_asset_type(url)
                 if asset_type is None:
-                    # 普通网页链接，不创建 Asset
+                    # 普通网页链接，不创Asset
                     link_urls.append(url)
                     continue
                 asset = Asset(
@@ -415,28 +379,26 @@ class XlsxParser(DocumentParser):
                     asset_type=asset_type,
                     original_uri=url,
                     storage_uri=None,
-                    mime_type=guess_mime(url, asset_type),
                     status=AssetStatus.ready,
                     extracted_text=None,
                     metadata={
                         "source": "xlsx_cell",
+                        "mime_type": guess_mime(url, asset_type),
                         "sheet_name": sheet_name,
                         "cell": coordinate,
                     },
                 )
                 assets.append(asset)
                 assets_by_uri[url] = asset
-            asset_ids.append(asset.asset_id)
-        return asset_ids, link_urls
+            asset_data_list.append(
+                AssetData(placeholder="", asset_id=asset.asset_id)
+            )
+        return asset_data_list, link_urls
 
     @staticmethod
     def _classify_link_asset_type(url: str) -> AssetType | None:
-        """根据 URL 判断链接的资源类型。
-
-        优先级：视频 > 图片 > 附件 > 普通网页。
-        普通网页返回 None，不创建 Asset，只记录到 metadata.link_urls。
-        与 Markdown/DOCX 解析器的 _classify_link_url() 行为一致。
-        """
+        """根据 URL 判断链接的资源类型
+        优先级：视频 > 图片 > 附件 > 普通网页        普通网页返None，不创建 Asset，只记录metadata.link_urls        Markdown/DOCX 解析器的 _classify_link_url() 行为一致        """
         if is_video_url(url):
             return AssetType.video_link
 
@@ -447,23 +409,20 @@ class XlsxParser(DocumentParser):
         if is_attachment_url(url):
             return AssetType.document_link
 
-        # 普通网页链接，不创建 Asset
+        # 普通网页链接，不创Asset
         return None
 
-    # ── 区域检测 ────────────────────────────────────────────────────
+    # ── 区域检────────────────────────────────────────────────────
 
     @staticmethod
     def _find_regions(cells: dict[tuple[int, int], _CellInfo]) -> list[_Region]:
-        """从单元格集合中检测连续的数据区域。
-
+        """从单元格集合中检测连续的数据区域
         使用 occupied_rows 映射（dict[int, set[int]]）快速跳过空候选区域，
-        避免笛卡尔积产生的无效遍历。
-        """
+        避免笛卡尔积产生的无效遍历        """
         if not cells:
             return []
 
-        # 预构建 row → 该行所有有数据的列的集合
-        occupied_rows: dict[int, set[int]] = {}
+        # 预构row 该行所有有数据的列的集        occupied_rows: dict[int, set[int]] = {}
         for row, col in cells:
             occupied_rows.setdefault(row, set()).add(col)
 
@@ -493,16 +452,13 @@ class XlsxParser(DocumentParser):
         cleaned.pop("raw_content", None)
         doc.metadata = cleaned
 
-# ── 内部解析状态 ────────────────────────────────────────────────────
+# ── 内部解析状────────────────────────────────────────────────────
 
 
 @dataclass
 class _XlsxParseState(_BaseParseState):
-    """维护 XLSX 解析过程中生成元素的顺序和标题路径。
-
-    继承 _BaseParseState 的 doc_id、doc_version、elements、_seq、
-    _section_path 和 _next_seq() 方法。
-    """
+    """维护 XLSX 解析过程中生成元素的顺序和标题路径
+    继承 _BaseParseState doc_id、doc_version、elements、_seq    _section_path _next_seq() 方法    """
 
     def add_sheet_title(self, sheet_name: str, sheet_index: int) -> None:
         """为每个工作表添加标题元素。"""
@@ -532,21 +488,24 @@ class _XlsxParseState(_BaseParseState):
         assets_by_uri: dict[str, Asset],
         assets: list[Asset] | None = None,
     ) -> None:
-        """为多行多列区域创建表格元素（首行为标题）。"""
+        """为多行多列区域创建表格元素，首行作为标题。"""
         headers = [
             self._cell(cells, region.min_row, col).text
             for col in range(region.min_col, region.max_col + 1)
         ]
         header_cells = []
         rows = []
-        asset_ids: list[str] = []
+        asset_data_list: list[AssetData] = []
         for col in range(region.min_col, region.max_col + 1):
             cell = self._cell(cells, region.min_row, col)
-            asset_ids.extend(cell.asset_ids)
+            asset_data_list.extend(cell.asset_data)
             header_cells.append(
                 {
                     "text": cell.text,
-                    "asset_ids": list(cell.asset_ids),
+                    "asset_data": [
+                        ad.model_dump(mode="json")
+                        for ad in cell.asset_data
+                    ],
                     "metadata": cell.metadata,
                 }
             )
@@ -554,11 +513,14 @@ class _XlsxParseState(_BaseParseState):
             row_cells = []
             for col in range(region.min_col, region.max_col + 1):
                 cell = self._cell(cells, row, col)
-                asset_ids.extend(cell.asset_ids)
+                asset_data_list.extend(cell.asset_data)
                 row_cells.append(
                     {
                         "text": cell.text,
-                        "asset_ids": list(cell.asset_ids),
+                        "asset_data": [
+                            ad.model_dump(mode="json")
+                            for ad in cell.asset_data
+                        ],
                         "metadata": cell.metadata,
                     }
                 )
@@ -577,8 +539,7 @@ class _XlsxParseState(_BaseParseState):
                 },
             }
         }
-        # 汇总表格级 link_urls 和 links（从单元格 metadata 聚合）
-        table_link_urls: list[str] = []
+        # 汇总表格级 link_urls links（从单元metadata 聚合        table_link_urls: list[str] = []
         table_links: list[dict[str, str]] = []
         seen_urls: set[str] = set()
         all_cells = header_cells + [c for row in rows for c in row["cells"]]
@@ -597,7 +558,7 @@ class _XlsxParseState(_BaseParseState):
             structured["links"] = table_links
 
         text = self._table_text(headers, rows)
-        unique_asset_ids = list(dict.fromkeys(asset_ids))
+        unique_asset_data = list({ad.asset_id: ad for ad in asset_data_list}.values())
         element_kwargs: dict[str, Any] = {
             "doc_id": self.doc_id,
             "doc_version": self.doc_version,
@@ -605,7 +566,7 @@ class _XlsxParseState(_BaseParseState):
             "element_type": ElementType.table,
             "text": text,
             "structured_data": structured,
-            "asset_ids": unique_asset_ids,
+            "asset_data": unique_asset_data,
             "source_location": SourceLocation(
                 section_path=list(self._section_path),
                 table_path=[
@@ -656,7 +617,7 @@ class _XlsxParseState(_BaseParseState):
                     sequence_order=self._next_seq(),
                     element_type=ElementType.paragraph,
                     text=cell.text,
-                    asset_ids=list(cell.asset_ids),
+                    asset_data=list(cell.asset_data),
                     source_location=SourceLocation(
                         section_path=list(self._section_path),
                         table_path=[
@@ -680,7 +641,7 @@ class _XlsxParseState(_BaseParseState):
     def _cell(
         cells: dict[tuple[int, int], _CellInfo], row: int, col: int,
     ) -> _CellInfo:
-        """安全获取单元格信息，缺失时返回空 _CellInfo。"""
+        """安全获取单元格信息，缺失时返回空的 _CellInfo。"""
         coordinate = f"{get_column_letter(col)}{row}"
         return cells.get((row, col)) or _CellInfo(
             row=row, col=col, coordinate=coordinate,
@@ -702,25 +663,20 @@ class _XlsxParseState(_BaseParseState):
         assets_by_uri: dict[str, Asset],
         assets: list[Asset] | None = None,
     ) -> None:
-        """将元素的 asset_ids 关联的 Asset 回链 source_element_id。
-
-        遍历 assets_by_uri（链接资源）和 assets（嵌入图片等），
-        确保所有类型的 Asset 都能关联到对应元素。
-        """
-        linked = set(element.asset_ids)
+        """通过 asset_id 将元素关联资源回填到 Asset.element_id。"""
+        asset_ids = {ad.asset_id for ad in element.asset_data}
         for asset in assets_by_uri.values():
-            if asset.asset_id in linked and not asset.source_element_id:
-                asset.source_element_id = element.element_id
+            if asset.asset_id in asset_ids and not asset.element_id:
+                asset.element_id = element.element_id
         if assets:
             for asset in assets:
-                if asset.asset_id in linked and not asset.source_element_id:
-                    asset.source_element_id = element.element_id
+                if asset.asset_id in asset_ids and not asset.element_id:
+                    asset.element_id = element.element_id
 
 
 def _group_contiguous(values: list[int]) -> list[tuple[int, int]]:
-    """将整数列表按连续性分组。
-
-    例：[1, 2, 3, 5, 6] → [(1, 3), (5, 6)]
+    """将整数列表按连续性分组
+    例：[1, 2, 3, 5, 6] [(1, 3), (5, 6)]
     """
     if not values:
         return []

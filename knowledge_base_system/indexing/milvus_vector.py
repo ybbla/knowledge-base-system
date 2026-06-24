@@ -1,7 +1,8 @@
 """Milvus 稠密向量索引与 Collection 管理器。
 
-MilvusCollectionManager 统一管理 Milvus 连接、Collection 创建、Schema 迁移和 upsert 合并。
+MilvusCollectionManager 统一管理 Milvus 连接、Collection 加载和 upsert 合并。
 MilvusVectorIndex 基于 HNSW + COSINE 实现稠密向量相似度检索。
+Collection 和索引由 scripts/setup_services.py 一次性创建，本模块只加载已有 Collection。
 
 辅助函数：
 - _json_dumps: 将 Python 值序列化为 JSON 字符串（Milvus VARCHAR 字段存储用）
@@ -11,7 +12,6 @@ MilvusVectorIndex 基于 HNSW + COSINE 实现稠密向量相似度检索。
 
 import json
 import logging
-import time
 from typing import Any
 
 from app.core.config import settings
@@ -20,7 +20,7 @@ from indexing.base import VectorIndex
 logger = logging.getLogger(__name__)
 
 DENSE_DIM = 1024
-JSON_TEXT_FIELDS = {"source_refs", "asset_refs", "metadata"}
+JSON_TEXT_FIELDS = {"source_refs", "metadata"}
 
 
 def _json_dumps(value: Any) -> str:
@@ -51,10 +51,7 @@ def _default_entity(chunk_id: str) -> dict[str, Any]:
         "knowledge_type": "",
         "status": "active",
         "source_refs": "[]",
-        "asset_refs": "[]",
         "metadata": "{}",
-        "created_at": int(time.time()),
-        "updated_at": int(time.time()),
     }
 
 
@@ -95,92 +92,19 @@ class MilvusCollectionManager:
         connections.connect(alias=self.alias, host=self.host, port=str(self.port))
 
     def ensure_collection(self) -> None:
-        """确保 Collection 存在且 Schema 兼容，否则自动创建或重建。
+        """加载已有 Collection（由 setup_services.py 预先创建）。
 
-        Schema 兼容性检查：缺少 status 字段 / 缺少 title 字段 /
-        sparse_vector 索引非 BM25 度量 → 自动删除并重建。
+        Collection 不存在时抛出 RuntimeError，提示先运行初始化脚本。
         """
         self.connect()
-        from pymilvus import (Collection, CollectionSchema, DataType, FieldSchema,
-                              Function, FunctionType, utility)
+        from pymilvus import Collection, utility
 
-        if utility.has_collection(self.collection_name, using=self.alias):
-            self.collection = Collection(self.collection_name, using=self.alias)
-            # ── Schema 迁移检测：不含 title 字段或 sparse_vector 索引非 BM25 则重建 ──
-            existing_fields = {f.name for f in self.collection.schema.fields}
-            sparse_has_bm25 = False
-            for idx in getattr(self.collection, "indexes", []) or []:
-                if getattr(idx, "field_name", "") == "sparse_vector":
-                    if getattr(idx, "params", {}).get("metric_type") == "BM25":
-                        sparse_has_bm25 = True
-                    break
-            if "status" not in existing_fields or not sparse_has_bm25 or "title" not in existing_fields:
-                logger.warning(
-                    "Milvus Collection '%s' schema 不兼容（缺少 status/BM25/title），自动重建...",
-                    self.collection_name,
-                )
-                utility.drop_collection(self.collection_name, using=self.alias)
-                self.collection = None
-            else:
-                self.ensure_sparse_index()
-                self.collection.load()
-                return
-
-        fields = [
-            FieldSchema(
-                name="chunk_id",
-                dtype=DataType.VARCHAR,
-                is_primary=True,
-                max_length=128,
-            ),
-            FieldSchema(name="doc_id", dtype=DataType.VARCHAR, max_length=128),
-            FieldSchema(name="title", dtype=DataType.VARCHAR, max_length=512),
-            FieldSchema(
-                name="content",
-                dtype=DataType.VARCHAR,
-                max_length=65535,
-                enable_analyzer=True,
-                analyzer_params={"type": "chinese"},
-            ),
-            FieldSchema(name="dense_vector", dtype=DataType.FLOAT_VECTOR, dim=DENSE_DIM),
-            FieldSchema(name="sparse_vector", dtype=DataType.SPARSE_FLOAT_VECTOR),
-            FieldSchema(name="category", dtype=DataType.VARCHAR, max_length=256),
-            FieldSchema(name="knowledge_type", dtype=DataType.VARCHAR, max_length=64),
-            FieldSchema(name="status", dtype=DataType.VARCHAR, max_length=32),
-            FieldSchema(name="source_refs", dtype=DataType.VARCHAR, max_length=65535),
-            FieldSchema(name="asset_refs", dtype=DataType.VARCHAR, max_length=65535),
-            FieldSchema(name="metadata", dtype=DataType.VARCHAR, max_length=65535),
-            FieldSchema(name="created_at", dtype=DataType.INT64),
-            FieldSchema(name="updated_at", dtype=DataType.INT64),
-        ]
-        # BM25 Function：content 自动生成 sparse_vector
-        bm25_func = Function(
-            name="bm25",
-            function_type=FunctionType.BM25,
-            input_field_names=["content"],
-            output_field_names="sparse_vector",
-        )
-        schema = CollectionSchema(
-            fields,
-            description="知识库知识块混合检索索引（HNSW + BM25）",
-            functions=[bm25_func],
-        )
-        self.collection = Collection(
-            self.collection_name,
-            schema=schema,
-            using=self.alias,
-        )
-        self.collection.create_index(
-            "dense_vector",
-            {
-                "index_type": "HNSW",
-                "metric_type": "COSINE",
-                "params": {
-                    "M": settings.milvus_hnsw_M,
-                    "efConstruction": settings.milvus_hnsw_ef_construction,
-                },
-            },
-        )
+        if not utility.has_collection(self.collection_name, using=self.alias):
+            raise RuntimeError(
+                f"Milvus Collection '{self.collection_name}' 不存在，"
+                f"请先运行: python scripts/setup_services.py"
+            )
+        self.collection = Collection(self.collection_name, using=self.alias)
         self.ensure_sparse_index()
         self.collection.load()
 
@@ -213,6 +137,27 @@ class MilvusCollectionManager:
         """更新单条知识块的标量字段（转为批量调用）。"""
         self.upsert_fields_batch([(chunk_id, fields)])
 
+    def _load_existing_entities(self, chunk_ids: list[str]) -> None:
+        """将 Milvus 已有实体加载到缓存，避免局部更新覆盖原向量和正文。"""
+        missing_ids = [chunk_id for chunk_id in chunk_ids if chunk_id not in self._cache]
+        if not missing_ids:
+            return
+        if self.collection is None:
+            raise RuntimeError("Milvus collection is not initialized")
+
+        quoted_ids = ", ".join(
+            f'"{_escape_expr_value(chunk_id)}"'
+            for chunk_id in missing_ids
+        )
+        rows = self.collection.query(
+            expr=f"chunk_id in [{quoted_ids}]",
+            output_fields=list(_default_entity("").keys()),
+        )
+        for row in rows or []:
+            chunk_id = str(row.get("chunk_id", ""))
+            if chunk_id:
+                self._cache[chunk_id] = dict(row)
+
     def upsert_fields_batch(self, items: list[tuple[str, dict[str, Any]]]) -> None:
         if not items:
             return
@@ -220,12 +165,19 @@ class MilvusCollectionManager:
         if self.collection is None:
             raise RuntimeError("Milvus collection is not initialized")
 
+        # 进程重启后内存缓存为空。局部更新前必须先读取原实体，否则默认值会把
+        # dense_vector、content 等未更新字段覆盖为空值。
+        self._load_existing_entities([chunk_id for chunk_id, _ in items])
+
         # sparse_vector 是 BM25 Function 自动生成的输出字段，不能手动写入
         _FUNCTION_OUTPUT_FIELDS = {"sparse_vector"}
 
         entities = []
         for chunk_id, fields in items:
-            entity = dict(self._cache.get(chunk_id) or _default_entity(chunk_id))
+            cached = self._cache.get(chunk_id)
+            if cached is None and "dense_vector" not in fields:
+                raise KeyError(f"Milvus 中不存在待局部更新的知识块: {chunk_id}")
+            entity = dict(cached or _default_entity(chunk_id))
             entity.update(fields)
             # 移除 Function 输出字段——它们由 Milvus 自动生成
             for f in _FUNCTION_OUTPUT_FIELDS:
@@ -310,8 +262,6 @@ class MilvusVectorIndex(VectorIndex):
             "category": str(metadata.get("category", "")),
             "knowledge_type": str(metadata.get("knowledge_type", "")),
             "status": str(metadata.get("status", "active")),
-            "created_at": metadata.get("created_at", int(time.time())),
-            "updated_at": metadata.get("updated_at", int(time.time())),
         }
         for key in JSON_TEXT_FIELDS:
             fields[key] = _json_dumps(metadata.get(key, {} if key == "metadata" else []))
@@ -329,11 +279,10 @@ class MilvusVectorIndex(VectorIndex):
         """批量更新 Milvus 中标量字段。"""
         self._manager.upsert_fields_batch(items)
 
-    # Milvus 检索返回的完整标量字段列表（使 retrieval pipeline 无需查询 PG）
+    # Milvus 检索返回的标量字段（检索 pipeline 实际使用的字段）
     _SEARCH_OUTPUT_FIELDS = [
         "chunk_id", "doc_id", "title", "content", "category",
-        "knowledge_type", "status", "source_refs", "asset_refs",
-        "metadata", "created_at", "updated_at",
+        "knowledge_type", "source_refs", "metadata",
     ]
 
     def search(

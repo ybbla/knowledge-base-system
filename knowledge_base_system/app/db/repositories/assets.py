@@ -17,14 +17,13 @@ class PgAssetStore(BaseRepository):
         return DbAsset(
             asset_id=asset.asset_id,
             doc_id=asset.doc_id,
-            source_element_id=asset.source_element_id,
+            element_id=asset.element_id,
+            doc_version=asset.doc_version,
             asset_type=asset.asset_type.value,
             original_uri=asset.original_uri,
             storage_uri=asset.storage_uri,
-            mime_type=asset.mime_type,
             content_hash=asset.content_hash,
             created_at=asset.created_at,
-            updated_at=asset.updated_at,
             status=asset.status.value,
             extracted_text=asset.extracted_text,
             error_message=asset.error_message,
@@ -36,14 +35,13 @@ class PgAssetStore(BaseRepository):
         return Asset(
             asset_id=db_asset.asset_id,
             doc_id=db_asset.doc_id,
-            source_element_id=db_asset.source_element_id,
+            element_id=db_asset.element_id,
+            doc_version=db_asset.doc_version,
             asset_type=AssetType(db_asset.asset_type),
             original_uri=db_asset.original_uri,
             storage_uri=db_asset.storage_uri,
-            mime_type=db_asset.mime_type,
             content_hash=db_asset.content_hash,
             created_at=db_asset.created_at,
-            updated_at=db_asset.updated_at,
             status=AssetStatus(db_asset.status),
             extracted_text=db_asset.extracted_text,
             error_message=db_asset.error_message,
@@ -70,6 +68,17 @@ class PgAssetStore(BaseRepository):
         with self._session() as session:
             db_assets = session.query(DbAsset).filter_by(doc_id=doc_id).all()
             return [self._from_db(db_asset) for db_asset in db_assets]
+
+    def delete_by_doc_id(self, doc_id: str) -> int:
+        """物理删除指定文档的全部资源元数据，并返回删除数量。"""
+        with self._session() as session:
+            deleted = (
+                session.query(DbAsset)
+                .filter_by(doc_id=doc_id)
+                .delete(synchronize_session=False)
+            )
+            session.commit()
+            return int(deleted)
 
     def delete(self, asset_id: str) -> None:
         """按资源 ID 物理删除资源。"""

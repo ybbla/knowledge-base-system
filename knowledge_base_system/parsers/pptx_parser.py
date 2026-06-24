@@ -1,8 +1,5 @@
-"""PPTX 演示文稿解析器。
-
-使用 python-pptx 将 .pptx 文件解析为统一的 ParsedElement 和 Asset，
-支持幻灯片标题、文本形状、列表、表格、图片和超链接资源的提取。
-"""
+"""PPTX 演示文稿解析器
+使用 python-pptx .pptx 文件解析为统一ParsedElement Asset支持幻灯片标题、文本形状、列表、表格、图片和超链接资源的提取"""
 
 import hashlib
 import io
@@ -13,6 +10,7 @@ from typing import Any
 
 from app.core.models import (
     Asset,
+    AssetData,
     AssetStatus,
     AssetType,
     Document,
@@ -27,14 +25,14 @@ from parsers.utils import classify_link, guess_mime
 
 @dataclass
 class _AssetRecord:
-    """内部 Asset 记录，含去重用的查询键。"""
+    """内部资源记录，包含 Asset 和去重键。"""
     asset: Asset
     key: tuple[str, str]
 
 
 @dataclass
 class _ShapeRecord:
-    """形状记录，含排序用的位置和索引信息。"""
+    """形状记录，包含排序所需的位置和索引。"""
     shape: Any
     index: int
     left: int
@@ -56,7 +54,7 @@ class _PptxParseState:
     link_urls: list[str] = field(default_factory=list)  # 普通网页链接（与其他解析器一致）
 
     def next_seq(self) -> int:
-        """生成递增的序号。"""
+        """生成递增的元素序号。"""
         self.seq += 1
         return self.seq
 
@@ -70,8 +68,7 @@ class _PptxParseState:
 class PptxParser(DocumentParser):
     """将 PPTX 演示文稿解析为统一的 ParsedElement 和 Asset。
 
-    支持的 source_type：pptx。
-    按幻灯片顺序处理形状，识别标题占位符、列表、表格和嵌入图片。
+    按幻灯片顺序处理标题、列表、表格、图片和链接资源。
     """
 
     SUPPORTED_TYPES = {"pptx"}
@@ -90,7 +87,7 @@ class PptxParser(DocumentParser):
         return source_type.lower() in self.SUPPORTED_TYPES
 
     def parse(self, doc: Document, content: bytes | str) -> ParseResult:
-        """主解析入口：将 PPTX 文档解析为结构化元素和资源列表。"""
+        """将 PPTX 文档解析为结构化元素和资源列表。"""
         if isinstance(content, str):
             content = content.encode("utf-8")
         if not content:
@@ -99,7 +96,7 @@ class PptxParser(DocumentParser):
         try:
             from pptx import Presentation
         except ImportError as exc:
-            raise RuntimeError("PPTX 解析失败：缺少 python-pptx 依赖") from exc
+            raise RuntimeError("PPTX 解析失败：缺python-pptx 依赖") from exc
 
         try:
             presentation = Presentation(io.BytesIO(content))
@@ -128,14 +125,14 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> None:
-        """处理单个幻灯片：识别标题，然后按顺序处理其余形状。"""
+        """处理单张幻灯片：识别标题后按顺序处理其余形状。"""
         shape_records = self._shape_records(slide)
         title_record = self._find_title_shape(shape_records)
         title_text = (
             self._shape_text(title_record.shape)
             if title_record is not None
             else ""
-        ) or f"幻灯片 {slide_index}"
+        ) or f"幻灯{slide_index}"
 
         state.section_path = [title_text]
         self._append_element(
@@ -173,7 +170,7 @@ class PptxParser(DocumentParser):
                 self._add_unknown(record, slide_index, state)
 
     def _shape_records(self, slide: Any) -> list[_ShapeRecord]:
-        """按 (top, left, index) 排序收集幻灯片中的所有形状。"""
+        """按顶部、左侧和原始序号收集并排序形状。"""
         records: list[_ShapeRecord] = []
         for index, shape in enumerate(slide.shapes):
             records.append(
@@ -189,10 +186,8 @@ class PptxParser(DocumentParser):
         return sorted(records, key=lambda item: (item.top, item.left, item.index))
 
     def _find_title_shape(self, records: list[_ShapeRecord]) -> _ShapeRecord | None:
-        """定位幻灯片的标题形状。
-
-        优先匹配 TITLE/CENTER_TITLE 占位符类型，其次选首个有文本的形状。
-        """
+        """定位幻灯片的标题形状
+        优先匹配 TITLE/CENTER_TITLE 占位符类型，其次选首个有文本的形状        """
         for record in records:
             if not self._shape_has_text(record.shape):
                 continue
@@ -212,7 +207,7 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> None:
-        """处理文本形状：区分列表和普通段落。"""
+        """处理文本形状，并区分列表和普通段落。"""
         paragraphs = self._paragraphs(record.shape)
         if not paragraphs:
             return
@@ -246,7 +241,7 @@ class PptxParser(DocumentParser):
                         )
                     )
                 )
-                state.consume_link_urls()  # 列表项中的普通网页链接丢弃（与 DOCX 一致）
+                state.consume_link_urls()  # 列表项中的普通网页链接丢弃（DOCX 一致）
                 self._append_element(
                     state,
                     ParsedElement(
@@ -256,7 +251,7 @@ class PptxParser(DocumentParser):
                         sequence_order=state.next_seq(),
                         element_type=ElementType.paragraph,
                         text=paragraph["text"],
-                        asset_ids=asset_ids,
+                        asset_data=self._asset_data_from_ids(asset_ids, state),
                         source_location=SourceLocation(section_path=list(state.section_path)),
                         metadata={
                             **self._slide_metadata(slide_index),
@@ -290,7 +285,7 @@ class PptxParser(DocumentParser):
                 sequence_order=state.next_seq(),
                 element_type=ElementType.paragraph,
                 text=text,
-                asset_ids=asset_ids,
+                asset_data=self._asset_data_from_ids(asset_ids, state),
                 structured_data={"links": links} if links else None,
                 source_location=SourceLocation(section_path=list(state.section_path)),
                 metadata=metadata,
@@ -304,13 +299,11 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> None:
-        """处理表格形状，生成结构化表格元素。
-
-        处理流程：
-        1. 遍历单元格，通过文本正则提取 URL 并创建 Asset
+        """处理表格形状，生成结构化表格元素
+        处理流程        1. 遍历单元格，通过文本正则提取 URL 并创Asset
         2. 收集表格形状级超链接（click_action）和各单元格运行级超链接
         3. 将普通网页链接记录到 metadata.link_urls
-        4. 将链接信息写入 structured_data.links
+        4. 将链接信息写structured_data.links
         """
         table = record.shape.table
         rows: list[list[dict[str, Any]]] = []
@@ -329,13 +322,12 @@ class PptxParser(DocumentParser):
                     state,
                     doc,
                 )
-                # 收集本单元格产生的普通网页链接
-                link_urls.extend(state.consume_link_urls())
+                # 收集本单元格产生的普通网页链                link_urls.extend(state.consume_link_urls())
                 asset_ids.extend(cell_asset_ids)
                 cells.append(
                     {
                         "text": text,
-                        "asset_ids": cell_asset_ids,
+                        "asset_data": [ad.model_dump() for ad in self._asset_data_from_ids(cell_asset_ids, state)],
                         "metadata": {
                             "row": row_index,
                             "column": col_index,
@@ -349,7 +341,7 @@ class PptxParser(DocumentParser):
         if not rows:
             return
 
-        # ── 收集表格内运行级超链接 ──
+        # ── 收集表格内运行级超链──
         table_hyperlink_urls: list[str] = []
         for row in table.rows:
             for cell in row.cells:
@@ -373,7 +365,7 @@ class PptxParser(DocumentParser):
                                     "link_type": classify_link(addr),
                                 })
 
-        # ── 单元格文本中内嵌的 URL（正则匹配，非超链接） ──
+        # ── 单元格文本中内嵌URL（正则匹配，非超链接──
         seen_hyperlink_urls = set(table_hyperlink_urls)
         for row in table.rows:
             for cell in row.cells:
@@ -404,7 +396,7 @@ class PptxParser(DocumentParser):
                 "link_type": classify_link(addr),
             })
 
-        # 创建超链接 Asset，同时普通网页链接进入 state.link_urls
+        # 创建超链Asset，同时普通网页链接进state.link_urls
         table_asset_ids = self._asset_ids_for_urls(
             table_hyperlink_urls,
             record, slide_index, state, doc,
@@ -412,8 +404,7 @@ class PptxParser(DocumentParser):
         )
         asset_ids.extend(table_asset_ids)
 
-        # 收尾：合并本表格产生的所有普通网页链接
-        link_urls.extend(state.consume_link_urls())
+        # 收尾：合并本表格产生的所有普通网页链        link_urls.extend(state.consume_link_urls())
 
         headers = [cell["text"] for cell in rows[0]]
         data_rows = [{"cells": row} for row in rows[1:]]
@@ -455,7 +446,7 @@ class PptxParser(DocumentParser):
                 element_type=ElementType.table,
                 text="\n".join(part for part in text_parts if part.strip()),
                 structured_data=structured,
-                asset_ids=list(dict.fromkeys(asset_ids)),
+                asset_data=self._asset_data_from_ids(list(dict.fromkeys(asset_ids)), state),
                 source_location=SourceLocation(section_path=list(state.section_path)),
                 metadata=metadata,
             ),
@@ -468,7 +459,7 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> None:
-        """处理图片形状，创建 image Asset 和对应的 ParsedElement。"""
+        """处理图片形状，创建图片 Asset 和对应元素。"""
         image = record.shape.image
         data = image.blob
         content_hash = f"sha256:{hashlib.sha256(data).hexdigest()}"
@@ -481,13 +472,13 @@ class PptxParser(DocumentParser):
                 asset_type=AssetType.image,
                 original_uri=f"pptx://{doc.doc_id}/slide/{slide_index}/media/{filename}",
                 storage_uri=None,
-                mime_type=image.content_type or guess_mime(filename, AssetType.image),
                 content_hash=content_hash,
                 status=AssetStatus.ready,
                 extracted_text=None,
                 metadata={
                     **self._slide_metadata(slide_index),
                     **self._shape_metadata(record),
+                    "mime_type": image.content_type or guess_mime(filename, AssetType.image),
                     "file_name": filename,
                     "source": "pptx_image",
                 },
@@ -507,16 +498,16 @@ class PptxParser(DocumentParser):
         links = self._collect_shape_links(
             record, slide_index, state, doc, image_filename=filename,
         )
-        state.consume_link_urls()  # 图片元素不记录 link_urls（链接已在 structured_data 中）
+        state.consume_link_urls()  # 图片属于附属资源，不记录 link_urls
         self._append_element(
             state,
             ParsedElement(
                 doc_id=state.doc_id,
                 doc_version=state.doc_version,
                 sequence_order=state.next_seq(),
-                element_type=ElementType.image,
+                element_type=ElementType.paragraph,
                 text=f"[图片: {filename}]",
-                asset_ids=element_asset_ids,
+                asset_data=self._asset_data_from_ids(element_asset_ids, state),
                 structured_data={"links": links} if links else None,
                 source_location=SourceLocation(section_path=list(state.section_path)),
                 metadata={
@@ -533,7 +524,7 @@ class PptxParser(DocumentParser):
         slide_index: int,
         state: _PptxParseState,
     ) -> None:
-        """为不支持的形状类型（图表、OLE 等）添加占位元素。"""
+        """为图表、OLE 等不支持的形状添加占位元素。"""
         self._append_element(
             state,
             ParsedElement(
@@ -558,7 +549,7 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> list[str]:
-        """从文本中识别 URL 并创建对应的 Asset。"""
+        """从文本中识别 URL 并创建对应资源。"""
         urls = [match.group(0) for match in self.HTTP_URL_RE.finditer(text or "")]
         return self._asset_ids_for_urls(urls, record, slide_index, state, doc, "pptx_text")
 
@@ -569,7 +560,7 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> list[str]:
-        """从形状和文本运行中的超链接创建 Asset。"""
+        """从形状和文本运行中的超链接创建资源。"""
         urls: list[str] = []
         try:
             address = record.shape.click_action.hyperlink.address
@@ -605,22 +596,13 @@ class PptxParser(DocumentParser):
         doc: Document,
         image_filename: str = "",
     ) -> list[dict[str, str]]:
-        """收集形状中所有超链接的 {text, url, link_type} 信息。
-
-        参数：
-            record: 形状记录。
-            slide_index: 幻灯片索引。
-            state: 解析状态。
-            doc: 文档对象。
-            image_filename: 图片形状的文件名，用于 _shape_text() 返回空时
-                           作为链接文字 fallback。
-
-        返回：
-            链接信息列表，每项包含 text、url、link_type 三个字段。
-        """
+        """收集形状中所有超链接{text, url, link_type} 信息
+        参数            record: 形状记录            slide_index: 幻灯片索引            state: 解析状态            doc: 文档对象            image_filename: 图片形状的文件名，用_shape_text() 返回空时
+                           作为链接文字 fallback
+        返回            链接信息列表，每项包text、url、link_type 三个字段        """
         links: list[dict[str, str]] = []
 
-        # ── 形状级超链接（click_action.hyperlink） ──
+        # ── 形状级超链接（click_action.hyperlink──
         try:
             address = record.shape.click_action.hyperlink.address
         except Exception:
@@ -634,7 +616,7 @@ class PptxParser(DocumentParser):
                     "link_type": classify_link(address),
                 })
 
-        # ── 运行级超链接（run.hyperlink） ──
+        # ── 运行级超链接（run.hyperlink──
         if self._shape_has_text(record.shape):
             for paragraph in record.shape.text_frame.paragraphs:
                 for run in paragraph.runs:
@@ -662,11 +644,8 @@ class PptxParser(DocumentParser):
         doc: Document,
         source: str,
     ) -> list[str]:
-        """为一批 URL 创建 Asset 并返回 ID 列表。
-
-        普通网页链接（classify_link 返回 "url"）不创建 Asset，
-        但记录到 state.link_urls，与其他解析器行为一致。
-        """
+        """为一URL 创建 Asset 并返ID 列表
+        普通网页链接（classify_link 返回 "url"）不创建 Asset        但记录到 state.link_urls，与其他解析器行为一致        """
         asset_ids: list[str] = []
         for url in dict.fromkeys(urls):
             asset_type = self._asset_type_for_url(url)
@@ -695,7 +674,7 @@ class PptxParser(DocumentParser):
         doc: Document,
         metadata: dict[str, Any],
     ) -> Asset:
-        """创建或查找已有 Asset（按 URL + 类型去重）。"""
+        """创建或复用 Asset，按 URL 和资源类型去重。"""
         key = (asset_type.value, url)
         existing = state.assets_by_key.get(key)
         if existing is not None:
@@ -706,22 +685,29 @@ class PptxParser(DocumentParser):
             asset_type=asset_type,
             original_uri=url,
             storage_uri=None,
-            mime_type=guess_mime(url, asset_type),
             status=AssetStatus.ready,
             extracted_text=None,
-            metadata=metadata,
+            metadata={**metadata, "mime_type": guess_mime(url, asset_type)},
         )
         state.assets.append(asset)
         state.assets_by_key[key] = _AssetRecord(asset=asset, key=key)
         return asset
 
+    def _asset_data_from_ids(
+        self,
+        asset_ids: list[str],
+        state: _PptxParseState,
+    ) -> list[AssetData]:
+        """将 asset_id 列表转换为 AssetData 列表。"""
+        return [AssetData(placeholder="", asset_id=aid) for aid in asset_ids]
+
     @staticmethod
     def _append_element(state: _PptxParseState, element: ParsedElement) -> None:
-        """添加元素并回链 Asset 的 source_element_id。"""
-        linked = set(element.asset_ids)
+        """添加元素，并通过 asset_id 回填 Asset.element_id。"""
+        linked = {ad.asset_id for ad in element.asset_data}
         for record in state.assets_by_key.values():
-            if record.asset.asset_id in linked and not record.asset.source_element_id:
-                record.asset.source_element_id = element.element_id
+            if record.asset.asset_id in linked and not record.asset.element_id:
+                record.asset.element_id = element.element_id
         state.elements.append(element)
 
     def _paragraphs(self, shape: Any) -> list[dict[str, Any]]:
@@ -734,10 +720,8 @@ class PptxParser(DocumentParser):
         return items
 
     def _is_list_shape(self, shape: Any, paragraphs: list[dict[str, Any]]) -> bool:
-        """判断形状内容是否为列表格式。
-
-        依据：多段落 + 有缩进层级，或占位符类型为 BODY。
-        """
+        """判断形状内容是否为列表格式
+        依据：多段落 + 有缩进层级，或占位符类型BODY        """
         if len(paragraphs) <= 1:
             return False
         if any(item["level"] > 0 for item in paragraphs):
@@ -755,14 +739,14 @@ class PptxParser(DocumentParser):
         return bool(getattr(shape, "has_table", False))
 
     def _shape_text(self, shape: Any) -> str:
-        """获取形状的纯文本内容（经空白归一化）。"""
+        """获取形状的纯文本内容并归一化空白。"""
         if not self._shape_has_text(shape):
             return ""
         return self._normalize_text(shape.text)
 
     @staticmethod
     def _normalize_text(text: str) -> str:
-        """将连续空白字符归一化为单个空格并去除首尾空白。"""
+        """将连续空白归一化为单个空格并去除首尾空白。"""
         return re.sub(r"[ \t\r\f\v]+", " ", text or "").strip()
 
     def _is_picture(self, shape: Any) -> bool:
@@ -772,18 +756,18 @@ class PptxParser(DocumentParser):
         return self._shape_type_name(shape) == "PICTURE"
 
     def _is_unsupported_shape(self, shape: Any) -> bool:
-        """判断形状是否为不支持的类型（图表、OLE 等）。"""
+        """判断形状是否为图表、OLE 等不支持的类型。"""
         return self._shape_type_name(shape) in self.UNSUPPORTED_SHAPE_TYPES
 
     @staticmethod
     def _shape_type_name(shape: Any) -> str:
-        """获取形状类型名称（大写字符串）。"""
+        """获取形状类型的大写名称。"""
         value = getattr(shape, "shape_type", "")
         return getattr(value, "name", str(value)).upper()
 
     @staticmethod
     def _placeholder_type_name(shape: Any) -> str:
-        """获取占位符类型名称（大写字符串）。"""
+        """获取占位符类型的大写名称。"""
         if not getattr(shape, "is_placeholder", False):
             return ""
         try:
@@ -807,7 +791,7 @@ class PptxParser(DocumentParser):
         return {"slide_index": slide_index, "slide_number": slide_index}
 
     def _shape_metadata(self, record: _ShapeRecord) -> dict[str, Any]:
-        """生成形状元数据字典（ID、名称、类型、位置等）。"""
+        """生成包含 ID、名称、类型和位置的形状元数据。"""
         shape = record.shape
         return {
             "shape_id": getattr(shape, "shape_id", None),
@@ -822,15 +806,13 @@ class PptxParser(DocumentParser):
         }
 
     def _asset_type_for_url(self, url: str) -> AssetType | None:
-        """根据 URL 模式判断资源类型（使用公共 classify_link 分类）。
-
-        返回 AssetType 用于创建 Asset；普通网页链接返回 None，不创建 Asset。
-        """
+        """根据 URL 模式判断资源类型（使用公classify_link 分类）
+        返回 AssetType 用于创建 Asset；普通网页链接返None，不创建 Asset        """
         kind = classify_link(url)
         return {
             "image": AssetType.image_link,
             "video": AssetType.video_link,
             "audio": AssetType.video_link,
             "document": AssetType.document_link,
-        }.get(kind)  # "url" 不在映射中 → 返回 None
+        }.get(kind)  # "url" 不在映射返回 None
 

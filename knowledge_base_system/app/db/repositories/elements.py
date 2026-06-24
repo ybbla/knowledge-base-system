@@ -3,6 +3,7 @@
 import logging
 
 from app.core.models import (
+    AssetData,
     ElementType,
     ParsedElement,
     SourceLocation,
@@ -27,13 +28,15 @@ class ParsedElementRepository(BaseRepository):
             element_type=el.element_type.value,
             text=el.text,
             structured_data=el.structured_data,
-            asset_ids=el.asset_ids,
+            asset_data=[ad.model_dump(mode="json") for ad in el.asset_data],
             source_location=el.source_location.model_dump(mode="json"),
+            created_at=el.created_at,
             meta=el.metadata,
         )
 
     def _from_db(self, db_el: DbParsedElement) -> ParsedElement:
         """将 ORM 对象 DbParsedElement 还原为领域模型 ParsedElement。"""
+        raw_assets = db_el.asset_data or []
         return ParsedElement(
             element_id=db_el.element_id,
             doc_id=db_el.doc_id,
@@ -43,8 +46,9 @@ class ParsedElementRepository(BaseRepository):
             element_type=ElementType(db_el.element_type),
             text=db_el.text,
             structured_data=db_el.structured_data,
-            asset_ids=db_el.asset_ids or [],
+            asset_data=[AssetData(**raw) for raw in raw_assets],
             source_location=SourceLocation.model_validate(db_el.source_location or {}),
+            created_at=db_el.created_at,
             metadata=db_el.meta or {},
         )
 
@@ -66,3 +70,14 @@ class ParsedElementRepository(BaseRepository):
                 .all()
             )
             return [self._from_db(db_el) for db_el in db_els]
+
+    def delete_by_doc_id(self, doc_id: str) -> int:
+        """物理删除指定文档的全部解析元素，并返回删除数量。"""
+        with self._session() as session:
+            deleted = (
+                session.query(DbParsedElement)
+                .filter_by(doc_id=doc_id)
+                .delete(synchronize_session=False)
+            )
+            session.commit()
+            return int(deleted)

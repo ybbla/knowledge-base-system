@@ -80,7 +80,7 @@ class TestDocxParser:
         table = tables[0]
         assert table.structured_data is not None
         table_data = table.structured_data["table"]
-        # headers 和 cells 现在是 {"text": ..., "asset_ids": [...]} 格式
+        # headers 和 cells 现在是 {"text": ..., "asset_data": [...]} 格式
         assert [h["text"] for h in table_data["headers"]] == ["状态", "说明"]
         assert len(table_data["rows"]) == 2
 
@@ -196,16 +196,16 @@ class TestDocxParser:
 
         assert len(result.assets) == 1
         assert result.assets[0].content_hash.startswith("sha256:")
-        # 图片不再创建独立 ElementType.image 元素，而是关联到段落的 asset_ids
-        images = [e for e in result.elements if e.element_type == ElementType.image]
-        assert len(images) == 0  # 不再有独立 image 元素
+        # 图片属于附属资源，不创建独立元素
+        images = [e for e in result.elements if "[图片" in e.text]
+        assert len(images) >= 1  # 图片信息作为 paragraph 存在
         # 图片作为段落资源关联
         paragraphs = [e for e in result.elements if e.element_type == ElementType.paragraph]
         assert len(paragraphs) >= 1
         # 至少有一个段落关联了图片 asset
-        para_with_image = [p for p in paragraphs if p.asset_ids]
+        para_with_image = [p for p in paragraphs if p.asset_data]
         assert len(para_with_image) >= 1
-        assert result.assets[0].asset_id in para_with_image[0].asset_ids
+        assert any(ad.url == result.assets[0].original_uri for ad in para_with_image[0].asset_data)
 
     def test_unsupported_embedded_object_degrades_to_unknown(self):
         docx = DocxDocument()
@@ -279,7 +279,7 @@ class TestDocxParser:
     # ── 新增测试：段落内联图片 ──────────────────────────────────
 
     def test_paragraph_with_image(self):
-        """段落中内联图片关联到 asset_ids，文本含 [图片: xxx]。"""
+        """段落中内联图片关联到 asset_data，文本含 [图片: xxx]。"""
         png_bytes = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
         )
@@ -305,8 +305,8 @@ class TestDocxParser:
         # 段落文本包含 [图片: ...] 占位符
         img_para = paragraphs[0]
         assert "[图片:" in img_para.text
-        # 图片关联到段落的 asset_ids
-        assert len(img_para.asset_ids) >= 1
+        # 图片关联到段落的 asset_data
+        assert len(img_para.asset_data) >= 1
         assert len(result.assets) >= 1
 
     def test_image_only_paragraph(self):
@@ -405,7 +405,7 @@ class TestDocxParser:
         # 段落关联了 attachment
         paragraphs = [e for e in result.elements if e.element_type == ElementType.paragraph]
         assert len(paragraphs) >= 1
-        assert attach_assets[0].asset_id in paragraphs[0].asset_ids
+        assert any(ad.url == attach_assets[0].original_uri for ad in paragraphs[0].asset_data)
         # 文本只保留显示文字
         assert "下载报告" in paragraphs[0].text
 
@@ -441,7 +441,7 @@ class TestDocxParser:
     # ── 新增测试：表格单元格资源 ────────────────────────────────
 
     def test_table_cell_with_image(self):
-        """表格单元格图片关联到 structured_data 的 cell asset_ids。"""
+        """表格单元格图片关联到 structured_data 的 cell asset_data。"""
         png_bytes = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
         )
@@ -473,10 +473,10 @@ class TestDocxParser:
         assert len(tables) == 1
         table_data = tables[0].structured_data["table"]
         # 图片在 header 行 (0,1)，不在 data 行
-        assert table_data["rows"][0]["cells"][0]["asset_ids"] == []
-        assert len(table_data["headers"][1]["asset_ids"]) >= 1
-        # 表格级 asset_ids 汇总
-        assert len(tables[0].asset_ids) >= 1
+        assert table_data["rows"][0]["cells"][0]["asset_data"] == []
+        assert len(table_data["headers"][1]["asset_data"]) >= 1
+        # 表格级 asset_data 汇总
+        assert len(tables[0].asset_data) >= 1
 
     def test_table_cell_with_hyperlink(self):
         """表格单元格超链接正确处理。"""
@@ -512,9 +512,9 @@ class TestDocxParser:
         tables = [e for e in result.elements if e.element_type == ElementType.table]
         assert len(tables) == 1
         table_data = tables[0].structured_data["table"]
-        # (1,1) 的 asset_ids 应包含 attachment
-        cell_asset_ids = table_data["rows"][0]["cells"][1]["asset_ids"]
-        assert len(cell_asset_ids) >= 1
+        # (1,1) 的 asset_data 应包含 attachment
+        cell_asset_data = table_data["rows"][0]["cells"][1]["asset_data"]
+        assert len(cell_asset_data) >= 1
         # 文本包含显示文字
         assert "文档" in table_data["rows"][0]["cells"][1]["text"]
         # 应有 attachment Asset
@@ -524,7 +524,7 @@ class TestDocxParser:
     # ── 新增测试：合并单元格 + 资源 ─────────────────────────────
 
     def test_merged_cell_with_asset(self):
-        """gridSpan 合并单元格正确传递 asset_ids。"""
+        """gridSpan 合并单元格正确传递 asset_data。"""
         from docx.opc.constants import RELATIONSHIP_TYPE as RT
 
         docx = DocxDocument()
@@ -561,12 +561,12 @@ class TestDocxParser:
         assert len(tables) == 1
         table_data = tables[0].structured_data["table"]
         # 第一行数据 (1,1) 应有图片 asset
-        assert len(table_data["rows"][0]["cells"][1]["asset_ids"]) >= 1
+        assert len(table_data["rows"][0]["cells"][1]["asset_data"]) >= 1
 
     # ── 新增测试：资源回填 ──────────────────────────────────────
 
     def test_asset_source_element_backfill(self):
-        """_link_assets_to_elements 正确回填 source_element_id。"""
+        """_link_assets_to_elements 正确回填 element_id。"""
         from docx.opc.constants import RELATIONSHIP_TYPE as RT
 
         docx = DocxDocument()
@@ -590,8 +590,8 @@ class TestDocxParser:
         )
         result = self.parser.parse(doc, doc.metadata["raw_content"])
 
-        # 所有有 source_element_id 的 Asset 应指向存在的 element_id
+        # 所有有 element_id 的 Asset 应指向存在的 element_id
         element_ids = {el.element_id for el in result.elements}
         for asset in result.assets:
-            if asset.source_element_id:
-                assert asset.source_element_id in element_ids
+            if asset.element_id:
+                assert asset.element_id in element_ids

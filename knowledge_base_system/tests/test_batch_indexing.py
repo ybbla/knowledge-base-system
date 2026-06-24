@@ -143,7 +143,7 @@ def test_ingestion_indexes_chunks_in_limited_batches(monkeypatch):
         chunk_store=chunk_store,
     )
     chunks = [
-        KnowledgeChunk(doc_id="doc_1", title=f"C{idx}", content=f"content {idx}")
+        KnowledgeChunk(title=f"C{idx}", content=f"content {idx}")
         for idx in range(3)
     ]
 

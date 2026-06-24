@@ -8,7 +8,6 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from app.core.errors import LLMError
 from app.core.models import KnowledgeChunk
 from llm.prompts import RERANK_SCHEMA, build_rerank_message
 from llm.volcengine_client import llm_client
@@ -28,13 +27,14 @@ def _score_one(query: str, chunk: KnowledgeChunk) -> dict[str, Any]:
     try:
         messages = build_rerank_message(query, chunk.content)
         result = llm_client.chat_json(messages, schema=RERANK_SCHEMA)
+        score = float(result.get("relevance_score", 0.0))
         return {
             "chunk_id": chunk.chunk_id,
-            "relevance_score": result.get("relevance_score", 0),
+            "relevance_score": max(0.0, min(1.0, score)),
             "reason": result.get("reason", ""),
         }
-    except LLMError:
-        logger.warning("单条打分失败 chunk=%s", chunk.chunk_id)
+    except Exception:
+        logger.warning("单条重排打分失败 chunk=%s", chunk.chunk_id, exc_info=True)
         # 不设 relevance_score，pipeline 会从 score_map 取 RRF 分数
         return {
             "chunk_id": chunk.chunk_id,
@@ -55,7 +55,7 @@ class Reranker:
     ) -> list[dict[str, Any]]:
         """对每条候选独立调用 LLM 打分，并发执行，降序排列。
 
-        Returns list of {chunk_id, relevance_score, reason} sorted by score descending.
+        返回按相关性降序排列的打分条目。
         """
         if not candidates:
             return []

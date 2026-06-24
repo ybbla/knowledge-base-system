@@ -1,5 +1,5 @@
 from app.core.models import Asset, AssetStatus, AssetType
-from assets.image_processor import process_image
+from assets.asset_processor import process_image
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
@@ -8,6 +8,7 @@ PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 class _RecordingAssetStore:
     def __init__(self) -> None:
         self.assets = {}
+        self._store = self.assets  # find_ready_duplicate 通过 _store 遍历内存存储
 
     def put(self, asset):
         self.assets[asset.asset_id] = asset
@@ -32,7 +33,7 @@ def test_process_image_marks_ready_and_hashes():
 
     assert result.status == AssetStatus.ready
     assert result.content_hash.startswith("sha256:")
-    assert result.mime_type == "image/png"
+    assert result.metadata["mime_type"] == "image/png"
     assert store.get(asset.asset_id) is not None
 
 

@@ -1,8 +1,6 @@
-"""PDF 文档解析器。
-
-使用 PyMuPDF (fitz) 将 PDF 文件解析为统一的 ParseResult（ParsedElement + Asset），
-与现有 MarkdownParser、DocxParser、XlsxParser、HtmlParser、PptxParser 的下游契约保持一致。
-"""
+"""PDF 文档解析器
+使用 PyMuPDF (fitz) PDF 文件解析为统一ParseResult（ParsedElement + Asset），
+与现MarkdownParser、DocxParser、XlsxParser、HtmlParser、PptxParser 的下游契约保持一致"""
 
 import hashlib
 import logging
@@ -16,6 +14,7 @@ import fitz
 
 from app.core.models import (
     Asset,
+    AssetData,
     AssetStatus,
     AssetType,
     Document,
@@ -37,18 +36,18 @@ BOLD_TITLE_MIN_SIZE = 12.0              # 粗体标题字号下限
 BOLD_TITLE_MAX_SIZE = 13.0              # 粗体标题字号上限
 MAX_TITLE_CHARS = 80                    # 标题最大字符数
 HEADER_FOOTER_FONT_MAX = 10.0           # 页眉页脚最大字号
-HEADER_FOOTER_Y_MARGIN = 0.15           # 页面顶部/底部比例阈值
+HEADER_FOOTER_Y_MARGIN = 0.15           # 页面顶部和底部的比例阈值
 HEADER_FOOTER_MIN_REPEAT_PAGES = 3      # 页眉页脚最小重复页数
 HEADER_FOOTER_MAX_CHARS = 100           # 页眉页脚最大字符数
 PARAGRAPH_GAP_RATIO = 1.5               # 段落间距倍数（相对行高）
 
 # 页码正则模式
 PAGE_NUMBER_PATTERNS = [
-    re.compile(r"^\d+$"),                        # 纯数字: "42"
+    re.compile(r"^\d+$"),                        # 纯数 "42"
     re.compile(r"^[ivxlcdm]+$", re.IGNORECASE),  # 罗马数字: "iv"
     re.compile(r"^\d+\s*/\s*\d+$"),              # "3/20"
     re.compile(r"^-\s*\d+\s*-$"),                # "- 42 -"
-    re.compile(r"^第\s*\d+\s*页$"),              # 中文: "第3页"
+    re.compile(r"^第\s*\d+\s*页?$"),          # 中文页码
 ]
 
 # 视频 URL 正则（与其他解析器保持一致）
@@ -74,7 +73,7 @@ IMAGE_EXTENSIONS = {
 
 @dataclass
 class _TextBlock:
-    """页面文本块，含完整的字体、位置和 span 级 bbox 信息。"""
+    """页面文本块，包含字体、位置和 span 边界信息。"""
     page: int
     y0: float
     y1: float
@@ -84,13 +83,13 @@ class _TextBlock:
     font_size: float
     is_bold: bool
     bbox: tuple[float, float, float, float]
-    # 每个 span 的 (文本, bbox四元组)，用于与 page.get_links() 的 link rect 做交叉匹配确定锚文本
+    # 每个 span (文本, bbox四元，用于与 page.get_links() link rect 做交叉匹配确定锚文本
     span_bboxes: list[tuple[str, tuple[float, float, float, float]]] = field(default_factory=list)
 
 
 @dataclass
 class _AssetRecord:
-    """内部 Asset 记录，含去重用的查询键。"""
+    """内部资源记录，包含 Asset 和去重键。"""
     asset: Asset
     key: tuple[str, str]
 
@@ -107,7 +106,7 @@ class _PdfParseState:
     seq: int = 0
 
     def next_seq(self) -> int:
-        """生成递增的序号。"""
+        """生成递增的元素序号。"""
         self.seq += 1
         return self.seq
 
@@ -117,8 +116,7 @@ class _PdfParseState:
 class PdfParser(DocumentParser):
     """将 PDF 文档解析为统一的 ParsedElement 和 Asset。
 
-    支持的 source_type：pdf。
-    使用字体启发式和 TOC 双重策略检测标题，自动过滤页眉页脚和页码。
+    使用字体启发式与目录双重策略检测标题，并过滤页眉、页脚和页码。
     """
 
     SUPPORTED_TYPES = {"pdf"}
@@ -127,7 +125,7 @@ class PdfParser(DocumentParser):
         return source_type.lower() in self.SUPPORTED_TYPES
 
     def parse(self, doc: Document, content: bytes | str) -> ParseResult:
-        """主解析入口：将 PDF 解析为结构化元素和资源列表。"""
+        """将 PDF 解析为结构化元素和资源列表。"""
         if isinstance(content, str):
             content = content.encode("utf-8")
         if not content:
@@ -140,7 +138,7 @@ class PdfParser(DocumentParser):
 
         if pdf.is_encrypted:
             pdf.close()
-            raise ValueError("PDF 解析失败：文档已加密，暂不支持加密 PDF")
+            raise ValueError("PDF 解析失败：文档已加密，暂不支持加PDF")
 
         if pdf.page_count == 0:
             pdf.close()
@@ -149,7 +147,7 @@ class PdfParser(DocumentParser):
         state = _PdfParseState(doc.doc_id, doc.version)
 
         try:
-            # 获取 TOC，构建页码到标题的映射
+            # 获取目录并构建页码到标题的映射。
             toc_entries = self._build_toc_map(pdf)
 
             # 第一遍：收集所有页面文本块
@@ -170,7 +168,7 @@ class PdfParser(DocumentParser):
                 page_number = page_num + 1
                 page_height = page.rect.height
 
-                # 该页的 TOC 标题
+                # 该页TOC 标题
                 page_titles = toc_entries.get(page_number, [])
 
                 # 该页的文本块（过滤页眉页脚）
@@ -190,16 +188,13 @@ class PdfParser(DocumentParser):
                     state, doc, pdf,
                 )
 
-            # 检查是否有有效文本内容（排除仅图片的扫描件 PDF）
+            # 检查是否提取到有效文本，unknown 元素不计入。
             text_elements = [
                 el for el in state.elements
-                if el.element_type not in (ElementType.image, ElementType.unknown)
+                if el.element_type != ElementType.unknown
             ]
             if not text_elements:
-                has_images = any(
-                    el.element_type == ElementType.image
-                    for el in state.elements
-                )
+                has_images = bool(state.assets)
                 if has_images:
                     raise ValueError(
                         "PDF 解析失败：文档可能为扫描件，无可提取文本层，"
@@ -223,16 +218,14 @@ class PdfParser(DocumentParser):
 
     @staticmethod
     def _build_toc_map(pdf: fitz.Document) -> dict[int, list[tuple[int, str]]]:
-        """构建页码到 TOC 标题列表的映射。
-
+        """构建页码TOC 标题列表的映射
         Returns:
-            dict: {page_number: [(level, title), ...]}  按 level 升序排列。
-        """
+            dict: {page_number: [(level, title), ...]}  level 升序排列        """
         toc_map: dict[int, list[tuple[int, str]]] = {}
         try:
             toc = pdf.get_toc(simple=True)
         except Exception:
-            logger.debug("PDF TOC 提取失败，将仅依赖字体启发式检测标题")
+            logger.debug("PDF 目录提取失败，将仅依赖字体启发式检测标题")
             return toc_map
 
         for entry in toc:
@@ -244,33 +237,34 @@ class PdfParser(DocumentParser):
                 continue
             toc_map.setdefault(int(page_num), []).append((int(level), title))
 
-        # 每页按 level 排序
+        # 每页level 排序
         for page_num in toc_map:
             toc_map[page_num].sort(key=lambda item: item[0])
 
         return toc_map
 
-    # ── 文本块提取 ────────────────────────────────────────────────
+    # ── 文本块提────────────────────────────────────────────────
 
     @staticmethod
     def _extract_blocks(page: fitz.Page, page_number: int) -> list[_TextBlock]:
-        """从页面提取所有文本块，附带字体和位置信息。"""
+        """从页面提取全部文本块，并保留字体与位置信息。"""
         blocks: list[_TextBlock] = []
         try:
             text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
         except Exception:
-            logger.debug("页面 %d 文本提取失败，跳过", page_number)
+            logger.debug("页面 %d 文本提取失败，已跳过", page_number)
             return blocks
 
         for block in text_dict.get("blocks", []):
-            if block.get("type") != 0:  # 非文本块（图片等）
+            if block.get("type") != 0:
+                # 图片等非文本块由资源处理分支负责。
                 continue
 
             bbox = block["bbox"]
             y0, y1 = bbox[1], bbox[3]
             x0, x1 = bbox[0], bbox[2]
 
-            # 收集该块所有 span 的文本和字体信息
+            # 收集该块所span 的文本和字体信息
             all_text_parts: list[str] = []
             font_sizes: list[float] = []
             font_flags: list[int] = []
@@ -296,7 +290,7 @@ class PdfParser(DocumentParser):
 
             avg_font_size = statistics.mean(font_sizes) if font_sizes else 0.0
 
-            # 粗体判断：flags bit 4 (16) 或字体名含 "bold"
+            # 粗体判断：flags bit 4 (16) 或字体名"bold"
             has_bold_flag = any(f & 16 for f in font_flags)
             has_bold_name = any("bold" in fn.lower() for fn in font_names)
             is_bold = has_bold_flag or has_bold_name
@@ -314,7 +308,7 @@ class PdfParser(DocumentParser):
                 span_bboxes=span_bboxes,
             ))
 
-        # 按 (y0, x0) 排序模拟阅读顺序
+        # (y0, x0) 排序模拟阅读顺序
         blocks.sort(key=lambda b: (b.y0, b.x0))
         return blocks
 
@@ -325,28 +319,24 @@ class PdfParser(DocumentParser):
         all_blocks: list[_TextBlock],
         page_count: int,
     ) -> set[tuple[int, str]]:
-        """检测页眉页脚块，返回应过滤的 (y_bucket, normalized_text) 集合。
-
-        使用两种策略：
-        1. 重复文本检测：相同文本在 ≥ 3 个页面相同 y 区间出现
-        2. y 坐标位置过滤：极端位置 + 小字号的文本
+        """检测页眉页脚块，返回应过滤(y_bucket, normalized_text) 集合
+        使用两种策略        1. 重复文本检测：相同文本3 个页面相y 区间出现
+        2. y 坐标位置过滤：极端位+ 小字号的文本
         """
         if page_count < HEADER_FOOTER_MIN_REPEAT_PAGES:
             return set()
 
-        # 策略 1：构建 (y_bucket, text) → set of pages 的映射
-        repeat_map: dict[tuple[int, str], set[int]] = {}
+        # 策略 1：构(y_bucket, text) set of pages 的映        repeat_map: dict[tuple[int, str], set[int]] = {}
         for block in all_blocks:
             text = block.text.strip()
             if not text:
                 continue
-            # 以 10pt 为粒度分组 y 坐标
+            # 10pt 为粒度分y 坐标
             y_bucket = int(block.y0 / 10) * 10
             key = (y_bucket, text)
             repeat_map.setdefault(key, set()).add(block.page)
 
-        # 在 ≥ 3 个页面出现的标记为页眉页脚
-        header_footer_keys: set[tuple[int, str]] = set()
+        # 3 个页面出现的标记为页眉页        header_footer_keys: set[tuple[int, str]] = set()
         for key, pages in repeat_map.items():
             if len(pages) >= HEADER_FOOTER_MIN_REPEAT_PAGES:
                 header_footer_keys.add(key)
@@ -359,17 +349,17 @@ class PdfParser(DocumentParser):
         header_footer_keys: set[tuple[int, str]],
         page_height: float,
     ) -> bool:
-        """判断单个文本块是否为页眉页脚。"""
+        """判断单个文本块是否属于页眉或页脚。"""
         text = block.text.strip()
         if not text:
             return True
 
-        # 策略 1：命中重复检测
+        # 策略一：命中跨页重复文本。
         y_bucket = int(block.y0 / 10) * 10
         if (y_bucket, text) in header_footer_keys:
             return True
 
-        # 策略 2：极端 y 位置 + 小字号 + 短文本
+        # 策略二：页面边缘的小字号短文本。
         if block.y0 < page_height * HEADER_FOOTER_Y_MARGIN:
             if block.font_size <= HEADER_FOOTER_FONT_MAX and len(text) <= HEADER_FOOTER_MAX_CHARS:
                 return True
@@ -382,16 +372,14 @@ class PdfParser(DocumentParser):
 
         return False
 
-    # ── 块合并 ────────────────────────────────────────────────────
+    # ── 块合────────────────────────────────────────────────────
 
     @staticmethod
     def _merge_adjacent_blocks(
         blocks: list[_TextBlock],
     ) -> list[_TextBlock]:
-        """合并字体一致、垂直间距小的相邻文本块。
-
-        当间距 > 1.5 倍行高时视为新段落。
-        """
+        """合并字体一致、垂直间距小的相邻文本块
+        当间> 1.5 倍行高时视为新段落        """
         if not blocks:
             return []
 
@@ -399,7 +387,7 @@ class PdfParser(DocumentParser):
         current = blocks[0]
 
         for next_block in blocks[1:]:
-            # 字体一致性
+            # 字体特征一致时允许合并。
             same_font = (
                 abs(current.font_size - next_block.font_size) < 0.5
                 and current.is_bold == next_block.is_bold
@@ -415,9 +403,9 @@ class PdfParser(DocumentParser):
             if same_font and gap <= max(threshold, 2.0):
                 # 合并文本
                 combined = f"{current.text} {next_block.text}".strip()
-                # 合并 span_bboxes，保持原始 span 顺序
+                # 合并 span_bboxes，保持原span 顺序
                 merged_span_bboxes = current.span_bboxes + next_block.span_bboxes
-                # 更新合并后的块信息
+                # 更新合并后的文本块信息。
                 current = _TextBlock(
                     page=current.page,
                     y0=current.y0,
@@ -454,7 +442,7 @@ class PdfParser(DocumentParser):
         doc: Document,
         pdf: fitz.Document,
     ) -> None:
-        """处理单个页面：先插入 TOC 标题，再处理文本块、表格和图片。"""
+        """处理单页：先插入目录标题，再处理文本、表格和图片。"""
 
         # 1. 插入 TOC 标题
         for level, title in toc_titles:
@@ -468,23 +456,21 @@ class PdfParser(DocumentParser):
             if table_block is not None:
                 table_y_ranges.append((table_block.y0, table_block.y1))
 
-        # 3. 处理文本块（排除表格覆盖的区域），建立 block→element 映射
+        # 3. 处理文本块（排除表格覆盖的区域），建block→element 映射
         block_to_element: dict[int, int] = {}
         for bi, block in enumerate(blocks):
             if self._in_table_region(block, table_y_ranges):
                 continue
             self._add_text_block(block, state, page_number, doc)
-            # 记录当前 block 索引 → 最新追加的元素索引
+            # 记录当前 block 索引 最新追加的元素索引
             block_to_element[bi] = len(state.elements) - 1
 
-        # 3.5 链接交叉匹配：link rect → span bbox → 锚文本 → 精确关联到元素
-        self._match_links_to_blocks(page, blocks, block_to_element, state, doc, page_number)
+        # 3.5 链接交叉匹配：link rect span bbox 锚文精确关联到元        self._match_links_to_blocks(page, blocks, block_to_element, state, doc, page_number)
 
         # 4. 提取图片（过滤页眉页脚区域）
         self._extract_page_images(page, page_number, state, doc, pdf)
 
-        # 5. 处理孤立页面超链接（兜底 + 页眉页脚过滤）
-        self._asset_ids_for_page_links(page, state, doc, page_number)
+        # 5. 处理孤立页面超链接（兜底 + 页眉页脚过滤        self._asset_ids_for_page_links(page, state, doc, page_number)
 
     # ── 链接匹配 ──────────────────────────────────────────────────
 
@@ -497,13 +483,9 @@ class PdfParser(DocumentParser):
         doc: Document,
         page_number: int,
     ) -> None:
-        """将页面超链接通过 link rect 与 span bbox 交叉匹配精确关联到所属元素。
-
-        对 page.get_links() 返回的每个链接，使用其 from 矩形与所有块的
-        span_bboxes 做交集判断（阈值 ≥ 0.1），匹配到的 span 文本作为锚文本，
-        资源链接创建 Asset 并写入 asset_ids，普通网页链接写入 metadata["link_urls"]。
-        未匹配到的链接不在此处理，由 _asset_ids_for_page_links() 兜底。
-        """
+        """将页面超链接通过 link rect span bbox 交叉匹配精确关联到所属元素
+        page.get_links() 返回的每个链接，使用from 矩形与所有块        span_bboxes 做交集判断（阈0.1），匹配到的 span 文本作为锚文本，
+        资源链接创建 Asset 并写asset_data，普通网页链接写metadata["link_urls"]        未匹配到的链接不在此处理，由 _asset_ids_for_page_links() 兜底        """
         try:
             links = page.get_links()
         except Exception:
@@ -521,15 +503,15 @@ class PdfParser(DocumentParser):
             if link_rect is None:
                 continue
 
-            # 过滤页眉页脚区域的链接
+            # 过滤页眉和页脚区域的链接。
             lr = fitz.Rect(link_rect)
             if lr.y0 < page_height * HEADER_FOOTER_Y_MARGIN:
                 continue
             if lr.y1 > page_height * (1 - HEADER_FOOTER_Y_MARGIN):
                 continue
 
-            # 与所有块的 span_bboxes 做交叉匹配
-            best_match: tuple[int, str, float] | None = None  # (block_idx, span_text, ratio)
+            # 与所有文本块的 span 边界做交叉匹配。
+            best_match: tuple[int, str, float] | None = None  # 块序号、锚文本、重叠比例
             for bi, block in enumerate(blocks):
                 if bi not in block_to_element:
                     continue
@@ -545,7 +527,7 @@ class PdfParser(DocumentParser):
                 bi, anchor_text, _ratio = best_match
                 ei = block_to_element[bi]
                 element = state.elements[ei]
-                # 创建 Asset（仅资源链接），普通网页链接写入 metadata["link_urls"]
+                # 创建 Asset（仅资源链接），普通网页链接写metadata["link_urls"]
                 asset_type = self._asset_type_for_url(uri)
                 if asset_type is not None:
                     asset = self._asset_for_url(uri, asset_type, state, doc, {
@@ -553,14 +535,14 @@ class PdfParser(DocumentParser):
                         "source": "pdf_link_bbox_match",
                         "anchor_text": anchor_text,
                     })
-                    if asset.asset_id not in element.asset_ids:
-                        element.asset_ids.append(asset.asset_id)
-                    if not asset.source_element_id:
-                        asset.source_element_id = element.element_id
+                    if not any(ad.asset_id == asset.asset_id for ad in element.asset_data):
+                        element.asset_data.append(AssetData(placeholder="", asset_id=asset.asset_id))
+                    if not asset.element_id:
+                        asset.element_id = element.element_id
                 else:
-                    # 普通网页链接 → metadata["link_urls"]（与 docx/markdown/xlsx 统一）
+                    # 普通网页链接统一写入 metadata.link_urls。
                     element.metadata.setdefault("link_urls", []).append(uri)
-                # 将链接信息写入 structured_data.links
+                # 将链接信息写structured_data.links
                 element.structured_data = element.structured_data or {}
                 element.structured_data.setdefault("links", []).append({
                     "text": anchor_text,
@@ -578,7 +560,7 @@ class PdfParser(DocumentParser):
         level: int,
         page_number: int,
     ) -> None:
-        """添加标题元素并更新 section_path 栈。"""
+        """添加标题元素并更新 section_path。"""
         # 弹出 >= 当前层级的旧标题
         while len(state.section_path) >= level:
             state.section_path.pop()
@@ -601,7 +583,7 @@ class PdfParser(DocumentParser):
             },
         ))
 
-    # ── 文本块 → ParsedElement ─────────────────────────────────────
+    # ── 文本ParsedElement ─────────────────────────────────────
 
     def _add_text_block(
         self,
@@ -610,7 +592,7 @@ class PdfParser(DocumentParser):
         page_number: int,
         doc: Document,
     ) -> None:
-        """将文本块转换为 title 或 paragraph 元素。"""
+        """将文本块转换为标题或段落元素。"""
         text = block.text.strip()
         if not text:
             return
@@ -620,7 +602,7 @@ class PdfParser(DocumentParser):
         heading_level = 1
 
         if block.font_size >= TITLE_FONT_SIZE_THRESHOLD and len(text) <= MAX_TITLE_CHARS:
-            # 大字号短文本 → 标题
+            # 大字号短文本 标题
             is_heading = True
             if block.font_size >= 18:
                 heading_level = 1
@@ -634,7 +616,7 @@ class PdfParser(DocumentParser):
             and block.is_bold
             and len(text) <= MAX_TITLE_CHARS
         ):
-            # 粗体短文本 → 子标题
+            # 粗体短文本按子标题处理。
             is_heading = True
             heading_level = 3
 
@@ -660,7 +642,7 @@ class PdfParser(DocumentParser):
                 "is_bold": block.is_bold,
             }
 
-        # 提取 URL → Asset
+        # 提取 URL Asset
         asset_ids = self._asset_ids_for_text(text, state, doc, page_number)
 
         self._append_element(state, ParsedElement(
@@ -669,7 +651,7 @@ class PdfParser(DocumentParser):
             sequence_order=state.next_seq(),
             element_type=element_type,
             text=text,
-            asset_ids=asset_ids,
+            asset_data=[AssetData(placeholder="", asset_id=a.asset_id) for a in asset_ids],
             source_location=SourceLocation(
                 page=page_number,
                 section_path=list(state.section_path),
@@ -677,11 +659,11 @@ class PdfParser(DocumentParser):
             metadata=metadata,
         ))
 
-    # ── 表格检测 ──────────────────────────────────────────────────
+    # ── 表格检──────────────────────────────────────────────────
 
     @staticmethod
     def _detect_tables(page: fitz.Page) -> list[dict[str, Any]]:
-        """检测页面中的表格，附带防御性降级。"""
+        """检测页面表格，并提供防御性降级。"""
         if not hasattr(page, "find_tables"):
             logger.debug("当前 PyMuPDF 版本不支持 find_tables，跳过表格检测")
             return []
@@ -723,19 +705,16 @@ class PdfParser(DocumentParser):
         page: fitz.Page | None = None,
         doc: Document | None = None,
     ) -> _TextBlock | None:
-        """将检测到的表格转换为 table 类型 ParsedElement。
-
+        """将检测到的表格转换为 table 类型 ParsedElement
         同时匹配页面链接到表格单元格（按坐标交叉匹配），
-        资源链接创建 Asset，普通网页链接写入 metadata.link_urls，
-        所有链接写入 structured_data.links。
-        """
+        资源链接创建 Asset，普通网页链接写metadata.link_urls        所有链接写structured_data.links        """
         headers = table_data["headers"]
         raw_rows = table_data["rows"]
         if not raw_rows:
             return None
 
-        # ── 按坐标匹配链接到单元格 ──
-        table_asset_ids: list[str] = []
+        # ── 按坐标匹配链接到单元──
+        table_asset_ids: list[Asset] = []
         table_link_urls: list[str] = []
         table_links: list[dict[str, str]] = []
         cell_bboxes = table_data.get("cells_bbox")
@@ -757,7 +736,7 @@ class PdfParser(DocumentParser):
                                     "page": page_number,
                                     "source": "pdf_table_link",
                                 })
-                                table_asset_ids.append(asset.asset_id)
+                                table_asset_ids.append(asset)
                         else:
                             table_link_urls.append(uri)
                         table_links.append({
@@ -765,13 +744,12 @@ class PdfParser(DocumentParser):
                             "url": uri,
                             "link_type": classify_link(uri),
                         })
-                        break  # 一个单元格最多一个链接
-
+                        break  # 一个单元格最多一个链
         rows: list[dict[str, Any]] = []
         for row in raw_rows:
             rows.append({
                 "cells": [
-                    {"text": str(cell or ""), "asset_ids": list(dict.fromkeys(table_asset_ids))}
+                    {"text": str(cell or ""), "asset_data": [{"placeholder": "", "type": a.asset_type.value, "url": a.original_uri} for a in table_asset_ids]}
                     for cell in row
                 ],
             })
@@ -796,7 +774,7 @@ class PdfParser(DocumentParser):
         for row in rows:
             text_parts.append(" | ".join(cell["text"] for cell in row["cells"]))
 
-        all_asset_ids = list(dict.fromkeys(table_asset_ids))
+        all_asset_ids = list({a.asset_id: a for a in table_asset_ids}.values())
         element_metadata: dict[str, Any] = {"page": page_number, "source": "pdf_table_detection"}
         if table_link_urls:
             element_metadata["link_urls"] = table_link_urls
@@ -808,7 +786,7 @@ class PdfParser(DocumentParser):
             element_type=ElementType.table,
             text="\n".join(part for part in text_parts if part.strip()),
             structured_data=structured,
-            asset_ids=all_asset_ids,
+            asset_data=[AssetData(placeholder="", asset_id=a.asset_id) for a in all_asset_ids],
             source_location=SourceLocation(
                 page=page_number,
                 section_path=list(state.section_path),
@@ -838,7 +816,7 @@ class PdfParser(DocumentParser):
     ) -> bool:
         """判断文本块是否落在已识别的表格区域内。"""
         for y0, y1 in table_y_ranges:
-            # 有重叠即视为表格内
+            # 只要纵向范围重叠，就视为表格区域。
             if not (block.y1 < y0 or block.y0 > y1):
                 return True
         return False
@@ -853,18 +831,15 @@ class PdfParser(DocumentParser):
         doc: Document,
         pdf: fitz.Document,
     ) -> None:
-        """提取页面内嵌图片，创建 image Asset 和 image 类型 ParsedElement。
-
-        过滤页眉页脚区域的图片（Y 坐标在页面顶部 15% 以内或底部 15% 以内）。
-        """
+        """提取页面内嵌图片，创image Asset image 类型 ParsedElement
+        过滤页眉页脚区域的图片（Y 坐标在页面顶15% 以内或底15% 以内）        """
         image_list = page.get_images(full=True)
         if not image_list:
             return
 
         page_height = page.rect.height
 
-        # 获取图片位置信息，用于过滤页眉页脚图片
-        image_bboxes: dict[int, tuple[float, float, float, float]] = {}
+        # 获取图片位置信息，用于过滤页眉页脚图        image_bboxes: dict[int, tuple[float, float, float, float]] = {}
         try:
             for info in page.get_image_info():
                 idx = info.get("number")
@@ -877,7 +852,7 @@ class PdfParser(DocumentParser):
         for idx, img in enumerate(image_list):
             xref = img[0]
 
-            # 过滤页眉页脚区域的图片
+            # 过滤页眉和页脚区域中的图片。
             if idx in image_bboxes:
                 _by0, _by1 = image_bboxes[idx][1], image_bboxes[idx][3]
                 if _by0 < page_height * HEADER_FOOTER_Y_MARGIN:
@@ -911,7 +886,6 @@ class PdfParser(DocumentParser):
                     asset_type=AssetType.image,
                     original_uri=f"pdf://{doc.doc_id}/page/{page_number}/xref/{xref}/{filename}",
                     storage_uri=None,
-                    mime_type=mime_type,
                     content_hash=content_hash_val,
                     status=AssetStatus.ready,
                     extracted_text=None,
@@ -920,6 +894,7 @@ class PdfParser(DocumentParser):
                         "xref": xref,
                         "file_name": filename,
                         "source": "pdf_image",
+                        "mime_type": mime_type,
                         "width": base_image.get("width"),
                         "height": base_image.get("height"),
                     },
@@ -928,16 +903,16 @@ class PdfParser(DocumentParser):
                 state.assets.append(asset)
                 state.assets_by_key[key] = _AssetRecord(asset=asset, key=key)
 
-            # 创建 image 类型 ParsedElement
+            # 图片作为附属资源，由段落元素承载位置和引用信息。
             self._append_element(
                 state,
                 ParsedElement(
                     doc_id=state.doc_id,
                     doc_version=state.doc_version,
                     sequence_order=state.next_seq(),
-                    element_type=ElementType.image,
-                    text=f"[图片: 第 {page_number} 页]",
-                    asset_ids=[asset.asset_id],
+                    element_type=ElementType.paragraph,
+                    text=f"[图片: {page_number} 页]",
+                    asset_data=[AssetData(placeholder="", asset_id=asset.asset_id)],
                     source_location=SourceLocation(
                         page=page_number,
                         section_path=list(state.section_path),
@@ -950,7 +925,7 @@ class PdfParser(DocumentParser):
                 ),
             )
 
-    # ── 超链接 / URL 资源 ─────────────────────────────────────────
+    # ── 超链/ URL 资源 ─────────────────────────────────────────
 
     def _asset_ids_for_text(
         self,
@@ -958,22 +933,20 @@ class PdfParser(DocumentParser):
         state: _PdfParseState,
         doc: Document,
         page_number: int,
-    ) -> list[str]:
-        """从文本中提取 URL 并创建对应的 Asset。
-
-        仅对视频、图片、附件链接创建 Asset；普通网页链接跳过。
-        """
+    ) -> list[Asset]:
+        """从文本中提取 URL 并创建对应的 Asset
+        仅对视频、图片、附件链接创Asset；普通网页链接跳过        """
         urls = [match.group(0) for match in HTTP_URL_RE.finditer(text or "")]
-        asset_ids: list[str] = []
+        asset_ids: list[Asset] = []
         for url in dict.fromkeys(urls):
             asset_type = self._asset_type_for_url(url)
             if asset_type is None:
-                continue  # 普通网页链接，不创建 Asset
+                continue  # 普通网页链接，不创Asset
             asset = self._asset_for_url(url, asset_type, state, doc, {
                 "page": page_number,
                 "source": "pdf_text_url",
             })
-            asset_ids.append(asset.asset_id)
+            asset_ids.append(asset)
         return asset_ids
 
     def _asset_ids_for_page_links(
@@ -983,11 +956,8 @@ class PdfParser(DocumentParser):
         doc: Document,
         page_number: int,
     ) -> None:
-        """处理 _match_links_to_blocks 未匹配到的孤立页面超链接（兜底逻辑）。
-
-        对未被 span 匹配的页面超链接创建 Asset 并关联到当前页最后一个非 image 元素。
-        过滤页眉页脚区域链接。
-        """
+        """处理 _match_links_to_blocks 未匹配到的孤立页面超链接（兜底逻辑）
+        对未span 匹配的页面超链接创建 Asset 并关联到当前页最后一个非 image 元素        过滤页眉页脚区域链接        """
         try:
             links = page.get_links()
         except Exception:
@@ -1000,7 +970,7 @@ class PdfParser(DocumentParser):
             if not uri or not uri.startswith(("http://", "https://")):
                 continue
 
-            # 过滤页眉页脚区域的链接（与 _match_links_to_blocks 保持一致）
+            # 过滤页眉页脚区域的链接（_match_links_to_blocks 保持一致）
             link_rect = link.get("from")
             if link_rect is not None:
                 lr = fitz.Rect(link_rect)
@@ -1022,10 +992,9 @@ class PdfParser(DocumentParser):
                     "source": "pdf_link_fallback",
                     "link_kind": link.get("kind", ""),
                 })
-                asset_id = asset.asset_id
             else:
-                asset_id = ""
-                # 普通网页链接去重：检查 metadata["link_urls"]
+                asset = None
+                # 普通网页链接去重：检metadata["link_urls"]
                 already_recorded = any(
                     uri in el.metadata.get("link_urls", [])
                     for el in state.elements
@@ -1033,19 +1002,16 @@ class PdfParser(DocumentParser):
                 if already_recorded:
                     continue
 
-            # 将链接关联到当前页最后一个非 image 元素（兜底）
+            # 兜底关联到当前页最后一个元素。
             for el in reversed(state.elements):
-                if el.element_type != ElementType.image:
-                    if asset_id and asset_id not in el.asset_ids:
-                        el.asset_ids.append(asset_id)
-                    if not asset_id:
-                        el.metadata.setdefault("link_urls", []).append(uri)
-                    if asset_id:
-                        for rec in state.assets_by_key.values():
-                            if rec.asset.asset_id == asset_id and not rec.asset.source_element_id:
-                                rec.asset.source_element_id = el.element_id
-                                break
-                    break
+                if asset is not None:
+                    if not any(ad.asset_id == asset.asset_id for ad in el.asset_data):
+                        el.asset_data.append(AssetData(placeholder="", asset_id=asset.asset_id))
+                    if not asset.element_id:
+                        asset.element_id = el.element_id
+                else:
+                    el.metadata.setdefault("link_urls", []).append(uri)
+                break
 
     def _asset_for_url(
         self,
@@ -1055,7 +1021,7 @@ class PdfParser(DocumentParser):
         doc: Document,
         metadata: dict[str, Any],
     ) -> Asset:
-        """创建或查找已有 Asset（按 URL + 类型去重）。"""
+        """创建或复用 Asset，按 URL 和资源类型去重。"""
         key = (asset_type.value, url)
         existing = state.assets_by_key.get(key)
         if existing is not None:
@@ -1066,21 +1032,20 @@ class PdfParser(DocumentParser):
             asset_type=asset_type,
             original_uri=url,
             storage_uri=None,
-            mime_type=self._guess_mime(url, asset_type),
             status=AssetStatus.ready,
             extracted_text=None,
-            metadata=metadata,
+            metadata={
+                **metadata,
+                "mime_type": self._guess_mime(url, asset_type),
+            },
         )
         state.assets.append(asset)
         state.assets_by_key[key] = _AssetRecord(asset=asset, key=key)
         return asset
 
     def _asset_type_for_url(self, url: str) -> AssetType | None:
-        """根据 URL 模式判断资源类型：视频 → 图片 → 附件 → None（普通网页链接）。
-
-        普通网页链接（无特殊后缀且非视频/图片）返回 None，
-        不创建 Asset，仅作为 link_anchor 记录 URL 和锚文本。
-        """
+        """根据 URL 模式判断资源类型：视图片 附件 None（普通网页链接）
+        普通网页链接（无特殊后缀且非视频/图片）返None        不创Asset，仅作为 link_anchor 记录 URL 和锚文本        """
         if self._is_video_url(url):
             return AssetType.video_link
         if self._is_image_url(url):
@@ -1104,7 +1069,7 @@ class PdfParser(DocumentParser):
 
     @staticmethod
     def _is_image_url(url: str) -> bool:
-        """判断 URL 是否指向远程图片文件（按后缀匹配）。"""
+        """按后缀判断 URL 是否指向远程图片。"""
         path = url.split("?", 1)[0]
         suffix = PurePosixPath(path).suffix.lower()
         return suffix in IMAGE_EXTENSIONS if suffix else False
@@ -1113,11 +1078,11 @@ class PdfParser(DocumentParser):
 
     @staticmethod
     def _append_element(state: _PdfParseState, element: ParsedElement) -> None:
-        """添加元素并回链 Asset 的 source_element_id。"""
-        linked = set(element.asset_ids)
+        """添加元素，并通过 asset_id 回填 Asset.element_id。"""
+        asset_ids = {ad.asset_id for ad in element.asset_data}
         for record in state.assets_by_key.values():
-            if record.asset.asset_id in linked and not record.asset.source_element_id:
-                record.asset.source_element_id = element.element_id
+            if record.asset.asset_id in asset_ids and not record.asset.element_id:
+                record.asset.element_id = element.element_id
         state.elements.append(element)
 
     # ── MIME 推断 ─────────────────────────────────────────────────

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     llm_model: str = "doubao-seed-2-0-pro-260215"
     embedding_model: str = "doubao-embedding-vision-251215"
-    request_timeout_seconds: float = Field(default=60.0, validation_alias="VOLCENGINE_TIMEOUT_SECONDS")
+    request_timeout_seconds: float = Field(default=3600.0, validation_alias="VOLCENGINE_TIMEOUT_SECONDS")
 
     # 检索默认参数。通过原始环境变量读取，便于评测脚本动态覆盖。
     vector_top_k: int = Field(default=30, validation_alias="VECTOR_TOP_K")
@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     max_recursion_depth: int = 3
     max_elements_per_doc: int = 1000
     max_window_tokens: int = 3000
-    context_window_tokens: int = Field(default=1000000, validation_alias="CONTEXT_WINDOW_TOKENS")  # LLM 上下文窗口上限，语义抽取安全阈值 = 此值 × 0.8
+    context_window_tokens: int = Field(default=256000, validation_alias="CONTEXT_WINDOW_TOKENS")  # LLM 上下文窗口上限，语义抽取安全阈值 = 此值 × 0.8
     embedding_batch_size: int = Field(default=32, validation_alias="EMBEDDING_BATCH_SIZE")
     index_upsert_batch_size: int = Field(default=100, validation_alias="INDEX_UPSERT_BATCH_SIZE")
 
@@ -84,6 +84,7 @@ class Settings(BaseSettings):
 
     # 多模态视觉理解
     image_vision_enabled: bool = Field(default=True, validation_alias="IMAGE_VISION_ENABLED")
+    video_vision_enabled: bool = Field(default=True, validation_alias="VIDEO_VISION_ENABLED")
 
     # 评测数据自动生成
     auto_eval_enabled: bool = Field(default=True, validation_alias="AUTO_EVAL_ENABLED")

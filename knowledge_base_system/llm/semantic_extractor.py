@@ -2,10 +2,10 @@
 
 核心流程：
 1. 全文优先：token 不超安全阈值时所有元素一次提交 LLM
-2. 递进降级：超限或 LLM 失败时按标题层级递进切分（h1→h2→h3→…）
+2. 递进降级：超限时按标题层级递进切分（h1→h2→h3→…），只以 token 是否超限为降级判断
 3. 语义切分兜底：标题耗尽后用 embedding 相似度断点切分
-4. Token 硬切兜底：embedding 不可用时按 token 上限硬切（20% 重叠）
-5. 最终兜底：_fallback_chunks 纯文本拼接
+4. Token 硬切兜底：embedding 不可用时按 token 上限硬切 + 20% 重叠
+5. LLM 失败或返回空结果 → _fallback_chunks 纯文本拼接，不再触发进一步切分
 """
 
 import json
@@ -19,7 +19,6 @@ from app.core.models import (
     KnowledgeChunk,
     KnowledgeType,
     ParsedElement,
-    Render,
     SourceRef,
     compute_hash,
 )
@@ -31,9 +30,7 @@ logger = logging.getLogger(__name__)
 
 def _safe_knowledge_type(raw_value: str | None) -> KnowledgeType:
     """将原始 knowledge_type 字符串安全转换为 KnowledgeType 枚举。
-
-    未知或缺失值时回退为 declarative。
-    """
+    未知或缺失值时回退为 declarative。"""
     if raw_value is None:
         return KnowledgeType.declarative
     try:
@@ -59,6 +56,8 @@ class SemanticExtractor:
         # 安全阈值：上下文窗口 × 0.8，给 prompt 模板和 LLM 输出留 20% buffer
         self._safe_threshold = int(settings.context_window_tokens * 0.8)
 
+    # ── 公共入口 ─────────────────────────────────────────────────────
+
     def extract(
         self,
         elements: list[ParsedElement],
@@ -68,24 +67,38 @@ class SemanticExtractor:
         """主入口：全文优先 → 递进降级。
 
         1. 全文 token < 安全阈值 → 单次 LLM 调用（95%+ 文档走此路径）
-        2. 超限或 LLM 失败 → _split_recursive 按标题层级递进切分
-        3. 最深层仍失败 → _fallback_chunks 纯文本兜底
+        2. 超限 → _split_recursive 按标题层级递进切分
         """
         if not elements:
             return []
 
         estimated = self._estimate_tokens(elements)
         if estimated < self._safe_threshold:
-            try:
-                chunks = self._extract_section(elements, assets, category)
-                if self._chunks_have_content(chunks):
-                    return chunks
-                logger.warning("全文 LLM 返回空结果，进入降级路径")
-            except Exception:
-                logger.exception("全文 LLM 调用失败，进入降级路径")
+            return self._try_extract_or_fallback(elements, assets, category)
 
         # 降级路径：按标题层级递进切分
         return self._split_recursive(elements, assets, category, level=1)
+
+    # ── LLM 抽取 + fallback 统一入口 ─────────────────────────────────
+
+    def _try_extract_or_fallback(
+        self,
+        elements: list[ParsedElement],
+        assets: list[Asset],
+        category: str,
+    ) -> list[KnowledgeChunk]:
+        """尝试 LLM 抽取；失败或返回空结果时直接走 _fallback_chunks。
+
+        此方法是所有 LLM 调用的唯一出口，确保 LLM 失败不会触发进一步切分。
+        """
+        try:
+            chunks = self._extract_section(elements, assets, category)
+            if self._chunks_have_content(chunks):
+                return chunks
+            logger.warning("LLM 返回空结果，使用 fallback chunks")
+        except Exception:
+            logger.exception("LLM 调用失败，使用 fallback chunks")
+        return self._fallback_chunks(elements, assets, category)
 
     @staticmethod
     def _chunks_have_content(chunks: list[KnowledgeChunk]) -> bool:
@@ -130,47 +143,35 @@ class SemanticExtractor:
         category: str,
         level: int,
     ) -> list[KnowledgeChunk]:
-        """递进切分核心：在 level 层级切分，仅对超限的 section 继续下钻。
+        """递进切分核心：在 level 层级切分，仅对 token 超限的 section 继续下钻。
 
-        - 未超限的 section 直接走 _extract_section → LLM
-        - 超限的 section → _split_recursive(level+1) 或更深层策略
-        - 该层级切不出多个 section（无标题）→ _split_deeper_or_semantic 处理
+        - token 未超限 → _try_extract_or_fallback（LLM 失败直接 fallback，不下钻）
+        - token 超限 → 按 level 标题切分
+          - 切出多个 section → 逐个判断：未超限走 LLM，超限递归 level+1
+          - 切不出（无该层级标题）→ _split_deeper_or_semantic
         """
         if not elements:
             return []
 
         estimated = self._estimate_tokens(elements)
         if estimated < self._safe_threshold:
-            try:
-                chunks = self._extract_section(elements, assets, category)
-                if self._chunks_have_content(chunks):
-                    return chunks
-            except Exception:
-                logger.exception("section LLM 调用失败: level=%d", level)
+            return self._try_extract_or_fallback(elements, assets, category)
 
         # 在当前层级切分
         sections = self._split_at_heading_level(elements, level)
         if len(sections) <= 1:
-            # 该层级没有可用的标题切割点 → 尝试更深层或语义切分
+            # 该层级没有可用的标题切割点，尝试更深层或语义切分
             return self._split_deeper_or_semantic(elements, assets, category, level)
 
         all_chunks: list[KnowledgeChunk] = []
         for section in sections:
             section_est = self._estimate_tokens(section)
             if section_est < self._safe_threshold:
-                try:
-                    chunks = self._extract_section(section, assets, category)
-                    if self._chunks_have_content(chunks):
-                        all_chunks.extend(chunks)
-                        continue
-                except Exception:
-                    logger.exception("section LLM 失败, 下钻: level=%d", level)
-                # LLM 失败 → 继续下钻
                 all_chunks.extend(
-                    self._split_deeper_or_semantic(section, assets, category, level + 1)
+                    self._try_extract_or_fallback(section, assets, category)
                 )
             else:
-                # 超限 → 下钻到更深层级
+                # 超限，下钻到更深层级
                 all_chunks.extend(
                     self._split_recursive(section, assets, category, level + 1)
                 )
@@ -184,11 +185,11 @@ class SemanticExtractor:
         category: str,
         level: int,
     ) -> list[KnowledgeChunk]:
-        """当前层级无更多标题时：更深层标题 → embedding 语义切分 → token 硬切。
+        """当前层级无更多标题时的降级链：更深层标题 → embedding 语义切分 → token 硬切。
 
-        最深层级仍 LLM 失败时走 _fallback_chunks 纯文本兜底。
+        三条策略是递进降级关系（非并行），前一条成功即返回。
         """
-        # 先尝试更深层标题（level+1 ~ level+3）
+        # 策略 1：尝试更深层标题（level+1 ~ level+3，最深到 6）
         for deeper_level in range(level + 1, min(level + 4, 7)):
             deeper_sections = self._split_at_heading_level(elements, deeper_level)
             if len(deeper_sections) > 1:
@@ -199,7 +200,7 @@ class SemanticExtractor:
                     )
                 return all_chunks
 
-        # 尝试 embedding 语义切分
+        # 策略 2：尝试 embedding 语义切分
         try:
             subsections = self._split_by_semantic(elements)
             if len(subsections) > 1:
@@ -207,20 +208,19 @@ class SemanticExtractor:
                 for sub in subsections:
                     sub_est = self._estimate_tokens(sub)
                     if sub_est < self._safe_threshold:
-                        try:
-                            chunks = self._extract_section(sub, assets, category)
-                            if self._chunks_have_content(chunks):
-                                all_chunks.extend(chunks)
-                                continue
-                        except Exception:
-                            pass
-                    # 仍超限或 LLM 失败 → token 硬切
-                    all_chunks.extend(self._split_section(sub, assets, category))
+                        all_chunks.extend(
+                            self._try_extract_or_fallback(sub, assets, category)
+                        )
+                    else:
+                        # 语义切出的子段仍超限，token 硬切
+                        all_chunks.extend(
+                            self._split_section(sub, assets, category)
+                        )
                 return all_chunks
         except Exception:
             logger.exception("embedding 语义切分失败，降级为 token 硬切")
 
-        # 最终兜底：token 硬切
+        # 策略 3：最终兜底 — token 硬切
         return self._split_section(elements, assets, category)
 
     def _split_by_semantic(
@@ -229,13 +229,21 @@ class SemanticExtractor:
         """相邻元素 embedding 相似度断点切分。
 
         计算相邻元素的 embedding 余弦相似度，在相似度最低的 30% 位置切分。
+        空 text 元素（如图片占位符）不参与 embedding 计算，切分后归入前一段。
         embedding 不可用时返回原列表的单元素包装。
         """
         if len(elements) < 2:
             return [list(elements)]
 
-        texts = [el.text for el in elements]
-        if not all(texts) or len(texts) < 2:
+        # 过滤出有文本内容的元素用于 embedding 计算
+        text_indices: list[int] = []
+        texts: list[str] = []
+        for i, el in enumerate(elements):
+            if el.text and el.text.strip():
+                text_indices.append(i)
+                texts.append(el.text)
+
+        if len(texts) < 2:
             return [list(elements)]
 
         try:
@@ -245,7 +253,7 @@ class SemanticExtractor:
             if len(vectors) != len(texts):
                 return [list(elements)]
 
-            # 计算相邻相似度
+            # 计算相邻（有文本的）元素的相似度
             def _cosine(a: list[float], b: list[float]) -> float:
                 dot = sum(x * y for x, y in zip(a, b))
                 norm_a = sum(x * x for x in a) ** 0.5
@@ -254,20 +262,22 @@ class SemanticExtractor:
                     return 0.0
                 return dot / (norm_a * norm_b)
 
-            similarities: list[float] = []
-            for i in range(len(vectors) - 1):
-                similarities.append(_cosine(vectors[i], vectors[i + 1]))
+            similarities: list[tuple[int, float]] = []  # (原始元素索引, 相似度)
+            for j in range(len(vectors) - 1):
+                orig_idx = text_indices[j]  # 相邻对中前一个元素在 elements 中的位置
+                sim = _cosine(vectors[j], vectors[j + 1])
+                similarities.append((orig_idx, sim))
 
             if not similarities:
                 return [list(elements)]
 
             # 在相似度最低的 30% 位置切分
-            sorted_sims = sorted(similarities)
+            sorted_sims = sorted(s[1] for s in similarities)
             threshold_idx = max(0, int(len(sorted_sims) * 0.3))
             threshold = sorted_sims[threshold_idx]
             split_indices = [
-                i + 1
-                for i, sim in enumerate(similarities)
+                idx + 1  # +1 使切分点在元素之后
+                for idx, sim in similarities
                 if sim <= threshold
             ]
 
@@ -296,7 +306,7 @@ class SemanticExtractor:
     ) -> list[KnowledgeChunk]:
         """Token 硬切兜底：段落边界切分 + 20% 重叠 + 逐段 LLM 抽取。
 
-        每段先尝试 LLM，失败后用 _fallback_chunks 纯文本兜底。
+        每段先尝试 LLM，失败后走 _fallback_chunks 纯文本兜底。
         """
         if not elements:
             return []
@@ -310,18 +320,9 @@ class SemanticExtractor:
             el_tokens = self._estimate_tokens([el])
             if current_tokens + el_tokens > self._max_tokens and current:
                 # 当前窗口已满，抽取
-                try:
-                    chunks = self._extract_section(current, assets, category)
-                    if self._chunks_have_content(chunks):
-                        result_chunks.extend(chunks)
-                    else:
-                        result_chunks.extend(
-                            self._fallback_chunks(current, assets, category)
-                        )
-                except Exception:
-                    result_chunks.extend(
-                        self._fallback_chunks(current, assets, category)
-                    )
+                result_chunks.extend(
+                    self._try_extract_or_fallback(current, assets, category)
+                )
 
                 # 重叠：保留尾部 20% 元素作为上下文衔接
                 overlap_start = max(0, len(current) - overlap_count)
@@ -334,20 +335,13 @@ class SemanticExtractor:
                 current_tokens += el_tokens
 
         if current:
-            try:
-                chunks = self._extract_section(current, assets, category)
-                if self._chunks_have_content(chunks):
-                    result_chunks.extend(chunks)
-                else:
-                    result_chunks.extend(
-                        self._fallback_chunks(current, assets, category)
-                    )
-            except Exception:
-                result_chunks.extend(
-                    self._fallback_chunks(current, assets, category)
-                )
+            result_chunks.extend(
+                self._try_extract_or_fallback(current, assets, category)
+            )
 
         return result_chunks
+
+    # ── Token 估算 ──────────────────────────────────────────────────
 
     @staticmethod
     def _estimate_tokens(elements: list[ParsedElement]) -> int:
@@ -361,7 +355,7 @@ class SemanticExtractor:
         text = " ".join(parts)
         return max(1, int(len(text) / 1.8))
 
-    # ── LLM 抽取 ─────────────────────────────────────────────────
+    # ── LLM 抽取 ─────────────────────────────────────────────────────
 
     def _extract_section(
         self,
@@ -371,7 +365,7 @@ class SemanticExtractor:
     ) -> list[KnowledgeChunk]:
         """对单个 section 调用 LLM 抽取知识块。
 
-        异常直接抛出，由上层处理降级路径。
+        异常直接抛出，由上层 _try_extract_or_fallback 处理降级路径。
         """
         title_path = self._get_title_path(elements)
         elements_json = self._elements_to_json(elements, assets)
@@ -393,20 +387,15 @@ class SemanticExtractor:
         elements: list[ParsedElement],
         assets: list[Asset] | None = None,
     ) -> str:
-        """将元素列表序列化为 LLM 输入 JSON，注入资源视觉描述。
+        """将元素列表序列化为 LLM 输入 JSON，注入资源和视觉描述。
 
+        每个元素携带自己的 asset_data（通过 asset_id 关联 Asset 获取类型和 URL）。
         标题元素注入 heading_level；代码元素注入 language 字段。
         """
-        # 构造资源描述查找表
-        asset_descriptions: dict[str, dict[str, str]] = {}
+        # 构造 Asset 查找表
+        assets_by_id: dict[str, Asset] = {}
         if assets:
-            for asset in assets:
-                if asset.extracted_text:
-                    asset_descriptions[asset.asset_id] = {
-                        "asset_id": asset.asset_id,
-                        "asset_type": asset.asset_type.value,
-                        "description": asset.extracted_text,
-                    }
+            assets_by_id = {a.asset_id: a for a in assets}
 
         items = []
         for el in elements:
@@ -416,29 +405,53 @@ class SemanticExtractor:
                 "text": el.text,
                 "section_path": el.source_location.section_path,
             }
-            # 标题元素注入层级信息，供 LLM 判断知识块边界
             if el.element_type.value == "title":
                 heading_level = el.metadata.get("heading_level")
                 if heading_level is not None:
                     item["heading_level"] = heading_level
-            # 代码元素注入语言信息，供 LLM 按语言路由处理
             if el.element_type.value == "code" and el.structured_data:
                 language = el.structured_data.get("language")
                 if language:
                     item["language"] = language
             if el.structured_data:
                 item["structured_data"] = el.structured_data
-            if el.asset_ids:
-                item["asset_ids"] = el.asset_ids
-                # 注入具有视觉描述的 Asset 信息
-                descriptions = [
-                    asset_descriptions[aid]
-                    for aid in el.asset_ids
-                    if aid in asset_descriptions
-                ]
+
+            # 注入元素级的资源映射（通过 asset_id 从 Asset 查找表获取类型和 URL）
+            if el.asset_data:
+                item["asset_data"] = []
+                for ad in el.asset_data:
+                    asset = assets_by_id.get(ad.asset_id)
+                    item["asset_data"].append({
+                        "placeholder": ad.placeholder,
+                        "asset_id": ad.asset_id,
+                        "type": asset.asset_type.value if asset else "unknown",
+                        "url": asset.original_uri if asset else "",
+                    })
+
+            # 注入 Asset 视觉描述（来自图片/视频 AI 分析）
+            if assets:
+                # 收集该元素关联的所有 Asset 的视觉描述
+                element_asset_ids = {ad.asset_id for ad in el.asset_data}
+                descriptions = []
+                seen_ids: set[str] = set()
+                for asset in assets:
+                    if not asset.extracted_text:
+                        continue
+                    if asset.asset_id in seen_ids:
+                        continue
+                    # 通过 element_id 或 asset_id 关联
+                    if asset.element_id == el.element_id or asset.asset_id in element_asset_ids:
+                        seen_ids.add(asset.asset_id)
+                        descriptions.append({
+                            "asset_id": asset.asset_id,
+                            "asset_type": asset.asset_type.value,
+                            "description": asset.extracted_text,
+                        })
                 if descriptions:
                     item["asset_descriptions"] = descriptions
+
             items.append(item)
+
         return json.dumps(items, ensure_ascii=False, indent=2)
 
     def _build_chunks(
@@ -463,31 +476,51 @@ class SemanticExtractor:
 
             # ── 构造溯源引用 ──
             source_refs: list[SourceRef] = []
+            seen_element_ids: set[str] = set()
             raw_source_refs = raw.get("source_refs")
             if raw_source_refs is None:
-                # 兼容旧格式 source_element_ids
+                # 兼容旧格式 element_ids
                 raw_source_refs = [
                     {"element_id": eid}
-                    for eid in raw.get("source_element_ids", [])
+                    for eid in raw.get("element_ids", [])
                 ]
+            if not isinstance(raw_source_refs, list):
+                raw_source_refs = []
             for raw_ref in raw_source_refs:
                 if isinstance(raw_ref, str):
                     eid = raw_ref
-                else:
+                elif isinstance(raw_ref, dict):
                     eid = raw_ref.get("element_id")
+                else:
+                    continue
                 el = elements_by_id.get(eid)
-                if el:
+                if el and el.element_id not in seen_element_ids:
                     source_refs.append(
                         SourceRef(
                             doc_id=el.doc_id,
+                            doc_version=el.doc_version,
                             element_id=el.element_id,
                             source_location=el.source_location,
                         )
                     )
-            # 不再强行全量兜底——LLM 未提供溯源则留空
+                    seen_element_ids.add(el.element_id)
 
-            # ── 构造资源引用（无 relation 字段） ──
+            # KnowledgeChunk 已不再保存独立 doc_id，source_refs 是文档归属的唯一依据。
+            # LLM 未返回有效元素时回退到当前分段的全部元素，避免生成无法管理的孤儿知识块。
+            if not source_refs:
+                source_refs = [
+                    SourceRef(
+                        doc_id=el.doc_id,
+                        doc_version=el.doc_version,
+                        element_id=el.element_id,
+                        source_location=el.source_location,
+                    )
+                    for el in elements
+                ]
+
+            # ── 构造资源引用 ──
             asset_refs: list[AssetRef] = []
+            seen_asset_ids: set[str] = set()
             raw_asset_refs = raw.get("asset_refs")
             if raw_asset_refs is None:
                 # 兼容旧格式 asset_ids
@@ -495,23 +528,19 @@ class SemanticExtractor:
                     {"asset_id": aid}
                     for aid in raw.get("asset_ids", [])
                 ]
+            if not isinstance(raw_asset_refs, list):
+                raw_asset_refs = []
             for raw_ref in raw_asset_refs:
                 if isinstance(raw_ref, str):
                     aid = raw_ref
-                    linked_text = None
                     caption = None
-                    render = Render(mode="inline", position="after_linked_text")
-                else:
+                elif isinstance(raw_ref, dict):
                     aid = raw_ref.get("asset_id")
-                    linked_text = raw_ref.get("linked_text")
                     caption = raw_ref.get("caption")
-                    render_data = raw_ref.get("render") or {}
-                    render = Render(
-                        mode=render_data.get("mode", "inline"),
-                        position=render_data.get("position", "after_linked_text"),
-                    )
+                else:
+                    continue
                 asset = assets_by_id.get(aid)
-                if asset:
+                if asset and asset.asset_id not in seen_asset_ids:
                     if not caption:
                         caption = (
                             asset.metadata.get("caption")
@@ -521,16 +550,12 @@ class SemanticExtractor:
                     asset_refs.append(
                         AssetRef(
                             asset_id=asset.asset_id,
-                            linked_text=linked_text,
                             caption=caption,
-                            render=render,
                         )
                     )
-
-            doc_id = elements[0].doc_id if elements else ""
+                    seen_asset_ids.add(asset.asset_id)
 
             chunk = KnowledgeChunk(
-                doc_id=doc_id,
                 title=raw.get("title") or self._derive_title(content),
                 content=content,
                 content_hash=compute_hash(content),
@@ -550,7 +575,7 @@ class SemanticExtractor:
     @staticmethod
     def _derive_title(content: str) -> str:
         """从内容首句派生简短标题。"""
-        first = content.split("。")[0].split("；")[0].strip()
+        first = content.split("。")[0].split("？")[0].strip()
         if len(first) > 40:
             first = first[:40] + "..."
         return first
@@ -570,31 +595,34 @@ class SemanticExtractor:
         source_refs = [
             SourceRef(
                 doc_id=el.doc_id,
+                doc_version=el.doc_version,
                 element_id=el.element_id,
                 source_location=el.source_location,
             )
             for el in elements
         ]
-        asset_by_id = {asset.asset_id: asset for asset in assets}
+
+        # 通过 asset_id 关联 Asset，构造资源引用
+        assets_by_id = {a.asset_id: a for a in assets}
         asset_refs: list[AssetRef] = []
-        seen_assets: set[str] = set()
+        seen_ids: set[str] = set()
         for el in elements:
-            for asset_id in el.asset_ids:
-                if asset_id in seen_assets or asset_id not in asset_by_id:
+            for ad in el.asset_data:
+                if ad.asset_id in seen_ids:
                     continue
-                asset = asset_by_id[asset_id]
+                asset = assets_by_id.get(ad.asset_id)
+                if asset is None:
+                    continue
                 asset_refs.append(
                     AssetRef(
                         asset_id=asset.asset_id,
                         caption=asset.metadata.get("alt") or asset.original_uri,
                     )
                 )
-                seen_assets.add(asset_id)
+                seen_ids.add(ad.asset_id)
 
-        doc_id = elements[0].doc_id
         return [
             KnowledgeChunk(
-                doc_id=doc_id,
                 title=self._derive_title(content),
                 content=content,
                 content_hash=compute_hash(content),
