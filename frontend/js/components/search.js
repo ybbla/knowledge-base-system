@@ -91,13 +91,12 @@ const SearchPage = (() => {
       const res = await API.search(query, topK, filters, {
         hybrid: true,
         rewrite: true,
-        highlight: true,
-        include_assets: true,
-        include_sources: true,
-        include_score_components: true,
       });
 
       const data = res?.data || {};
+      const meta = res?.metadata || {};
+      data.rewritten_query = meta.rewritten_query || '';
+      data.total_count = meta.total_count || 0;
       lastResult = data;
       renderResults(data, query);
     } catch (e) {

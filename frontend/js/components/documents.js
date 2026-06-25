@@ -113,7 +113,7 @@ const Documents = (() => {
 
   function renderDocListHtml(res, state = {}) {
     const items = res?.data || [];
-    const meta = res?.meta || {};
+    const meta = res?.metadata || {};
     const total = meta.total || 0;
     const totalPages = meta.total_pages || 1;
     const hasFilters = Boolean(currentKeyword || currentCategory || currentStatus);

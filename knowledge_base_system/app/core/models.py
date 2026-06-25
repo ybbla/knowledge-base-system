@@ -61,11 +61,12 @@ class ElementType(str, Enum):
 
 
 class AssetType(str, Enum):
-    image = "image"                   # 内嵌图片（解析器提供了实际字节 _data）
-    image_link = "image_link"         # 外部图片链接（仅有 URL，需下载）
-    video = "video"                   # 内嵌视频（解析器提供了实际字节 _data）
-    video_link = "video_link"         # 视频链接（仅有 URL，需下载）
-    document_link = "document_link"   # 文档链接（仅有 URL，需下载后触发子文档入库）
+    image = "image"                   # 嵌入图片（_data 存储字节数据，original_uri 为空）
+    video = "video"                   # 嵌入视频（_data 存储字节数据，original_uri 为空）
+    image_link = "image_link"         # 图片链接（链接文字后缀为图片扩展名）
+    video_link = "video_link"         # 视频链接（链接文字后缀为视频扩展名）
+    document_link = "document_link"   # 文档链接（链接文字后缀为文档扩展名，下载后触发子文档入库）
+    web_link = "web_link"             # 普通网页链接（链接文字无识别后缀）
 
 
 # ── 嵌套类型 ──────────────────────────────────────────────────────
@@ -106,7 +107,7 @@ class Document(BaseModel):
     source_hash: str = ""
     category: str = "\u901a\u7528"
     version: int = 1
-    status: DocStatus = DocStatus.processing
+    status: DocStatus = DocStatus.pending
     parent_doc_id: str | None = None
     root_doc_id: str | None = None
     previous_doc_id: str | None = None
@@ -122,7 +123,7 @@ class AssetData(BaseModel):
     由解析器在解析时填入，记录正文中占位符与实际 Asset 的对应关系。
     表格单元格也通过 structured_data 内的同名字段关联。
     """
-    placeholder: str = ""                         # 占位符，如 "[image1]"，旧解析器可为空
+    placeholder: str = ""                         # 占位符，如 "{{image:1}}"，旧解析器可为空
     asset_id: str                                 # 关联的 Asset.asset_id
 
 
@@ -142,13 +143,22 @@ class ParsedElement(BaseModel):
 
 
 class Asset(BaseModel):
+    """文档关联的资源资产。
+
+    字段语义按 asset_type 不同：
+    - image/video:     original_uri=""，storage_uri=MinIO key，display_text=""
+    - image_link/video_link/document_link: original_uri=URL，storage_uri=下载后 MinIO key，display_text=链接文字
+    - web_link:        original_uri=URL，storage_uri=None，display_text=链接文字
+    _data 为运行时私有属性（不入库），image/video 类型的原始字节数据。
+    """
     asset_id: str = Field(default_factory=lambda: new_id("asset"))
     doc_id: str
     element_id: str = ""
     doc_version: int = 1
     asset_type: AssetType
-    original_uri: str
-    storage_uri: str | None = None
+    original_uri: str = ""              # 链接类型存 URL，嵌入类型为空
+    storage_uri: str | None = None      # MinIO key，web_link 为空
+    display_text: str = ""              # 链接锚文本，嵌入类型为空
     content_hash: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: AssetStatus = AssetStatus.ready
@@ -188,6 +198,9 @@ class KnowledgeChunk(BaseModel):
 
 class SearchResultItem(BaseModel):
     chunk_id: str
+    doc_id: str = ""                   # 从 Milvus 直接带回，免查 PG
+    doc_title: str = ""                # 从 Milvus 直接带回，免查 PG
+    status: str = "active"             # 从 Milvus 带回，供过滤器使用
     title: str = ""
     content: str
     score: float
@@ -196,7 +209,6 @@ class SearchResultItem(BaseModel):
     score_components: ScoreComponents = Field(default_factory=ScoreComponents)
     asset_refs: list[dict[str, Any]] = Field(default_factory=list)
     source_refs: list[SourceRef] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class SearchResult(BaseModel):

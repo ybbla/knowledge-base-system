@@ -60,8 +60,8 @@ const Dashboard = (() => {
         API.listDocuments({ page: 1, page_size: 1 }),
         API.listChunks({ page: 1, page_size: 1 }),
       ]);
-      docCount = docsRes?.meta?.total || 0;
-      chunkCount = chunksRes?.meta?.total || 0;
+      docCount = docsRes?.metadata?.total || 0;
+      chunkCount = chunksRes?.metadata?.total || 0;
     } catch (e) { /* 统计数据获取失败使用默认值 0 */ }
 
     try {
@@ -70,8 +70,8 @@ const Dashboard = (() => {
         API.listDocuments({ page: 1, page_size: 1, status: 'failed' }),
         API.listDocuments({ page: 1, page_size: 1, status: 'processing' }),
       ]);
-      failedDocCount = failedRes?.meta?.total || 0;
-      processingDocCount = processingRes?.meta?.total || 0;
+      failedDocCount = failedRes?.metadata?.total || 0;
+      processingDocCount = processingRes?.metadata?.total || 0;
     } catch (e) { /* 统计数据获取失败使用默认值 0 */ }
 
     // ── 第三步：组装外部依赖列表（按固定顺序） ──

@@ -4,6 +4,7 @@
 import hashlib
 import io
 import logging
+import re
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -26,11 +27,8 @@ from app.core.models import (
 from parsers.base import DocumentParser, ParseResult, _BaseParseState
 from parsers.utils import (
     ATTACHMENT_EXTENSIONS,
-    VIDEO_URL_RE,
     classify_link,
-    guess_mime,
-    is_attachment_url,
-    is_video_url,
+    classify_link_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,7 +72,7 @@ class DocxParser(DocumentParser):
         state = _DocxParseState(doc.doc_id, doc.version)
 
         # 1. 预提取所有嵌入图片到 asset map
-        self._build_image_asset_map(doc, state)
+        self._build_image_asset_map(content, doc, state)
 
         # 2. 按文档顺序遍历所有正文元素，不处理页眉和页脚。
         for child in docx.element.body:
@@ -87,10 +85,7 @@ class DocxParser(DocumentParser):
         # 3. 完成解析并获取全部元素。
         elements = state.flush_elements()
 
-        # 4. 从元素文本中提取视频链接
-        self._extract_videos(doc, elements, state)
-
-        # 5. 回填 Asset.element_id 关联
+        # 4. 回填 Asset.element_id 关联
         self._link_assets_to_elements(elements, state.assets)
 
         # 6. 计算文档内容哈希
@@ -101,50 +96,106 @@ class DocxParser(DocumentParser):
     # ── 标题检────────────────────────────────────────────────
 
     @classmethod
-    def _detect_heading_level(cls, style_name: str, docx: DocxDocument) -> int | None:
-        """从样式名中检测标题层级
-        匹配逻辑：样式名小写后检查是否包含任一多语言关键提取尾部数字作为 level        无数字时通过 docx.styles 二次确认是否为标题样式
+    def _detect_heading_level(
+        cls, style_name: str, docx: DocxDocument, pPr=None,
+    ) -> int | None:
+        """从样式名或段落属性中检测标题层级。
+
+        采用多层检测策略，按优先级依次尝试：
+        1. 样式 ID 直接匹配多语言标题关键词并提取数字
+        2. 样式 ID 含关键词但无数字时，查样式表取层级
+        3. 样式 ID 不含关键词时，查样式表按样式名匹配关键词（修复核心：style_id 可能
+           是 "1"/"a1" 等不含关键词的值，需通过样式表获取真实名称如 "Heading 1"）
+        4. w:outlineLvl 大纲级别兜底（OOXML 标准机制）
+
         Args:
-            style_name: w:pStyle w:val 属性值            docx: python-docx Document 对象，用于二次样式确认
+            style_name: w:pStyle / w:val 属性值（样式 ID）
+            docx: python-docx Document 对象，用于样式表二次确认
+            pPr: w:pPr XML 元素，用于检测 w:outlineLvl
+
         Returns:
-            标题层级-9），非标题样式返None        """
+            标题层级（1-9），非标题样式返回 None。
+        """
         if not style_name:
-            return None
+            return cls._detect_by_outline_level(pPr)
 
         name_lower = style_name.lower()
 
-        # 检查样式名是否包含任一标题关键词。
+        # ── 策略 1：样式 ID 直接匹配关键词 ──
         matched_keyword = None
         for kw in cls.HEADING_KEYWORDS:
             if kw in name_lower:
                 matched_keyword = kw
                 break
 
-        if matched_keyword is None:
+        if matched_keyword is not None:
+            # 去掉关键词后提取尾部连续数字
+            remaining = name_lower.replace(matched_keyword, "").strip()
+            digits = ""
+            for ch in reversed(remaining):
+                if ch.isdigit():
+                    digits = ch + digits
+                else:
+                    break
+            if digits:
+                return int(digits)
+
+            # 有关键词但无数字 → 查样式表取层级
+            level = cls._lookup_style_heading_level(style_name, docx)
+            if level is not None:
+                return level
+            return 1  # 默认 level 1
+
+        # ── 策略 2：样式 ID 不含关键词 → 查样式表按样式名匹配 ──
+        level = cls._lookup_style_heading_level(style_name, docx)
+        if level is not None:
+            return level
+
+        # ── 策略 3：w:outlineLvl 兜底 ──
+        return cls._detect_by_outline_level(pPr)
+
+    @staticmethod
+    def _detect_by_outline_level(pPr) -> int | None:
+        """从 w:outlineLvl 检测大纲级别（OOXML 标准标题机制）。
+
+        outlineLvl 值从 0 开始（0 = Level 1 标题），返回时 +1 对齐 heading_level。
+        部分文档生成器使用 w:outlineLvl 而非 Heading 样式来标记标题。
+        """
+        if pPr is None:
             return None
+        outline_lvl = pPr.find(qn("w:outlineLvl"))
+        if outline_lvl is not None:
+            try:
+                lvl = int(outline_lvl.get(qn("w:val"), "0"))
+                return lvl + 1  # outlineLvl 0-based → heading_level 1-based
+            except (ValueError, TypeError):
+                pass
+        return None
 
-        # 去掉关键词后提取尾部数字
-        remaining = name_lower.replace(matched_keyword, "").strip()
-        # 提取尾部连续数字
-        digits = ""
-        for ch in reversed(remaining):
-            if ch.isdigit():
-                digits = ch + digits
-            else:
-                break
+    @classmethod
+    def _lookup_style_heading_level(
+        cls, style_id: str, docx: DocxDocument,
+    ) -> int | None:
+        """在 docx.styles 中按 style_id 查找样式，检查其名称是否包含标题关键词。
 
-        if digits:
-            return int(digits)
+        与样式 ID 匹配逻辑解耦：即使样式 ID 是 "1" / "a1" 等不含关键词的值，
+        也能通过样式表获取真实名称（如 "Heading 1" / "标题 1"）来判定。
 
-        # 无数字时通过 DOCX 样式表二次确认。
+        Args:
+            style_id: 样式 ID（w:pStyle / w:val 的值）
+            docx: python-docx Document 对象
+
+        Returns:
+            标题层级（1-9），非标题样式返回 None。
+        """
         try:
             for style in docx.styles:
-                if style.style_id == style_name and style.type == WD_STYLE_TYPE.PARAGRAPH:
+                if style.style_id == style_id and style.type == WD_STYLE_TYPE.PARAGRAPH:
                     if style.name:
                         s_lower = style.name.lower()
                         for kw in cls.HEADING_KEYWORDS:
                             if kw in s_lower:
-                                # 从样式名称中提取层级数字。
+                                # 从样式名称中提取层级数字
                                 remain = s_lower.replace(kw, "").strip()
                                 d = ""
                                 for ch in reversed(remain):
@@ -154,11 +205,10 @@ class DocxParser(DocumentParser):
                                         break
                                 if d:
                                     return int(d)
-                                return 1  # 有关键词但无数字，默level 1
+                                return 1  # 有关键词但无数字，默认 level 1
                     break
         except Exception:
             pass
-
         return None
 
     # ── 段落处理 ────────────────────────────────────────────────
@@ -182,26 +232,72 @@ class DocxParser(DocumentParser):
 
         # 按直接子元素顺序遍历，提取文本和资源
         text_parts: list[str] = []
-        has_content = False  # 是否有实际内容（文本、图片或链接
+        has_content = False  # 是否有实际内容（文本、图片或链接）
+        in_field = False      # 是否在 w:fldChar begin..end 范围内
+        field_has_asset = False     # 字段指令已创建 Asset
+        pending_placeholder = ""    # 待追加到显示文字后的占位符
         for child in p_el:
             child_tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
 
             if child_tag == "r":
                 # ── 文本运行（w:r）──
-                # 先检查内联图片节点，并提取关系 ID。
+                # 跟踪 w:fldChar 状态
+                fld_char_type = self._get_fld_char_type(child)
+                if fld_char_type == "begin":
+                    in_field = True
+                    continue
+                if fld_char_type == "separate":
+                    continue
+                if fld_char_type == "end":
+                    in_field = False
+                    field_has_asset = False
+                    pending_placeholder = ""
+                    continue
+
+                # 先检查内联图片/视频节点（w:drawing），仅追加占位符
                 drawing_rIds = self._extract_drawing_rIds(child)
                 for rId in drawing_rIds:
                     asset = self._resolve_image_asset(rId, docx, state)
                     if asset is not None:
+                        placeholder = state.next_placeholder(asset.asset_type.value)
                         state.track_asset(AssetData(
-                            placeholder="", asset_id=asset.asset_id,
+                            placeholder=placeholder, asset_id=asset.asset_id,
                         ))
-                        # 从资源 URI 提取文件名作为占位文本。
-                        filename = asset.original_uri.rsplit("/", 1)[-1] if "/" in asset.original_uri else asset.original_uri
-                        text_parts.append(f"[图片: {filename}]")
+                        text_parts.append(placeholder)
                         has_content = True
 
-                # 再提取文本节点。
+                # 检查 w:instrText 字段指令（企业微信微盘等嵌入文件），文字被占位符替换
+                instr_url, instr_filename = self._parse_field_instruction(child)
+                if instr_url and instr_filename:
+                    asset_type = classify_link_text(instr_filename)
+                    placeholder = state.next_placeholder(asset_type.value)
+                    asset = Asset(
+                        doc_id=state.doc_id,
+                        asset_type=asset_type,
+                        original_uri=instr_url,
+                        display_text=instr_filename,
+                        status=AssetStatus.ready,
+                        metadata={
+                            "source": "field_instruction",
+                        },
+                    )
+                    state.assets.append(asset)
+                    state.track_asset(AssetData(
+                        placeholder=placeholder, asset_id=asset.asset_id,
+                    ))
+                    has_content = True
+                    field_has_asset = True
+                    pending_placeholder = placeholder
+                    continue
+
+                # 字段显示文字：被占位符替换，不保留原文
+                if in_field and field_has_asset:
+                    text_parts.append(pending_placeholder)
+                    field_has_asset = False
+                    has_content = True
+                    continue
+
+                # 提取文本节点。
                 for t_node in child.iter(qn("w:t")):
                     if t_node.text:
                         text_parts.append(t_node.text)
@@ -210,28 +306,25 @@ class DocxParser(DocumentParser):
             elif child_tag == "hyperlink":
                 # ── 超链接（w:hyperlink）──
                 link_text, url = self._extract_hyperlink(child, docx)
-                if link_text:
-                    text_parts.append(link_text)
-                    has_content = True
-
                 if url:
-                    asset_type = self._classify_link_url(url)
-                    if asset_type is not None:
-                        # 文件、视频或图片链接统一创建 Asset，并通过 AssetData 关联当前元素。
-                        asset = Asset(
-                            doc_id=state.doc_id,
-                            asset_type=asset_type,
-                            original_uri=url,
-                            status=AssetStatus.ready,
-                            metadata={"mime_type": guess_mime(url, asset_type)},
-                        )
-                        state.assets.append(asset)
-                        state.track_asset(AssetData(
-                            placeholder="", asset_id=asset.asset_id,
-                        ))
-                    else:
-                        # 普通网页链URL 记录link_urls
-                        state.track_link_url(url)
+                    # 按链接文字后缀分类（非 URL），兜底为 web_link
+                    asset_type = classify_link_text(link_text)
+                    asset = Asset(
+                        doc_id=state.doc_id,
+                        asset_type=asset_type,
+                        original_uri=url,
+                        display_text=link_text,
+                        status=AssetStatus.ready,
+                        metadata={},
+                    )
+                    state.assets.append(asset)
+                    placeholder = state.next_placeholder(asset_type.value)
+                    # 链接文字被占位符替换
+                    text_parts.append(placeholder)
+                    has_content = True
+                    state.track_asset(AssetData(
+                        placeholder=placeholder, asset_id=asset.asset_id,
+                    ))
 
         text = "".join(text_parts).strip()
 
@@ -245,13 +338,18 @@ class DocxParser(DocumentParser):
             return
 
         # 根据样式判断元素类型
-        # 列表样式不识别为标题，避免误判。
-        heading_match = None if is_list else self._detect_heading_level(style_name, docx)
+        # 标题检测优先：即使段落带有 w:numPr（自动编号），只要样式为
+        # Heading 也应识别为标题，避免被误判为列表项。
+        heading_match = self._detect_heading_level(style_name, docx, pPr)
 
         if heading_match is not None:
             state.add_title(text, heading_match)
         elif is_list:
-            state.add_list_item(text)
+            state.add_to_list_buffer(text)
+        elif state._list_buffer:
+            # 列表缓冲区非空时，即使当前段落不带 w:numPr，
+            # 也视为同一列表的延续，避免被无编号的中间段落打断。
+            state.add_to_list_buffer(text)
         else:
             state.add_paragraph(text)
 
@@ -287,18 +385,58 @@ class DocxParser(DocumentParser):
 
     # ── 链接分类 ────────────────────────────────────────────────
 
+    # ── 字段字符检测 ──────────────────────────────────────────
+
     @staticmethod
-    def _classify_link_url(url: str) -> AssetType | None:
-        """判断链接 URL 的资源类型（MarkdownParser 相同逻辑）
-        优先级：视频 > 图片 > 附件 > 普通网页        普通网页返None        """
-        if is_video_url(url):
-            return AssetType.video_link
-        suffix = PurePosixPath(url.split("?", 1)[0]).suffix.lower()
-        if suffix in _IMAGE_EXTENSIONS:
-            return AssetType.image_link
-        if is_attachment_url(url):
-            return AssetType.document_link
+    def _get_fld_char_type(r_el) -> str | None:
+        """从 w:r 中提取 w:fldChar 的 fldCharType 属性值。
+
+        Returns:
+            "begin" / "separate" / "end"，不存在时返回 None。
+        """
+        fld = r_el.find(qn("w:fldChar"))
+        if fld is not None:
+            return fld.get(qn("w:fldCharType"))
         return None
+
+    # ── 字段指令解析（企业微信微盘等嵌入文件）─────────────────
+
+    @staticmethod
+    def _parse_field_instruction(r_el) -> tuple[str, str]:
+        """从 w:r 的 w:instrText 中提取 URL 和文件名。
+
+        支持多种字段格式：
+        - WeDrive: \\tdfu https://... \\tdfn file.mov
+        - HYPERLINK: HYPERLINK \"https://...\"
+        - INCLUDEPICTURE: INCLUDEPICTURE \"https://...\"
+        - 通用：提取第一个 https?:// URL 作为链接
+
+        Returns:
+            (url, filename) 元组，未找到时返回 ("", "")。
+        """
+        for instr_node in r_el.iter(qn("w:instrText")):
+            text = instr_node.text or ""
+
+            # 策略1：WeDrive 嵌入文件（\\tdfu URL + \\tdfn 文件名）
+            url_match = re.search(r"\\tdfu\s+(\S+)", text)
+            fn_match = re.search(r"\\tdfn\s+(\S+)", text)
+            if url_match and fn_match:
+                return url_match.group(1), fn_match.group(1)
+
+            # 策略2：HYPERLINK / INCLUDEPICTURE 等标准字段
+            m = re.search(r'''(?:HYPERLINK|INCLUDEPICTURE)\s+"(https?://[^"]+)"''', text, re.IGNORECASE)
+            if m:
+                url = m.group(1)
+                filename = url.rsplit("/", 1)[-1].split("?", 1)[0] or "file"
+                return url, filename
+
+            # 策略3：通用兜底 — 提取任意 https?:// URL
+            m = re.search(r"(https?://\S+)", text)
+            if m:
+                url = m.group(0)
+                filename = url.rsplit("/", 1)[-1].split("?", 1)[0] or "file"
+                return url, filename
+        return "", ""
 
     # ── 内联图片处理 ────────────────────────────────────────────
 
@@ -341,20 +479,21 @@ class DocxParser(DocumentParser):
         self, tbl_el, docx: DocxDocument, state: "_DocxParseState"
     ) -> None:
         """处理一w:tbl 元素（表格）
-        提取行列结构，处理合并单元格（含垂直合并），
+        表格的出现意味着列表上下文结束，先刷新列表缓冲区，
+        再提取行列结构，处理合并单元格（含垂直合并），
         同时提取单元格内的图片和超链接资源        """
+        state._flush_list_buffer()
         # 每格(text, asset_data) 元组
         rows_data: list[list[tuple[str, list[AssetData]]]] = []
         headers: list[tuple[str, list[AssetData]]] = []
         vertical_merges: dict[int, tuple[str, list[AssetData]]] = {}
-        table_link_urls: list[str] = []
-        table_links: list[dict[str, str]] = []
 
         for i, tr in enumerate(tbl_el.findall(qn("w:tr"))):
             cells: list[tuple[str, list[AssetData]]] = []
             col_idx = 0
             for tc in tr.findall(qn("w:tc")):
-                # 提取单元格的文本和资                cell_text_parts: list[str] = []
+                # 提取单元格的文本和资源信息
+                cell_text_parts: list[str] = []
                 cell_asset_data: list[AssetData] = []
 
                 # w:tc 的直接子元素w:p（段落），遍历每w:p
@@ -363,19 +502,22 @@ class DocxParser(DocumentParser):
                     if tc_tag != "p":
                         continue
 
-                    # 复用段落子元素遍历模                    para_text_parts: list[str] = []
+                    # 复用段落子元素遍历模板
+                    para_text_parts: list[str] = []
                     for p_child in tc_child:
                         p_tag = p_child.tag.split("}")[-1] if "}" in p_child.tag else p_child.tag
 
                         if p_tag == "r":
-                            # 内联图片
+                            # 内联图片/视频，仅追加占位符
                             drawing_rIds = self._extract_drawing_rIds(p_child)
                             for rId in drawing_rIds:
                                 asset = self._resolve_image_asset(rId, docx, state)
                                 if asset is not None:
+                                    placeholder = state.next_placeholder(asset.asset_type.value)
                                     cell_asset_data.append(AssetData(
-                                        placeholder="", asset_id=asset.asset_id,
+                                        placeholder=placeholder, asset_id=asset.asset_id,
                                     ))
+                                    para_text_parts.append(placeholder)
                             # 文本
                             for t_node in p_child.iter(qn("w:t")):
                                 if t_node.text:
@@ -383,32 +525,22 @@ class DocxParser(DocumentParser):
 
                         elif p_tag == "hyperlink":
                             link_text, url = self._extract_hyperlink(p_child, docx)
-                            if link_text:
-                                para_text_parts.append(link_text)
                             if url:
-                                asset_type = self._classify_link_url(url)
-                                if asset_type is not None:
-                                    asset = Asset(
-                                        doc_id=state.doc_id,
-                                        asset_type=asset_type,
-                                        original_uri=url,
-                                        status=AssetStatus.ready,
-                                        metadata={"mime_type": guess_mime(url, asset_type)},
-                                    )
-                                    state.assets.append(asset)
-                                    cell_asset_data.append(AssetData(
-                                        placeholder="", asset_id=asset.asset_id,
-                                    ))
-                                else:
-                                    # 普通网页链接记录到 link_urls
-                                    table_link_urls.append(url)
-                                # 记录链接信息用于 structured_data.links
-                                table_links.append({
-                                    "text": link_text or "",
-                                    "url": url,
-                                    "link_type": classify_link(url),
-                                })
-
+                                asset_type = classify_link_text(link_text)
+                                asset = Asset(
+                                    doc_id=state.doc_id,
+                                    asset_type=asset_type,
+                                    original_uri=url,
+                                    display_text=link_text,
+                                    status=AssetStatus.ready,
+                                    metadata={},
+                                )
+                                state.assets.append(asset)
+                                placeholder = state.next_placeholder(asset_type.value)
+                                para_text_parts.append(placeholder)
+                                cell_asset_data.append(AssetData(
+                                    placeholder=placeholder, asset_id=asset.asset_id,
+                                ))
                     if para_text_parts:
                         cell_text_parts.append("".join(para_text_parts))
 
@@ -460,36 +592,15 @@ class DocxParser(DocumentParser):
         structured: dict[str, Any] = {
             "table": {
                 "caption": "",
-                "headers": [
-                    {
-                        "text": h[0],
-                        "asset_data": [
-                            ad.model_dump(mode="json")
-                            for ad in h[1]
-                        ],
-                    }
-                    for h in headers
-                ],
+                "headers": [{"text": h[0]} for h in headers],
                 "rows": [
                     {
-                        "cells": [
-                            {
-                                "text": cell[0],
-                                "asset_data": [
-                                    ad.model_dump(mode="json")
-                                    for ad in cell[1]
-                                ],
-                            }
-                            for cell in row
-                        ]
+                        "cells": [{"text": cell[0]} for cell in row]
                     }
                     for row in rows_data
                 ],
             }
         }
-        if table_links:
-            structured["links"] = table_links
-
         # 表格级资源引用按 asset_id 去重，避免合并单元格造成重复引用。
         seen_asset_ids: set[str] = set()
         for h in headers:
@@ -522,31 +633,27 @@ class DocxParser(DocumentParser):
             "asset_data": all_asset_data,
             "source_location": SourceLocation(section_path=list(state._section_path)),
         }
-        if table_link_urls:
-            element_kwargs["metadata"] = {"link_urls": table_link_urls}
         el = ParsedElement(**element_kwargs)
         state.elements.append(el)
 
     # ── 图片预提──────────────────────────────────────────────
 
     def _build_image_asset_map(
-        self, doc: Document, state: "_DocxParseState"
+        self, content: bytes, doc: Document, state: "_DocxParseState"
     ) -> None:
-        """docx 归档word/media/ 目录预提取所有嵌入图片
-        图片存入 state._image_asset_map（双 key）和 state.assets        不再创建独立image 类型 ParsedElement
-        Args:
-            doc: 文档对象（含 raw_content source_uri）            state: 当前解析状态        """
-        raw = doc.metadata.get("raw_content", "")
-        zip_source: bytes | Path | None = None
-        if raw:
-            zip_source = raw.encode("utf-8") if isinstance(raw, str) else raw
-        elif doc.source_uri.startswith("file://"):
-            filepath = resolve_file_uri(doc.source_uri)
-            if filepath.exists():
-                zip_source = filepath
+        """docx 归档 word/media/ 目录预提取所有嵌入媒体文件。
 
-        if zip_source is None:
-            return
+        图片和视频统一按扩展名分类存入 state._image_asset_map 和 state.assets。
+        通过 content 参数直接接收原始字节，避免依赖 doc.metadata。
+
+        Args:
+            content: 文档原始字节（zip 格式）
+            doc: 文档对象
+            state: 当前解析状态
+        """
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        zip_source = content
 
         try:
             with zipfile.ZipFile(
@@ -562,23 +669,23 @@ class DocxParser(DocumentParser):
                     ext = name.rsplit(".", 1)[-1].lower() if "." in name else "bin"
                     filename = name.split("/")[-1]
 
+                    # 根据扩展名区分嵌入图片和视频
+                    is_video = ext in {"mov", "mp4", "webm", "m4v"}
+                    asset_type = AssetType.video if is_video else AssetType.image
+
                     # 同时保存 ZIP 完整路径与关系文件使用的短路径。
                     short_path = name.replace("word/", "", 1)  # media/image1.png
 
                     asset = Asset(
                         doc_id=state.doc_id,
                         element_id="",
-                        asset_type=AssetType.image,
-                        original_uri=f"docx://{state.doc_id}/media/{filename}",
+                        asset_type=asset_type,
+                        original_uri="",                # 嵌入类型无外部来源
                         content_hash=f"sha256:{content_hash}",
                         status=AssetStatus.ready,
                         storage_uri=None,
                         extracted_text=None,
-                        metadata={
-                            "mime_type": guess_mime(f".{ext}", AssetType.image),
-                            "width": None,
-                            "height": None,
-                        },
+                        metadata={},
                     )
                     object.__setattr__(asset, "_data", data)
 
@@ -591,37 +698,6 @@ class DocxParser(DocumentParser):
             logger.warning("docx 提取图片失败: %s", exc)
 
     # ── 视频提取 ────────────────────────────────────────────────
-
-    def _extract_videos(
-        self,
-        doc: Document,
-        elements: list[ParsedElement],
-        state: "_DocxParseState",
-    ) -> None:
-        """从元素文本中识别视频链接并创Asset
-        使用公共 VIDEO_URL_RE guess_mime，Asset 存入 state.assets        不再创建独立video 类型 ParsedElement
-        Args:
-            doc: 文档对象            elements: 已解析的元素列表            state: 当前解析状态        """
-        seen: set[str] = {a.original_uri for a in state.assets if a.asset_type == AssetType.video_link}
-        for el in elements:
-            for match in VIDEO_URL_RE.finditer(el.text or ""):
-                url = match.group(0)
-                if url in seen:
-                    continue
-                seen.add(url)
-                asset = Asset(
-                    doc_id=state.doc_id,
-                    element_id=el.element_id,
-                    asset_type=AssetType.video_link,
-                    original_uri=url,
-                    storage_uri=None,
-                    extracted_text=None,
-                    metadata={
-                        "source": "video_link",
-                        "mime_type": guess_mime(url, AssetType.video_link),
-                    },
-                )
-                state.assets.append(asset)
 
     # ── 资源关联回填 ────────────────────────────────────────────
 
@@ -662,9 +738,11 @@ class _DocxParseState(_BaseParseState):
     _next_seq() 方法    扩展资源跟踪字段，支持内联图片和超链接的关联    """
 
     _current_list_id: str | None = None
+    _list_buffer: list[str] = field(default_factory=list)  # 连续列表项文本缓冲区
     _tracked_assets: list[AssetData] = field(default_factory=list)
     _link_urls: list[str] = field(default_factory=list)
     _image_asset_map: dict[str, Asset] = field(default_factory=dict)
+    _counters: dict[str, int] = field(default_factory=dict)
     assets: list[Asset] = field(default_factory=list)
 
     # ── 资源跟踪 ────────────────────────────────────────────────
@@ -683,6 +761,25 @@ class _DocxParseState(_BaseParseState):
         self._tracked_assets = []
         return result
 
+    # 资源类型 → 占位符前缀映射
+    _PLACEHOLDER_PREFIX = {
+        "video_link": "video",
+        "video": "video",
+        "image_link": "image",
+        "image": "image",
+        "document_link": "doc",
+        "web_link": "web",
+    }
+
+    def next_placeholder(self, asset_type: str) -> str:
+        """生成递增占位符，如 {{video:1}}, {{image:2}}, {{doc:3}}, {{web:4}}。
+
+        与 md 解析器行为一致，每种类型独立计数。
+        """
+        prefix = self._PLACEHOLDER_PREFIX.get(asset_type, "res")
+        self._counters[prefix] = self._counters.get(prefix, 0) + 1
+        return f"{{{{{prefix}:{self._counters[prefix]}}}}}"
+
     def consume_link_urls(self) -> list[str]:
         """消费并清空链接 URL 列表。"""
         result = list(self._link_urls)
@@ -692,14 +789,18 @@ class _DocxParseState(_BaseParseState):
     # ── 元素累积 ────────────────────────────────────────────────
 
     def flush_elements(self) -> list[ParsedElement]:
-        """完成解析并返回全部累积元素。"""
+        """完成解析：先刷新列表缓冲区，再返回全部累积元素。"""
+        self._flush_list_buffer()
         return self.elements
 
     def add_title(self, text: str, level: int) -> None:
-        """添加标题元素并按层级更新 section_path
-        标题出现时清空资源跟踪（资源不关联到标题）        """
+        """添加标题元素并按层级更新 section_path。
+
+        标题出现时先刷新列表缓冲区，再清空资源跟踪。
+        """
         if not text:
             return
+        self._flush_list_buffer()
         self._current_list_id = None
         self.consume_tracked_assets()  # 丢弃
         self.consume_link_urls()       # 丢弃
@@ -719,10 +820,14 @@ class _DocxParseState(_BaseParseState):
         )
 
     def add_paragraph(self, text: str) -> None:
-        """添加普通段落元素，并消费跟踪的资源和链接 URL。"""
+        """添加普通段落元素，并消费跟踪的资源。
+
+        段落的到来意味着列表上下文结束，先刷新列表缓冲区。
+        """
+        self._flush_list_buffer()
         self._current_list_id = None
         asset_data = self.consume_tracked_assets()
-        link_urls = self.consume_link_urls()
+        self.consume_link_urls()  # 已废弃，link_urls 不再写入 metadata
         element = ParsedElement(
             doc_id=self.doc_id,
             doc_version=self.doc_version,
@@ -732,38 +837,39 @@ class _DocxParseState(_BaseParseState):
             asset_data=asset_data,
             source_location=SourceLocation(section_path=list(self._section_path)),
         )
-        if link_urls:
-            element.metadata["link_urls"] = link_urls
         self.elements.append(element)
 
-    def add_list_item(self, text: str) -> None:
-        """添加列表项，自动创建列表容器元素（如果尚未创建）
-        列表项出现时清空资源跟踪（资源不关联到列表项）        """
-        self.consume_tracked_assets()  # 丢弃
-        self.consume_link_urls()       # 丢弃
-        if self._current_list_id is None:
-            list_el = ParsedElement(
-                doc_id=self.doc_id,
-                doc_version=self.doc_version,
-                sequence_order=self._next_seq(),
-                element_type=ElementType.list,
-                text="",
-                source_location=SourceLocation(section_path=list(self._section_path)),
-            )
-            self.elements.append(list_el)
-            self._current_list_id = list_el.element_id
+    def add_to_list_buffer(self, text: str) -> None:
+        """将列表项文本追加到缓冲区，不清空资源跟踪。
 
+        多个连续列表项缓冲后，在遇到下一个非列表元素或解析结束时
+        由 _flush_list_buffer() 合并为一个 paragraph 整体输出。
+        """
+        self.consume_tracked_assets()  # 列表项不关联资源
+        self.consume_link_urls()
+        self._list_buffer.append(text)
+
+    def _flush_list_buffer(self) -> None:
+        """将缓冲区中的连续列表项合并为一个 paragraph 元素并清空缓冲区。"""
+        if not self._list_buffer:
+            return
+        merged_text = "\n".join(self._list_buffer)
+        self._list_buffer.clear()
+        self._current_list_id = None
         self.elements.append(
             ParsedElement(
                 doc_id=self.doc_id,
                 doc_version=self.doc_version,
-                parent_element_id=self._current_list_id,
                 sequence_order=self._next_seq(),
                 element_type=ElementType.paragraph,
-                text=text,
+                text=merged_text,
                 source_location=SourceLocation(section_path=list(self._section_path)),
             )
         )
+
+    def add_list_item(self, text: str) -> None:
+        """向后兼容的列表项添加方法，内部委托给 add_to_list_buffer。"""
+        self.add_to_list_buffer(text)
 
     def add_unknown(self, text: str) -> None:
         """添加未知类型元素，例如不支持的内嵌对象。"""

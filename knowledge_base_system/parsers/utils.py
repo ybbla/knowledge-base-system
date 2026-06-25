@@ -50,6 +50,10 @@ MIME_MAP: dict[str, str] = {
 def guess_mime(url: str, asset_type: AssetType) -> str:
     """根据 URL 后缀和资源类型推断 MIME 类型。
 
+    注意：不建议在 Asset 创建时调用此函数设置 metadata["mime_type"]。
+    Asset 的 mime_type 应由 asset_processor 中 sniff_image_mime / sniff_video_mime
+    通过文件魔数确定，扩展名推断不可靠且会被覆盖。
+
     Args:
         url: 资源 URL 或文件路径。
         asset_type: Asset 类型（image / image_link / video_link / document_link）。
@@ -85,6 +89,16 @@ ATTACHMENT_EXTENSIONS: set[str] = {
     ".zip", ".rar", ".7z", ".csv", ".txt", ".md",
 }
 
+# 链接文字后缀 → 资源类型分类（按链接锚文本后缀判断，非 URL）
+_LINK_TEXT_IMAGE_EXT: set[str] = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".tiff", ".tif",
+}
+_LINK_TEXT_VIDEO_EXT: set[str] = {".mov", ".mp4", ".webm", ".m4v"}
+_LINK_TEXT_DOC_EXT: set[str] = {
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".zip", ".rar", ".7z", ".csv", ".txt", ".md",
+}
+
 
 def is_video_url(url: str) -> bool:
     """判断 URL 是否为视频链接。"""
@@ -95,6 +109,30 @@ def is_attachment_url(url: str) -> bool:
     """判断 URL 是否指向附件文件。"""
     suffix = PurePosixPath(url.split("?", 1)[0]).suffix.lower()
     return suffix in ATTACHMENT_EXTENSIONS if suffix else False
+
+
+def classify_link_text(text: str) -> AssetType:
+    """根据链接文字的后缀名判断资源类型。
+
+    天空.png → image_link
+    演示.mp4 → video_link
+    手册.pdf → document_link
+    百度 → web_link（无识别后缀）
+
+    Args:
+        text: 链接锚文本或文件名。
+
+    Returns:
+        对应的 AssetType 枚举值。
+    """
+    suffix = PurePosixPath(text.split("?", 1)[0]).suffix.lower()
+    if suffix in _LINK_TEXT_IMAGE_EXT:
+        return AssetType.image_link
+    if suffix in _LINK_TEXT_VIDEO_EXT:
+        return AssetType.video_link
+    if suffix in _LINK_TEXT_DOC_EXT:
+        return AssetType.document_link
+    return AssetType.web_link
 
 
 # ── 链接分类 ──────────────────────────────────────────────────────────────

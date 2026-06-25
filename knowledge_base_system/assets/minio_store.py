@@ -40,10 +40,12 @@ def parse_minio_uri(uri: str) -> tuple[str, str]:
 
 
 def make_minio_key(doc_id: str, file_name: str, asset_id: str | None = None) -> str:
-    """生成按 doc_id 前两位分片的 MinIO object key。
+    """生成按 doc_id 前两位分片的 MinIO object key，用于文档文件上传。
 
     分片策略避免单目录文件过多，格式：{prefix}/{doc_id}/{asset_id}/{file_name}
     或 {prefix}/{doc_id}/{file_name}（无 asset_id 时）。
+
+    Asset 文件请使用 make_asset_key() 按 content_hash 内容寻址。
 
     Args:
         doc_id: 文档 ID。
@@ -58,6 +60,27 @@ def make_minio_key(doc_id: str, file_name: str, asset_id: str | None = None) -> 
     if asset_id:
         return f"{prefix}/{doc_id}/{asset_id}/{safe_name}"
     return f"{prefix}/{doc_id}/{safe_name}"
+
+
+def make_asset_key(content_hash: str) -> str:
+    """生成内容寻址的 MinIO object key，确保同内容文件在 MinIO 中仅存一份。
+
+    格式：{hash_hex[:2]}/{hash_hex}，取 hex digest 前两位作为分片前缀（256 个目录）。
+    同 content_hash → 同 key → 跨文档自动复用，不受文档删除影响。
+
+    举例：content_hash="sha256:a1b2c3d4e5f6..." → "a1/a1b2c3d4e5f6..."
+
+    Args:
+        content_hash: Asset 的 content_hash（格式: "sha256:<hex>"）。
+
+    Returns:
+        内容寻址的 MinIO object key 字符串。
+    """
+    if ":" in content_hash:
+        hash_hex = content_hash.split(":", 1)[-1]
+    else:
+        hash_hex = content_hash
+    return f"{hash_hex[:2]}/{hash_hex}"
 
 
 class MinioAssetStore(AssetStore):
@@ -105,12 +128,19 @@ class MinioAssetStore(AssetStore):
         return self._client
 
     def put(self, asset: Asset) -> None:
-        """存储 Asset：上传二进制数据到 MinIO，元数据委托给 metadata_store。"""
+        """存储 Asset：上传二进制数据到 MinIO，元数据委托给 metadata_store。
+
+        MinIO key 按 content_hash 内容寻址，Content-Type 从 metadata 读取。
+        """
         data = getattr(asset, "_data", None)
         if data is not None and not asset.storage_uri:
-            file_name = asset.metadata.get("file_name") or Path(asset.original_uri).name
-            key = make_minio_key(asset.doc_id, file_name, asset.asset_id)
-            self.upload_bytes(self.assets_bucket, key, data, "application/octet-stream")
+            # 内容寻址：key 由 content_hash 决定，同内容文件在 MinIO 中仅存一份
+            if not asset.content_hash:
+                import hashlib
+                asset.content_hash = f"sha256:{hashlib.sha256(data).hexdigest()}"
+            key = make_asset_key(asset.content_hash)
+            content_type = asset.metadata.get("mime_type") or "application/octet-stream"
+            self.upload_bytes(self.assets_bucket, key, data, content_type)
             asset.storage_uri = f"minio://{self.assets_bucket}/{key}"
         self._metadata_store.put(asset)
 
@@ -128,14 +158,11 @@ class MinioAssetStore(AssetStore):
         return self._metadata_store.get_by_doc_id(doc_id)
 
     def delete(self, asset_id: str) -> None:
-        """删除 Asset：从 MinIO 移除对象文件，再从元数据存储中删除。"""
-        asset = self._metadata_store.get(asset_id)
-        if asset and asset.storage_uri and asset.storage_uri.startswith("minio://"):
-            bucket, key = parse_minio_uri(asset.storage_uri)
-            try:
-                self.client.remove_object(bucket, key)
-            except Exception:
-                logger.exception("删除 MinIO 对象失败: %s", asset.storage_uri)
+        """删除 Asset 元数据，不物理删除 MinIO 文件。
+
+        MinIO key 由 content_hash 决定，同内容文件跨文档共享。
+        孤儿文件由未来定时 GC 回收。
+        """
         self._metadata_store.delete(asset_id)
 
     def upload_bytes(

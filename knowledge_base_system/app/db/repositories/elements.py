@@ -53,10 +53,15 @@ class ParsedElementRepository(BaseRepository):
         )
 
     def create_batch(self, elements: list[ParsedElement]) -> list[ParsedElement]:
-        """批量写入解析元素（使用 merge 避免主键冲突）。"""
+        """批量写入解析元素（入库场景全新建，使用 bulk_save_objects 单次 INSERT）。
+
+        前提：pipeline 中 _cleanup_previous_artifacts 已调用 delete_by_doc_id 清空旧数据。
+        """
+        if not elements:
+            return elements
         with self._session() as session:
-            for el in elements:
-                session.merge(self._to_db(el))
+            db_objs = [self._to_db(el) for el in elements]
+            session.bulk_save_objects(db_objs)
             session.commit()
             return elements
 

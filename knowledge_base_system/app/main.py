@@ -9,6 +9,8 @@ from app.core.deps import shutdown_resources
 from app.utils.thread_pool import (
     startup_health_pool, shutdown_health_pool,
     startup_upload_pool, shutdown_upload_pool,
+    startup_sub_ingest_pool, shutdown_sub_ingest_pool,
+    startup_asset_worker_pool, shutdown_asset_worker_pool,
 )
 
 # 前端静态文件目录
@@ -19,12 +21,16 @@ _FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 async def lifespan(app: FastAPI):
     startup_health_pool()
     startup_upload_pool()
+    startup_sub_ingest_pool()
+    startup_asset_worker_pool()
     try:
         yield
     finally:
         shutdown_resources()
-        shutdown_upload_pool()
         shutdown_health_pool()
+        shutdown_asset_worker_pool()
+        shutdown_sub_ingest_pool()
+        shutdown_upload_pool()
 
 
 app = FastAPI(

@@ -66,6 +66,7 @@ def setup_milvus() -> None:
     fields = [
         FieldSchema(name="chunk_id", dtype=DataType.VARCHAR, is_primary=True, max_length=128),
         FieldSchema(name="doc_id", dtype=DataType.VARCHAR, max_length=128),
+        FieldSchema(name="doc_title", dtype=DataType.VARCHAR, max_length=512),
         FieldSchema(name="title", dtype=DataType.VARCHAR, max_length=512),
         FieldSchema(
             name="content", dtype=DataType.VARCHAR, max_length=65535,
@@ -77,6 +78,7 @@ def setup_milvus() -> None:
         FieldSchema(name="knowledge_type", dtype=DataType.VARCHAR, max_length=64),
         FieldSchema(name="status", dtype=DataType.VARCHAR, max_length=32),
         FieldSchema(name="source_refs", dtype=DataType.VARCHAR, max_length=65535),
+        FieldSchema(name="asset_refs", dtype=DataType.VARCHAR, max_length=65535),
         FieldSchema(name="metadata", dtype=DataType.VARCHAR, max_length=65535),
     ]
 

@@ -43,14 +43,14 @@ class APIResponse(BaseModel, Generic[T]):
     列表接口使用 PaginatedResponse（继承本类并覆盖 meta）。
     """
     data: T = Field(..., description="响应主数据")
-    meta: dict[str, Any] = Field(default_factory=dict, description="补充元数据，分页时使用规范的 PaginationMeta")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="补充元数据")
     error: None = Field(default=None, description="成功时为 null")
 
 
 class APIErrorResponse(BaseModel):
     """所有 /api/v1 接口的统一错误响应。"""
     data: None = Field(default=None, description="错误时为 null")
-    meta: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     error: ErrorDetail = Field(..., description="错误详情")
 
 
@@ -60,7 +60,7 @@ class PaginatedResponse(APIResponse[list[T]], Generic[T]):
     使用方式:
         PaginatedResponse[DocumentItem](
             data=[...],
-            meta=PaginationMeta(page=1, page_size=20, total=100).model_dump(),
+            metadata=PaginationMeta(page=1, page_size=20, total=100).model_dump(),
         )
     """
 
@@ -84,7 +84,7 @@ def error_json(
     return JSONResponse(
         status_code=status_code,
         content=APIErrorResponse(
-            meta=meta or {},
+            metadata=meta or {},
             error=ErrorDetail(code=code, message=message, details=details),
         ).model_dump(mode="json"),
     )

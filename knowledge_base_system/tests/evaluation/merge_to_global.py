@@ -66,29 +66,29 @@ def merge_doc_to_global(doc_id: str) -> int:
         with open(global_path, encoding="utf-8") as f:
             existing_items = json.load(f)
 
-    # 构建已有 query → index 的映射
-    existing_queries: dict[str, int] = {}
+    # 构建已有 (doc_id, query) → index 的映射（跨文档不同 query 不冲突）
+    existing_keys: dict[tuple[str, str], int] = {}
     for idx, item in enumerate(existing_items):
         q = item.get("query", "")
+        d = item.get("doc_id", "")
         if q:
-            existing_queries[q] = idx
+            existing_keys[(d, q)] = idx
 
-    # ── 4. 按 query 去重合并 ──
+    # ── 4. 按 (doc_id, query) 去重合并 ──
     added = 0
     skipped = 0
     for item in new_items:
         q = item.get("query", "")
+        d = item.get("doc_id", "")
         if not q:
             continue
 
-        if q in existing_queries:
-            # 已存在 → 检查是否人工标注
-            existing_idx = existing_queries[q]
+        key = (d, q)
+        if key in existing_keys:
+            existing_idx = existing_keys[key]
             if existing_items[existing_idx].get("source") == "manual":
-                # 人工标注条目不覆盖
                 skipped += 1
                 continue
-            # 自动生成条目可覆盖
             skipped += 1
             continue
 
@@ -98,9 +98,10 @@ def merge_doc_to_global(doc_id: str) -> int:
             "expected_chunk_ids": item.get("expected_chunk_ids", []),
             "expected_content_contains": item.get("expected_content_contains", []),
             "doc_id": item.get("doc_id"),
+            "doc_version": item.get("doc_version", 1),
             "source": item.get("source", "auto"),
         })
-        existing_queries[q] = len(existing_items) - 1
+        existing_keys[key] = len(existing_items) - 1
         added += 1
 
     # ── 5. 写回全局数据集 ──

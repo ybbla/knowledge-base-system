@@ -35,7 +35,7 @@ async def health_live():
     """进程存活探针 — 仅返回 ok，不检查任何外部服务。"""
     return APIResponse(
         data={"status": "ok"},
-        meta={"service": "knowledge-base-system", "version": "0.3.0"},
+        metadata={"service": "knowledge-base-system", "version": "0.3.0"},
     ).model_dump(mode="json")
 
 
@@ -87,7 +87,7 @@ async def health():
             "status": overall,
             "dependencies": deps,
         },
-        meta={"service": "knowledge-base-system", "version": "0.3.0"},
+        metadata={"service": "knowledge-base-system", "version": "0.3.0"},
     ).model_dump(mode="json")
 
 

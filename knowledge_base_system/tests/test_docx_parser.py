@@ -125,6 +125,7 @@ class TestDocxParser:
             assert el.doc_id == doc.doc_id
 
     def test_parse_list_items(self):
+        """连续列表项合并为一个 paragraph 整体输出。"""
         docx = DocxDocument()
         docx.add_paragraph("First item", style="List Bullet")
         docx.add_paragraph("Second item", style="List Bullet")
@@ -139,14 +140,16 @@ class TestDocxParser:
         )
         result = self.parser.parse(doc, doc.metadata["raw_content"])
 
+        # 列表不再分割为 container + children，而是合并为一个 paragraph
         lists = [e for e in result.elements if e.element_type == ElementType.list]
-        items = [
+        assert len(lists) == 0
+        paragraphs = [
             e for e in result.elements
-            if e.element_type == ElementType.paragraph and e.parent_element_id
+            if e.element_type == ElementType.paragraph
         ]
-        assert len(lists) == 1
-        assert [item.text for item in items] == ["First item", "Second item"]
-        assert all(item.parent_element_id == lists[0].element_id for item in items)
+        assert len(paragraphs) == 1
+        assert paragraphs[0].text == "First item\nSecond item"
+        assert paragraphs[0].parent_element_id is None
 
     def test_parse_merged_table_cells_are_expanded(self):
         docx = DocxDocument()

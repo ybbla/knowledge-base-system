@@ -4,7 +4,7 @@ import logging
 
 from app.core.config import settings
 from assets.minio_store import MinioAssetStore
-from ingestion.pipeline import IngestionPipeline
+from ingestion.pipeline import IngestionPipeline, _strip_placeholders
 from llm.semantic_extractor import SemanticExtractor
 from llm.volcengine_client import embedding_client
 from parsers.docx_parser import DocxParser
@@ -132,30 +132,32 @@ def rebuild_retrieval_indexes_from_chunks(category: str | None = None) -> int:
         doc_id = c.doc_id or (c.source_refs[0].doc_id if c.source_refs else "")
         metadata = {
             "doc_id": doc_id,
+            "doc_title": c.metadata.get("doc_title", ""),
             "title": c.title,
             "category": c.category,
             "knowledge_type": c.knowledge_type.value,
             "status": "active",
             "source_refs": [ref.model_dump(mode="json") for ref in c.source_refs],
-            "metadata": c.metadata,
+            "asset_refs": [ref.model_dump(mode="json") for ref in c.asset_refs],
         }
-        bm25_items.append((c.chunk_id, c.content, metadata))
+        bm25_items.append((c.chunk_id, _strip_placeholders(c.content), metadata))
     bm25_index.add_batch(bm25_items)
 
     # 批量写入向量索引
-    vectors = embedding_client.embed_text([c.content for c in chunks])
+    vectors = embedding_client.embed_text([_strip_placeholders(c.content) for c in chunks])
     vector_items = []
     for chunk, vector in zip(chunks, vectors):
         doc_id = chunk.doc_id or (chunk.source_refs[0].doc_id if chunk.source_refs else "")
         metadata = {
             "doc_id": doc_id,
+            "doc_title": chunk.metadata.get("doc_title", ""),
             "title": chunk.title,
             "content": chunk.content,
             "category": chunk.category,
             "knowledge_type": chunk.knowledge_type.value,
             "status": chunk.status.value,
             "source_refs": [ref.model_dump(mode="json") for ref in chunk.source_refs],
-            "metadata": chunk.metadata,
+            "asset_refs": [ref.model_dump(mode="json") for ref in chunk.asset_refs],
         }
         vector_items.append((chunk.chunk_id, vector, metadata))
     vector_index.add_batch(vector_items)

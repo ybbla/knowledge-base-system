@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Query, UploadFile
 from fastapi import status as http_status
 
 from app.api import upload_utils as upload_api
@@ -70,6 +71,12 @@ def _build_doc_stats(doc_id: str) -> dict[str, int | dict]:
     if element_repo is not None:
         elements = element_repo.get_by_doc_id(doc_id)
         stats["element_count"] = len(elements)
+
+    # 统计 asset 数量
+    if asset_store is not None and hasattr(asset_store, "count_by_doc_id"):
+        stats["asset_count"] = asset_store.count_by_doc_id(doc_id)
+    elif asset_store is not None and hasattr(asset_store, "get_by_doc_id"):
+        stats["asset_count"] = len(asset_store.get_by_doc_id(doc_id))
 
     stats["index_summary"] = _build_index_summary(doc_id)
     return stats
@@ -203,7 +210,7 @@ async def list_documents(
             total=total,
             total_pages=total_pages,
         )
-        return PaginatedResponse(data=items, meta=meta.model_dump()).model_dump(mode="json")
+        return PaginatedResponse(data=items, metadata=meta.model_dump()).model_dump(mode="json")
 
     return error_json(
         ErrorCode.SERVICE_UNAVAILABLE,
@@ -292,8 +299,8 @@ async def upload_document(
     file: UploadFile = File(...),
     title: str | None = Form(default=None),
     category: str = Form(default=upload_api.DEFAULT_CATEGORY),
-    replace_doc_id: str | None = Query(default=None, description="要替换的文档 ID"),
-    confirm_replace: bool = Query(default=False, description="确认替换同名文档"),
+    replace_doc_id: str | None = None,
+    confirm_replace: bool = False,
 ):
     """上传文件，创建文档并立即入库。
 
@@ -335,7 +342,7 @@ async def upload_document(
                     "title": existing.title,
                     "category": existing.category,
                 },
-                meta={"duplicate": True},
+                metadata={"duplicate": True},
             ).model_dump(mode="json")
 
     # ── 同名文档检测（仅上传新文件时） ──
@@ -354,7 +361,7 @@ async def upload_document(
                     "title": resolved_title,
                     "category": resolved_category,
                 },
-                meta={"suggested_replace": True},
+                metadata={"suggested_replace": True},
             ).model_dump(mode="json")
 
     # ── 更新场景：旧文档校验 + 默认值回填 ──
@@ -639,7 +646,7 @@ async def list_document_elements(
     )
     return PaginatedResponse(
         data=[_element_to_item(element) for element in elements[start:end]],
-        meta=meta.model_dump(),
+        metadata=meta.model_dump(),
     ).model_dump(mode="json")
 
 

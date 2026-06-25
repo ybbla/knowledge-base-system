@@ -243,6 +243,8 @@ class EmbeddingClient:
     def embed_text(self, texts: list[str]) -> list[list[float]]:
         """生成文本嵌入向量（1024 维），逐条调用 multimodal_embeddings API。
 
+        注意：该 API 不支持批量 input（传入多个只返回一个结果），必须逐条调用。
+
         参数:
             texts: 待嵌入的文本列表
 

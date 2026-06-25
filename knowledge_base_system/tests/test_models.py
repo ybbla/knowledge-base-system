@@ -180,7 +180,7 @@ class TestDocument:
         doc = Document(title="Test", source_type="markdown", source_uri="file:///test.md")
         assert doc.doc_id.startswith("doc_")
         assert doc.version == 1
-        assert doc.status == DocStatus.processing
+        assert doc.status == DocStatus.pending
         assert doc.category == "通用"
         assert doc.source_hash == ""
         assert doc.parent_doc_id is None
@@ -740,18 +740,6 @@ class TestSearchResult:
         assert len(item.source_refs) == 1
         assert item.source_refs[0].element_id == "el_002"
 
-    def test_result_item_with_metadata(self):
-        item = SearchResultItem(
-            chunk_id="chunk_001",
-            title="Test",
-            content="Content",
-            score=0.92,
-            category="产品使用",
-            knowledge_type=KnowledgeType.declarative,
-            metadata={"title_path": ["产品使用手册", "上传文档"]},
-        )
-        assert item.metadata["title_path"] == ["产品使用手册", "上传文档"]
-
     def test_json_round_trip_full(self):
         """SearchResult 全字段 JSON 序列化往返。"""
         items = [
@@ -765,7 +753,6 @@ class TestSearchResult:
                 score_components=ScoreComponents(vector=0.89, bm25=0.73, rerank=0.92),
                 asset_refs=[{"asset_id": "asset_001", "storage_uri": "minio://..."}],
                 source_refs=[SourceRef(doc_id="doc_001", element_id="el_002")],
-                metadata={"title_path": ["产品使用手册", "上传文档"]},
             )
         ]
         sr = SearchResult(
@@ -796,7 +783,7 @@ class TestEnums:
         assert values == expected
 
     def test_asset_type_values(self):
-        assert {t.value for t in AssetType} == {"image", "image_link", "video", "video_link", "document_link"}
+        assert {t.value for t in AssetType} == {"image", "image_link", "video", "video_link", "document_link", "web_link"}
 
     def test_asset_status_values(self):
         assert {s.value for s in AssetStatus} == {"downloading", "ready", "failed"}

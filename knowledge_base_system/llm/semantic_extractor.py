@@ -416,7 +416,7 @@ class SemanticExtractor:
             if el.structured_data:
                 item["structured_data"] = el.structured_data
 
-            # 注入元素级的资源映射（通过 asset_id 从 Asset 查找表获取类型和 URL）
+            # 注入元素级的资源映射（通过 asset_id 从 Asset 查找表获取类型）
             if el.asset_data:
                 item["asset_data"] = []
                 for ad in el.asset_data:
@@ -425,7 +425,6 @@ class SemanticExtractor:
                         "placeholder": ad.placeholder,
                         "asset_id": ad.asset_id,
                         "type": asset.asset_type.value if asset else "unknown",
-                        "url": asset.original_uri if asset else "",
                     })
 
             # 注入 Asset 视觉描述（来自图片/视频 AI 分析）
@@ -478,18 +477,10 @@ class SemanticExtractor:
             source_refs: list[SourceRef] = []
             seen_element_ids: set[str] = set()
             raw_source_refs = raw.get("source_refs")
-            if raw_source_refs is None:
-                # 兼容旧格式 element_ids
-                raw_source_refs = [
-                    {"element_id": eid}
-                    for eid in raw.get("element_ids", [])
-                ]
             if not isinstance(raw_source_refs, list):
                 raw_source_refs = []
             for raw_ref in raw_source_refs:
-                if isinstance(raw_ref, str):
-                    eid = raw_ref
-                elif isinstance(raw_ref, dict):
+                if isinstance(raw_ref, dict):
                     eid = raw_ref.get("element_id")
                 else:
                     continue
@@ -522,19 +513,10 @@ class SemanticExtractor:
             asset_refs: list[AssetRef] = []
             seen_asset_ids: set[str] = set()
             raw_asset_refs = raw.get("asset_refs")
-            if raw_asset_refs is None:
-                # 兼容旧格式 asset_ids
-                raw_asset_refs = [
-                    {"asset_id": aid}
-                    for aid in raw.get("asset_ids", [])
-                ]
             if not isinstance(raw_asset_refs, list):
                 raw_asset_refs = []
             for raw_ref in raw_asset_refs:
-                if isinstance(raw_ref, str):
-                    aid = raw_ref
-                    caption = None
-                elif isinstance(raw_ref, dict):
+                if isinstance(raw_ref, dict):
                     aid = raw_ref.get("asset_id")
                     caption = raw_ref.get("caption")
                 else:
@@ -543,8 +525,7 @@ class SemanticExtractor:
                 if asset and asset.asset_id not in seen_asset_ids:
                     if not caption:
                         caption = (
-                            asset.metadata.get("caption")
-                            or asset.metadata.get("alt")
+                            asset.display_text
                             or f"{asset.asset_type.value}: {asset.original_uri}"
                         )
                     asset_refs.append(
@@ -563,10 +544,7 @@ class SemanticExtractor:
                 category=category,
                 asset_refs=asset_refs,
                 source_refs=source_refs,
-                metadata={
-                    "title_path": self._get_title_path(elements),
-                    "language": "zh-CN",
-                },
+                metadata={},
             )
             chunks.append(chunk)
 
@@ -616,7 +594,7 @@ class SemanticExtractor:
                 asset_refs.append(
                     AssetRef(
                         asset_id=asset.asset_id,
-                        caption=asset.metadata.get("alt") or asset.original_uri,
+                        caption=asset.display_text or asset.original_uri,
                     )
                 )
                 seen_ids.add(ad.asset_id)
@@ -630,10 +608,6 @@ class SemanticExtractor:
                 category=category,
                 asset_refs=asset_refs,
                 source_refs=source_refs,
-                metadata={
-                    "title_path": self._get_title_path(elements),
-                    "language": "zh-CN",
-                    "fallback": "llm_empty_or_failed",
-                },
+                metadata={},
             )
         ]

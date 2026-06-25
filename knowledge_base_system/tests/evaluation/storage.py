@@ -29,8 +29,11 @@ def save_per_doc_dataset(
     doc_title: str,
     items: list[dict[str, Any]],
     chunk_count: int,
+    doc_version: int = 1,
 ) -> Path:
     """保存单个文档的评测数据到 datasets/ 目录。
+
+    同 doc_id 的旧文件在写入前自动清理（文档重入库后旧标注失效）。
 
     文件命名：doc_{doc_id前12位}_{日期}.json
     写入内容：{ metadata: {...}, items: [...] }
@@ -39,13 +42,18 @@ def save_per_doc_dataset(
         doc_id: 文档 ID。
         doc_title: 文档标题。
         items: 评测条目列表，每个 dict 包含 query、expected_chunk_ids、
-               expected_content_contains、doc_id、source 字段。
+               expected_content_contains、doc_id、doc_version、source 字段。
         chunk_count: 该文档包含的知识块数量。
+        doc_version: 文档版本号。默认 1。
 
     Returns:
         保存的文件路径。
     """
     init_storage()
+
+    # 清理同 doc_id 的旧数据集文件（重入库后旧标注失效）
+    for old_file in DATASETS_DIR.glob(f"doc_{doc_id[:12]}*.json"):
+        old_file.unlink()
 
     timestamp = datetime.now().strftime("%Y%m%d")
     filename = f"doc_{doc_id[:12]}_{timestamp}.json"
@@ -55,6 +63,7 @@ def save_per_doc_dataset(
         "metadata": {
             "doc_id": doc_id,
             "doc_title": doc_title,
+            "doc_version": doc_version,
             "generated_at": datetime.now().isoformat(),
             "generated_by": "auto-ingest",
             "chunk_count": chunk_count,

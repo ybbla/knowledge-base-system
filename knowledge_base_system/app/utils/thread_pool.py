@@ -517,3 +517,96 @@ def shutdown_upload_pool() -> None:
     if upload_executor is not None:
         shutdown_thread_pool(upload_executor, wait=True, cancel_futures=False)
         upload_executor = None
+
+
+# ── 子文档入库线程池（生命周期由 lifespan 管理） ──────────────────────────
+
+sub_ingest_pool: ThreadPoolExecutor | None = None
+"""子文档入库专用线程池，4 线程。
+
+document_link 触发子文档异步入库时使用此池。
+独立池 → 不与 _prepare_assets 竞争 worker，避免嵌套提交死锁。
+"""
+
+
+def startup_sub_ingest_pool(
+    max_workers: int = 4,
+    *,
+    thread_name_prefix: str = "kb-sub-ingest",
+) -> ThreadPoolExecutor:
+    """创建子文档入库专用线程池。
+
+    应在 FastAPI lifespan startup 阶段调用。
+
+    Args:
+        max_workers: 最大工作线程数，默认 4。
+        thread_name_prefix: 线程名前缀。
+
+    Returns:
+        配置好的 ThreadPoolExecutor 实例。
+    """
+    global sub_ingest_pool
+    sub_ingest_pool = create_thread_pool(
+        max_workers=max_workers,
+        thread_name_prefix=thread_name_prefix,
+    )
+    return sub_ingest_pool
+
+
+def shutdown_sub_ingest_pool() -> None:
+    """关闭子文档入库线程池。
+
+    应在 FastAPI lifespan shutdown 阶段调用。
+    """
+    global sub_ingest_pool
+    if sub_ingest_pool is not None:
+        shutdown_thread_pool(sub_ingest_pool, wait=True, cancel_futures=False)
+        sub_ingest_pool = None
+
+
+# ── 资源处理线程池（生命周期由 lifespan 管理） ──────────────────────────
+
+asset_worker_pool: ThreadPoolExecutor | None = None
+"""资源处理专用线程池，6 线程。
+
+_prepare_assets 六路分发时使用：
+- image / video / image_link / video_link → 魔数校验 + 视觉理解 + MinIO 上传
+- document_link → HTTP 下载 → 子文档预占位 → MinIO 上传
+
+独立池 → _prepare_assets 无论被谁调用都不会与调用方争抢 worker。
+"""
+
+
+def startup_asset_worker_pool(
+    max_workers: int = 6,
+    *,
+    thread_name_prefix: str = "kb-asset-worker",
+) -> ThreadPoolExecutor:
+    """创建资源处理专用线程池。
+
+    应在 FastAPI lifespan startup 阶段调用。
+
+    Args:
+        max_workers: 最大工作线程数，默认 6。
+        thread_name_prefix: 线程名前缀。
+
+    Returns:
+        配置好的 ThreadPoolExecutor 实例。
+    """
+    global asset_worker_pool
+    asset_worker_pool = create_thread_pool(
+        max_workers=max_workers,
+        thread_name_prefix=thread_name_prefix,
+    )
+    return asset_worker_pool
+
+
+def shutdown_asset_worker_pool() -> None:
+    """关闭资源处理线程池。
+
+    应在 FastAPI lifespan shutdown 阶段调用。
+    """
+    global asset_worker_pool
+    if asset_worker_pool is not None:
+        shutdown_thread_pool(asset_worker_pool, wait=True, cancel_futures=False)
+        asset_worker_pool = None

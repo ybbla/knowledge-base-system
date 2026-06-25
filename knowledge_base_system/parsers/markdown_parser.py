@@ -24,7 +24,7 @@ from app.core.models import (
 )
 from parsers.base import DocumentParser, ParseResult
 from parsers.utils import (
-    guess_mime,
+    classify_link_text,
     is_attachment_url,
     is_video_url,
 )
@@ -93,7 +93,7 @@ class MarkdownParser(DocumentParser):
                         asset_type=AssetType(rtype),
                         original_uri=url,
                         status=AssetStatus.ready,
-                        metadata={"mime_type": guess_mime(url, AssetType(rtype))},
+                        metadata={},
                     )
                     self._assets.append(asset)
                     el.asset_data.append(AssetData(placeholder=ph, asset_id=asset.asset_id))
@@ -118,30 +118,26 @@ class MarkdownParser(DocumentParser):
     # ── 资源占位符 ────────────────────────────────────────────────
 
     def _next_ph(self, rtype: str) -> str:
-        """生成递增占位符，如 [image1]、[doc2]、[url3]、[video4]。"""
+        """生成递增占位符，如 {{image:1}}、{{doc:2}}、{{web:3}}、{{video:4}}。"""
         self._counters[rtype] = self._counters.get(rtype, 0) + 1
         label_map = {
             "image_link": "image", "video_link": "video",
-            "document_link": "doc", "url": "url",
+            "document_link": "doc", "web_link": "web",
+            "url": "web",
         }
-        return f"[{label_map.get(rtype, 'res')}{self._counters[rtype]}]"
+        return f"{{{{{label_map.get(rtype, 'res')}:{self._counters[rtype]}}}}}"
 
     def _next_seq(self) -> int:
         self._seq += 1
         return self._seq
 
-    def _add_asset_data(self, placeholder: str, rtype: str, url: str) -> None:
-        """记录一条资源到当前段落的 _pending_asset_data，同时创建 Asset。
-
-        url 类型（普通网页链接）不创建 Asset，走 metadata.link_urls 路径，
-        因此也不产生 AssetData。
-        """
-        if rtype == "url":
-            return
+    def _add_asset_data(self, placeholder: str, rtype: str, url: str, display_text: str = "") -> None:
+        """记录一条资源到当前段落的 _pending_asset_data，同时创建 Asset。"""
         asset = Asset(
             doc_id=self._doc_id,
             asset_type=AssetType(rtype),
             original_uri=url,
+            display_text=display_text,
             status=AssetStatus.ready,
             metadata={"mime_type": guess_mime(url, AssetType(rtype))},
         )
@@ -302,10 +298,11 @@ class MarkdownParser(DocumentParser):
             elif ctype == "image":
                 src = child.attrs.get("src", "") if isinstance(child.attrs, dict) else ""
                 alt = child.content or ""
-                rtype = "video_link" if self._is_video_link(src, alt) else "image_link"
+                # 嵌入图片：alt 为空则按文件名后缀判断
+                rtype = "video" if self._is_video_link(src, alt) else "image"
                 ph = self._next_ph(rtype)
                 self._add_asset_data(ph, rtype, src)
-                parts.append(f"{alt}{ph}")
+                parts.append(ph)
 
             elif ctype == "link_open":
                 self._in_link = True
@@ -318,10 +315,12 @@ class MarkdownParser(DocumentParser):
             elif ctype == "link_close":
                 self._in_link = False
                 link_text = "".join(self._link_text_parts)
-                rtype = self._classify_link_type(self._link_href)
+                # 按链接文字后缀分类（非 URL），兜底 web_link
+                rtype = classify_link_text(link_text).value
                 ph = self._next_ph(rtype)
-                self._add_asset_data(ph, rtype, self._link_href)
-                parts.append(f"{link_text}{ph}")
+                self._add_asset_data(ph, rtype, self._link_href, display_text=link_text)
+                # 链接文字被占位符替换
+                parts.append(ph)
                 self._link_text_parts = []
 
             else:
@@ -396,18 +395,7 @@ class MarkdownParser(DocumentParser):
             flat_parts.append(" | ".join(cell[0] for cell in row))
 
         cells_data = [
-            {
-                "cells": [
-                    {
-                        "text": cell_text,
-                        "asset_data": [
-                            ad.model_dump(mode="json")
-                            for ad in cell_asset_data
-                        ],
-                    }
-                    for cell_text, cell_asset_data in row
-                ]
-            }
+            {"cells": [{"text": cell_text} for cell_text, _ in row]}
             for row in self._table_rows
         ]
 

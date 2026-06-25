@@ -28,7 +28,6 @@ from parsers.base import DocumentParser, ParseResult, _BaseParseState
 from parsers.utils import (
     HTTP_URL_RE,
     classify_link,
-    guess_mime,
     is_attachment_url,
     is_video_url,
 )
@@ -163,16 +162,14 @@ class XlsxParser(DocumentParser):
 
             content_type = img.format or "png"
             ext = content_type.lower()
-            filename = f"image_{sheet_index}_{idx}.{ext}"
 
             asset = Asset(
                 doc_id=doc.doc_id,
                 asset_type=AssetType.image,
-                original_uri=f"xlsx://{doc.doc_id}/media/{filename}",
+                original_uri="",                # 嵌入类型无外部来源
                 status=AssetStatus.ready,
                 metadata={
                     "source": "xlsx_image",
-                    "mime_type": guess_mime(f".{ext}", AssetType.image),
                     "sheet_name": sheet_name,
                     "sheet_index": sheet_index,
                     "cell": f"{get_column_letter(col)}{row}" if row and col else None,
@@ -240,13 +237,11 @@ class XlsxParser(DocumentParser):
                     if not text and hyperlink.startswith(("http://", "https://")):
                         text = hyperlink
 
-                # 提取可下载资源引用；普通网页链接单独写入 link_urls。
-                link_asset_data, link_urls = self._assets_from_cell(
+                # 提取可下载资源引用
+                link_asset_data, _link_urls = self._assets_from_cell(
                     doc, ws.title, coordinate, text, hyperlink,
                     assets, assets_by_uri,
                 )
-                if link_urls:
-                    metadata["link_urls"] = link_urls
 
                 # 合并嵌入图片AssetData（图片优先排在前面）
                 cell_asset_data = image_cell_map.get((row, col), []) + link_asset_data
@@ -383,7 +378,6 @@ class XlsxParser(DocumentParser):
                     extracted_text=None,
                     metadata={
                         "source": "xlsx_cell",
-                        "mime_type": guess_mime(url, asset_type),
                         "sheet_name": sheet_name,
                         "cell": coordinate,
                     },
@@ -500,14 +494,7 @@ class _XlsxParseState(_BaseParseState):
             cell = self._cell(cells, region.min_row, col)
             asset_data_list.extend(cell.asset_data)
             header_cells.append(
-                {
-                    "text": cell.text,
-                    "asset_data": [
-                        ad.model_dump(mode="json")
-                        for ad in cell.asset_data
-                    ],
-                    "metadata": cell.metadata,
-                }
+                {"text": cell.text, "metadata": cell.metadata}
             )
         for row in range(region.min_row + 1, region.max_row + 1):
             row_cells = []
@@ -515,14 +502,7 @@ class _XlsxParseState(_BaseParseState):
                 cell = self._cell(cells, row, col)
                 asset_data_list.extend(cell.asset_data)
                 row_cells.append(
-                    {
-                        "text": cell.text,
-                        "asset_data": [
-                            ad.model_dump(mode="json")
-                            for ad in cell.asset_data
-                        ],
-                        "metadata": cell.metadata,
-                    }
+                    {"text": cell.text, "metadata": cell.metadata}
                 )
             rows.append({"cells": row_cells})
 
@@ -539,24 +519,6 @@ class _XlsxParseState(_BaseParseState):
                 },
             }
         }
-        # 汇总表格级 link_urls links（从单元metadata 聚合        table_link_urls: list[str] = []
-        table_links: list[dict[str, str]] = []
-        seen_urls: set[str] = set()
-        all_cells = header_cells + [c for row in rows for c in row["cells"]]
-        for c in all_cells:
-            cell_urls = c.get("metadata", {}).get("link_urls", [])
-            for url in cell_urls:
-                if url not in seen_urls:
-                    seen_urls.add(url)
-                    table_link_urls.append(url)
-                    table_links.append({
-                        "text": c["text"],
-                        "url": url,
-                        "link_type": classify_link(url),
-                    })
-        if table_links:
-            structured["links"] = table_links
-
         text = self._table_text(headers, rows)
         unique_asset_data = list({ad.asset_id: ad for ad in asset_data_list}.values())
         element_kwargs: dict[str, Any] = {
@@ -578,20 +540,7 @@ class _XlsxParseState(_BaseParseState):
                 ],
             ),
         }
-        if table_link_urls:
-            base_meta = {
-                "sheet_name": sheet_name,
-                "sheet_index": sheet_index,
-                "range": region.range_ref,
-                "link_urls": table_link_urls,
-            }
-        else:
-            base_meta = {
-                "sheet_name": sheet_name,
-                "sheet_index": sheet_index,
-                "range": region.range_ref,
-            }
-        element_kwargs["metadata"] = base_meta
+        element_kwargs["metadata"] = {}
         element = ParsedElement(**element_kwargs)
         self._link_assets(element, assets_by_uri, assets)
         self.elements.append(element)

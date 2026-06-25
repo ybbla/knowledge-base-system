@@ -92,24 +92,42 @@ class PgChunkStore(BaseRepository):
 
     def put(self, chunk: KnowledgeChunk) -> None:
         """保存知识块。已存在则更新（刷新 updated_at），不存在则新建。"""
+        self.bulk_put([chunk])
+
+    def bulk_put(self, chunks: list[KnowledgeChunk]) -> None:
+        """批量保存知识块。一次查询 + 一次 commit，替代逐条 put 的 N 次往返。
+
+        先批量查询已存在的 chunk_id，存在则原地更新字段，不存在则新建。
+        """
+        if not chunks:
+            return
         with self._session() as session:
-            existing = session.get(DbKnowledgeChunk, chunk.chunk_id)
-            if existing is not None:
-                # 更新已有记录 — 保留原始 created_at，刷新 updated_at
-                existing.doc_id = chunk.doc_id or (chunk.source_refs[0].doc_id if chunk.source_refs else "")
-                existing.title = chunk.title
-                existing.content = chunk.content
-                existing.content_hash = chunk.content_hash
-                existing.knowledge_type = chunk.knowledge_type.value
-                existing.category = chunk.category
-                existing.status = chunk.status.value
-                existing.asset_refs = [ref.model_dump(mode="json") for ref in chunk.asset_refs]
-                existing.source_refs = [ref.model_dump(mode="json") for ref in chunk.source_refs]
-                existing.updated_at = datetime.now(timezone.utc)
-                existing.meta = chunk.metadata
-            else:
-                db_chunk = self._to_db(chunk)
-                session.add(db_chunk)
+            chunk_ids = [c.chunk_id for c in chunks]
+            existing_rows = (
+                session.query(DbKnowledgeChunk)
+                .filter(DbKnowledgeChunk.chunk_id.in_(chunk_ids))
+                .all()
+            )
+            existing_map = {row.chunk_id: row for row in existing_rows}
+
+            now = datetime.now(timezone.utc)
+            for chunk in chunks:
+                row = existing_map.get(chunk.chunk_id)
+                if row is not None:
+                    # 更新已有记录
+                    row.doc_id = chunk.doc_id or (chunk.source_refs[0].doc_id if chunk.source_refs else "")
+                    row.title = chunk.title
+                    row.content = chunk.content
+                    row.content_hash = chunk.content_hash
+                    row.knowledge_type = chunk.knowledge_type.value
+                    row.category = chunk.category
+                    row.status = chunk.status.value
+                    row.asset_refs = [ref.model_dump(mode="json") for ref in chunk.asset_refs]
+                    row.source_refs = [ref.model_dump(mode="json") for ref in chunk.source_refs]
+                    row.updated_at = now
+                    row.meta = chunk.metadata
+                else:
+                    session.add(self._to_db(chunk))
             session.commit()
 
     def get(self, chunk_id: str) -> KnowledgeChunk | None:

@@ -20,7 +20,7 @@ from indexing.base import VectorIndex
 logger = logging.getLogger(__name__)
 
 DENSE_DIM = 1024
-JSON_TEXT_FIELDS = {"source_refs", "metadata"}
+JSON_TEXT_FIELDS = {"source_refs", "asset_refs"}
 
 
 def _json_dumps(value: Any) -> str:
@@ -44,6 +44,7 @@ def _default_entity(chunk_id: str) -> dict[str, Any]:
     return {
         "chunk_id": chunk_id,
         "doc_id": "",
+        "doc_title": "",
         "title": "",
         "content": "",
         "dense_vector": [0.0] * DENSE_DIM,
@@ -51,6 +52,7 @@ def _default_entity(chunk_id: str) -> dict[str, Any]:
         "knowledge_type": "",
         "status": "active",
         "source_refs": "[]",
+        "asset_refs": "[]",
         "metadata": "{}",
     }
 
@@ -187,6 +189,29 @@ class MilvusCollectionManager:
         self.collection.upsert(entities)
         self.collection.flush()
 
+    def upsert_entities(self, entities: list[dict[str, Any]]) -> None:
+        """全量 upsert 实体列表，跳过 _load_existing_entities 查询。
+
+        调用方保证每个 entity 包含全部必要字段（dense_vector 或 content 至少其一，
+        加上 doc_id/doc_title/title/category/knowledge_type/status/source_refs/asset_refs）。
+
+        适用场景：_index_chunks 初次入库；不适用于部分更新（sync_index_metadata）。
+        """
+        if not entities:
+            return
+        self.ensure_collection()
+        if self.collection is None:
+            raise RuntimeError("Milvus collection is not initialized")
+
+        _FN_OUTPUT = {"sparse_vector"}
+        for entity in entities:
+            for f in _FN_OUTPUT:
+                entity.pop(f, None)
+            # 写入内存缓存，供后续部分更新（sync_index_metadata）使用
+            self._cache[entity["chunk_id"]] = entity
+        self.collection.upsert(entities)
+        self.collection.flush()
+
     def delete(self, chunk_id: str) -> None:
         self.ensure_collection()
         if self.collection is None:
@@ -281,8 +306,8 @@ class MilvusVectorIndex(VectorIndex):
 
     # Milvus 检索返回的标量字段（检索 pipeline 实际使用的字段）
     _SEARCH_OUTPUT_FIELDS = [
-        "chunk_id", "doc_id", "title", "content", "category",
-        "knowledge_type", "source_refs", "metadata",
+        "chunk_id", "doc_id", "doc_title", "title", "content", "category",
+        "knowledge_type", "source_refs", "asset_refs",
     ]
 
     def search(

@@ -43,11 +43,21 @@ class _HtmlParseState:
     assets_by_key: dict[tuple[str, AssetType], _AssetRecord] = field(default_factory=dict)
     section_path: list[str] = field(default_factory=list)
     seq: int = 0
+    _counters: dict[str, int] = field(default_factory=dict)
 
     def next_seq(self) -> int:
         """生成递增的元素序号。"""
         self.seq += 1
         return self.seq
+
+    _PH_MAP = {"image": "image", "video": "video", "image_link": "image",
+               "video_link": "video", "document_link": "doc", "web_link": "web"}
+
+    def next_ph(self, asset_type: str) -> str:
+        """生成递增占位符 {{type:n}}。"""
+        prefix = self._PH_MAP.get(asset_type, "res")
+        self._counters[prefix] = self._counters.get(prefix, 0) + 1
+        return f"{{{{{prefix}:{self._counters[prefix]}}}}}"
 
 
 class HtmlParser(DocumentParser):
@@ -418,7 +428,7 @@ class HtmlParser(DocumentParser):
         asset_ids = self._assets_from_resource_tag(tag, state, doc, base_url)
         if not asset_ids:
             return
-        text = self._text(tag) or self._resource_label(tag)
+        text = self._text(tag) or self._resource_label(tag, state)
         self._append_element(
             state,
             ParsedElement(
@@ -446,7 +456,7 @@ class HtmlParser(DocumentParser):
             asset_ids.extend(self._assets_from_resource_tag(resource, state, doc, base_url))
         for url in self.HTTP_URL_RE.findall(self._text(tag)):
             if self._is_video_url(url):
-                asset = self._asset_for_url(url, AssetType.video_link, state, doc, {"source": "html_text"})
+                asset = self._asset_for_url(url, AssetType.video_link, state, doc, {})
                 asset_ids.append(
                     AssetData(placeholder="", asset_id=asset.asset_id)
                 )
@@ -476,42 +486,30 @@ class HtmlParser(DocumentParser):
 
         original_url = raw_url.strip()
         resolved_url = self._resolve_url(original_url, base_url)
-        metadata = {
-            "tag": name,
-            "attribute": attr,
-            "original_url": original_url,
-            "resolved_url": resolved_url,
-            "base_url": base_url,
-        }
         if name == "img":
-            metadata["alt"] = str(tag.get("alt") or "")
+            alt = str(tag.get("alt") or "")
+            asset_type = classify_link_text(alt) if alt else AssetType.image_link
             asset = self._asset_for_url(
                 resolved_url or original_url,
-                AssetType.image_link,
+                asset_type,
                 state,
                 doc,
-                metadata,
+                {},
             )
-            return [
-                AssetData(
-                    placeholder=str(tag.get("alt") or ""),
-                    asset_id=asset.asset_id,
-                )
-            ]
+            asset.display_text = alt
+            ph = state.next_ph(asset_type.value)
+            return [AssetData(placeholder=ph, asset_id=asset.asset_id)]
+
         if name in {"iframe", "embed", "object"} or self._is_attachment_url(resolved_url or original_url):
             asset = self._asset_for_url(
                 resolved_url or original_url,
                 AssetType.document_link,
                 state,
                 doc,
-                metadata,
+                {},
             )
-            return [
-                AssetData(
-                    placeholder="",
-                    asset_id=asset.asset_id,
-                )
-            ]
+            ph = state.next_ph("document_link")
+            return [AssetData(placeholder=ph, asset_id=asset.asset_id)]
         return []
 
     def _asset_for_url(
@@ -536,7 +534,6 @@ class HtmlParser(DocumentParser):
             extracted_text=None,
             metadata={
                 **metadata,
-                "mime_type": self._guess_mime(url, asset_type),
             },
         )
         state.assets.append(asset)
@@ -647,43 +644,11 @@ class HtmlParser(DocumentParser):
         suffix = PurePosixPath(path).suffix.lower()
         return suffix in self.ATTACHMENT_EXTENSIONS
 
-    @staticmethod
-    def _guess_mime(url: str, asset_type: AssetType) -> str:
-        """根据 URL 后缀和资源类型推断 MIME 类型。"""
-        suffix = PurePosixPath(urlparse(url).path or url).suffix.lower()
-        mime_map = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".gif": "image/gif",
-            ".webp": "image/webp",
-            ".svg": "image/svg+xml",
-            ".mp4": "video/mp4",
-            ".webm": "video/webm",
-            ".mov": "video/quicktime",
-            ".m4v": "video/mp4",
-            ".pdf": "application/pdf",
-            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        }
-        if suffix in mime_map:
-            return mime_map[suffix]
-        if asset_type in (AssetType.image, AssetType.image_link):
-            return "image/*"
-        if asset_type == AssetType.video_link:
-            return "video/*"
-        return "application/octet-stream"
-
-    @staticmethod
-    def _resource_label(tag: Tag) -> str:
-        """为资源标签生成可读的替代文本。"""
+    def _resource_label(self, tag: Tag, state: _HtmlParseState) -> str:
+        """为资源标签生成 {{type:n}} 占位符文本。"""
         name = (tag.name or "").lower()
-        attr = "href" if name == "a" else "data" if name == "object" else "src"
-        url = str(tag.get(attr) or "")
         if name == "img":
-            alt = str(tag.get("alt") or "")
-            return f"[图片: {alt or url}]"
+            return state.next_ph("image")
         if name in {"video", "source", "iframe"}:
-            return f"[视频: {url}]"
-        return f"[附件: {url}]"
+            return state.next_ph("video")
+        return state.next_ph("document_link")

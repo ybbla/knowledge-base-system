@@ -36,7 +36,36 @@ def _run() -> int:
         print("⚠️  评测数据集为空，请先添加评测数据。")
         return 1
 
-    # ── 2. 初始化检索索引 ──
+    # ── 2. 过滤过期标注（预期 chunk 已不存在的条目） ──
+    from app.core.deps import chunk_store
+
+    all_expected_ids = set()
+    for item in dataset:
+        all_expected_ids.update(item.expected_chunk_ids)
+
+    existing_ids: set[str] = set()
+    if all_expected_ids and hasattr(chunk_store, "get_batch"):
+        existing_chunks = chunk_store.get_batch(list(all_expected_ids))
+        existing_ids = {c.chunk_id for c in existing_chunks}
+
+    stale_count = 0
+    active_dataset: list[EvalItem] = []
+    for item in dataset:
+        if item.expected_chunk_ids and not any(
+            cid in existing_ids for cid in item.expected_chunk_ids
+        ):
+            stale_count += 1
+            continue
+        active_dataset.append(item)
+
+    if stale_count:
+        print(f"🗑️  过滤 {stale_count} 条过期标注（chunk 已被删除）")
+
+    if not active_dataset:
+        print("⚠️  过滤后无有效评测条目，请先入库文档生成新的评测数据。")
+        return 1
+
+    # ── 3. 初始化检索索引 ──
     from app.core.deps import rebuild_retrieval_indexes_from_chunks, retrieval_pipeline
 
     rebuilt = rebuild_retrieval_indexes_from_chunks()
@@ -44,21 +73,21 @@ def _run() -> int:
         print("⚠️  没有可评测的持久化知识块，请先完成文档入库。")
         return 1
 
-    # ── 3. 逐条查询并计算指标 ──
+    # ── 4. 逐条查询并计算指标 ──
     recall_scores: list[float | None] = []
     mrr_scores: list[float | None] = []
 
     print(f"\n🔍 检索索引已重建: {rebuilt} 个 chunks")
-    print(f"📊 评测中，共 {len(dataset)} 条查询...\n")
+    print(f"📊 评测中，共 {len(active_dataset)} 条查询（已过滤 {stale_count} 条过期）...\n")
 
     start_time = time.time()
 
-    for i, item in enumerate(dataset, 1):
+    for i, item in enumerate(active_dataset, 1):
         try:
             result = retrieval_pipeline.search(item.query, top_k=5)
             chunk_ids = [r.chunk_id for r in result.results]
         except Exception as exc:
-            print(f"  [{i}/{len(dataset)}] 检索异常: {item.query[:40]}... ({exc})")
+            print(f"  [{i}/{len(active_dataset)}] 检索异常: {item.query[:40]}... ({exc})")
             recall_scores.append(None)
             mrr_scores.append(None)
             continue
@@ -69,8 +98,8 @@ def _run() -> int:
         mrr_scores.append(m)
 
         # 每 10 条输出一次进度
-        if i % 10 == 0 or i == len(dataset):
-            print(f"  [{i}/{len(dataset)}] 已完成...")
+        if i % 10 == 0 or i == len(active_dataset):
+            print(f"  [{i}/{len(active_dataset)}] 已完成...")
 
     elapsed = time.time() - start_time
 
@@ -84,7 +113,7 @@ def _run() -> int:
     print("=" * 50)
     print("📊 评测完成")
     print("=" * 50)
-    print(f"  查询总数:       {len(dataset)}")
+    print(f"  查询总数:       {len(active_dataset)}（已过滤 {stale_count} 条过期）")
     print(f"  已标注查询数:    {annotated_count}")
     print(f"  耗时:           {elapsed:.1f}s")
     print(f"  Recall@5:       {avg_recall:.4f}" if avg_recall is not None else "  Recall@5:       N/A")
@@ -112,7 +141,7 @@ def _run() -> int:
     history_path = append_eval_result(
         search_params=search_params,
         metrics=metrics,
-        query_count=len(dataset),
+        query_count=len(active_dataset),
     )
     print(f"📄 结果已追加: {history_path}")
 

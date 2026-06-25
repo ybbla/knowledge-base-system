@@ -16,7 +16,7 @@ from app.core.config import get_settings
 from app.core.models import Asset, AssetStatus
 from assets.base import AssetStore
 from assets.downloader import download_to_bytes
-from assets.minio_store import MinioAssetStore, make_minio_key, read_uri_bytes
+from assets.minio_store import MinioAssetStore, make_asset_key, read_uri_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -196,15 +196,14 @@ def _process_image_data(
                 logger.exception("图片 %s 视觉理解失败，继续上传 MinIO", asset.asset_id)
 
         if minio_store is not None:
-            file_name = asset.metadata.get("file_name") or Path(asset.original_uri).name
-            key = make_minio_key(asset.doc_id, file_name or f"{asset.asset_id}.bin", asset.asset_id)
+            key = make_asset_key(asset.content_hash)
             asset.storage_uri = minio_store.upload_bytes(
                 minio_store.assets_bucket,
                 key,
                 data,
                 mime_type,
             )
-        elif not asset.storage_uri:
+        elif not asset.storage_uri and asset.asset_type not in (AssetType.image, AssetType.video):
             asset.storage_uri = _local_or_external_uri(asset.original_uri)
 
         asset.status = AssetStatus.ready
@@ -272,15 +271,14 @@ def _process_video_data(
 
         # 上传 MinIO
         if minio_store is not None:
-            file_name = asset.metadata.get("file_name") or Path(asset.original_uri).name
-            key = make_minio_key(asset.doc_id, file_name or f"{asset.asset_id}.bin", asset.asset_id)
+            key = make_asset_key(asset.content_hash)
             asset.storage_uri = minio_store.upload_bytes(
                 minio_store.assets_bucket,
                 key,
                 data,
                 mime_type,
             )
-        elif not asset.storage_uri:
+        elif not asset.storage_uri and asset.asset_type not in (AssetType.image, AssetType.video):
             asset.storage_uri = _local_or_external_uri(asset.original_uri)
 
         asset.status = AssetStatus.ready
@@ -313,8 +311,7 @@ def process_image(
         处理后的 Asset。
     """
     data = getattr(asset, "_data", None)
-    if data is None:
-        data = read_uri_bytes(asset.original_uri, minio_store)
+    # 不再从 original_uri 降级（嵌入类型 original_uri 已为空）
     return _process_image_data(data, asset, asset_store, minio_store)
 
 
@@ -334,8 +331,7 @@ def process_video(
         处理后的 Asset。
     """
     data = getattr(asset, "_data", None)
-    if data is None:
-        data = read_uri_bytes(asset.original_uri, minio_store)
+    # 不再从 original_uri 降级（嵌入类型 original_uri 已为空）
     return _process_video_data(data, asset, asset_store, minio_store)
 
 

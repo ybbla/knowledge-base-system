@@ -1,3 +1,0 @@
-{"timestamp": "2026-06-23T21:28:02.722436", "search_params": {"rewrite": true, "vector_top_k": 30, "bm25_top_k": 30, "rrf_k": 60, "rerank": true, "top_k": 5}, "metrics": {"recall_at_5": 0.667, "mrr": 0.583}, "query_count": 50}
-{"timestamp": "2026-06-23T21:28:02.732509", "search_params": {"top_k": 5}, "metrics": {"recall_at_5": 0.5, "mrr": 0.4}, "query_count": 10}
-{"timestamp": "2026-06-23T21:28:02.734509", "search_params": {"top_k": 10}, "metrics": {"recall_at_5": 0.8, "mrr": 0.7}, "query_count": 20}

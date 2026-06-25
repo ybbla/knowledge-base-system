@@ -1,0 +1,42 @@
+{
+  "metadata": {
+    "doc_id": "eval_test_002",
+    "doc_title": "测试",
+    "generated_at": "2026-06-25T22:10:29.273226",
+    "generated_by": "auto-ingest",
+    "chunk_count": 2,
+    "query_count": 2
+  },
+  "items": [
+    {
+      "query": "Python是一种什么类型的编程语言，由谁在什么时候发布？",
+      "expected_chunk_ids": [
+        "test_a1"
+      ],
+      "expected_content_contains": [
+        "解释型",
+        "面向对象",
+        "Guido van Rossum",
+        "1991年",
+        "高级编程语言"
+      ],
+      "doc_id": "eval_test_002",
+      "source": "auto"
+    },
+    {
+      "query": "FastAPI框架有哪些核心特点，性能表现如何？",
+      "expected_chunk_ids": [
+        "test_a2"
+      ],
+      "expected_content_contains": [
+        "Python类型提示",
+        "自动生成OpenAPI文档",
+        "内置请求验证",
+        "异步处理",
+        "性能接近Node.js和Go"
+      ],
+      "doc_id": "eval_test_002",
+      "source": "auto"
+    }
+  ]
+}

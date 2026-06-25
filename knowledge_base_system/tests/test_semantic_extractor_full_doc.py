@@ -545,27 +545,6 @@ class TestBuildChunksEmptySourceRefs:
         assert len(chunks[0].source_refs) == 2
         assert chunks[0].source_refs[0].element_id == "el_1"
 
-    def test_old_format_element_ids_compat(self):
-        """旧格式 element_ids 兼容处理。"""
-        extractor = SemanticExtractor()
-        elements = [
-            _make_el("el_1", ElementType.paragraph, "旧格式内容。"),
-        ]
-
-        data = _make_chunk_data([
-            {
-                "title": "测试",
-                "content": "兼容旧格式。",
-                "knowledge_type": "declarative",
-                "element_ids": ["el_1"],
-            }
-        ])
-
-        chunks = extractor._build_chunks(data, elements, [], "通用")
-
-        assert len(chunks[0].source_refs) == 1
-        assert chunks[0].source_refs[0].element_id == "el_1"
-
 
 # ── 7.11: AssetRef 无 relation ───────────────────────────────────
 

@@ -104,11 +104,21 @@ class _PdfParseState:
     assets_by_key: dict[tuple[str, str], _AssetRecord] = field(default_factory=dict)
     section_path: list[str] = field(default_factory=list)
     seq: int = 0
+    _counters: dict[str, int] = field(default_factory=dict)
 
     def next_seq(self) -> int:
         """生成递增的元素序号。"""
         self.seq += 1
         return self.seq
+
+    _PH_MAP = {"image": "image", "video": "video", "image_link": "image",
+               "video_link": "video", "document_link": "doc", "web_link": "web"}
+
+    def next_ph(self, asset_type: str) -> str:
+        """生成递增占位符 {{type:n}}。"""
+        prefix = self._PH_MAP.get(asset_type, "res")
+        self._counters[prefix] = self._counters.get(prefix, 0) + 1
+        return f"{{{{{prefix}:{self._counters[prefix]}}}}}"
 
 
 # ── PdfParser ──────────────────────────────────────────────────────
@@ -527,28 +537,14 @@ class PdfParser(DocumentParser):
                 bi, anchor_text, _ratio = best_match
                 ei = block_to_element[bi]
                 element = state.elements[ei]
-                # 创建 Asset（仅资源链接），普通网页链接写metadata["link_urls"]
+                # 资源链接创建 Asset，与段落规则一致
                 asset_type = self._asset_type_for_url(uri)
                 if asset_type is not None:
-                    asset = self._asset_for_url(uri, asset_type, state, doc, {
-                        "page": page_number,
-                        "source": "pdf_link_bbox_match",
-                        "anchor_text": anchor_text,
-                    })
+                    asset = self._asset_for_url(uri, asset_type, state, doc, {})
                     if not any(ad.asset_id == asset.asset_id for ad in element.asset_data):
                         element.asset_data.append(AssetData(placeholder="", asset_id=asset.asset_id))
                     if not asset.element_id:
                         asset.element_id = element.element_id
-                else:
-                    # 普通网页链接统一写入 metadata.link_urls。
-                    element.metadata.setdefault("link_urls", []).append(uri)
-                # 将链接信息写structured_data.links
-                element.structured_data = element.structured_data or {}
-                element.structured_data.setdefault("links", []).append({
-                    "text": anchor_text,
-                    "url": uri,
-                    "link_type": classify_link(uri),
-                })
                 matched_uris.add(uri)
 
     # ── 标题 ──────────────────────────────────────────────────────
@@ -576,11 +572,7 @@ class PdfParser(DocumentParser):
                 page=page_number,
                 section_path=list(state.section_path),
             ),
-            metadata={
-                "heading_level": level,
-                "page": page_number,
-                "source": "toc",
-            },
+            metadata={"heading_level": level},
         ))
 
     # ── 文本ParsedElement ─────────────────────────────────────
@@ -627,20 +619,10 @@ class PdfParser(DocumentParser):
             state.section_path.append(text)
 
             element_type = ElementType.title
-            metadata: dict[str, Any] = {
-                "heading_level": heading_level,
-                "page": page_number,
-                "source": "font_heuristic",
-                "font_size": round(block.font_size, 1),
-                "is_bold": block.is_bold,
-            }
+            metadata: dict[str, Any] = {"heading_level": heading_level}
         else:
             element_type = ElementType.paragraph
-            metadata = {
-                "page": page_number,
-                "font_size": round(block.font_size, 1),
-                "is_bold": block.is_bold,
-            }
+            metadata: dict[str, Any] = {}
 
         # 提取 URL Asset
         asset_ids = self._asset_ids_for_text(text, state, doc, page_number)
@@ -707,16 +689,14 @@ class PdfParser(DocumentParser):
     ) -> _TextBlock | None:
         """将检测到的表格转换为 table 类型 ParsedElement
         同时匹配页面链接到表格单元格（按坐标交叉匹配），
-        资源链接创建 Asset，普通网页链接写metadata.link_urls        所有链接写structured_data.links        """
+        资源链接创建 Asset，规则与段落元素一致。"""
         headers = table_data["headers"]
         raw_rows = table_data["rows"]
         if not raw_rows:
             return None
 
-        # ── 按坐标匹配链接到单元──
+        # ── 按坐标匹配链接到单元格（资源链接创建 Asset，与段落规则一致）──
         table_asset_ids: list[Asset] = []
-        table_link_urls: list[str] = []
-        table_links: list[dict[str, str]] = []
         cell_bboxes = table_data.get("cells_bbox")
         ncols = table_data.get("ncols", 0)
         links = page.get_links() if page is not None else []
@@ -732,26 +712,13 @@ class PdfParser(DocumentParser):
                         asset_type = self._asset_type_for_url(uri)
                         if asset_type is not None:
                             if doc is not None:
-                                asset = self._asset_for_url(uri, asset_type, state, doc, {
-                                    "page": page_number,
-                                    "source": "pdf_table_link",
-                                })
+                                asset = self._asset_for_url(uri, asset_type, state, doc, {})
                                 table_asset_ids.append(asset)
-                        else:
-                            table_link_urls.append(uri)
-                        table_links.append({
-                            "text": "",
-                            "url": uri,
-                            "link_type": classify_link(uri),
-                        })
-                        break  # 一个单元格最多一个链
+                        break  # 一个单元格最多一个链接
         rows: list[dict[str, Any]] = []
         for row in raw_rows:
             rows.append({
-                "cells": [
-                    {"text": str(cell or ""), "asset_data": [{"placeholder": "", "type": a.asset_type.value, "url": a.original_uri} for a in table_asset_ids]}
-                    for cell in row
-                ],
+                "cells": [{"text": str(cell or "")} for cell in row],
             })
 
         structured: dict[str, Any] = {
@@ -759,14 +726,8 @@ class PdfParser(DocumentParser):
                 "caption": "",
                 "headers": headers,
                 "rows": rows,
-                "metadata": {
-                    "page": page_number,
-                    "source": "pdf_table_detection",
-                },
             },
         }
-        if table_links:
-            structured["links"] = table_links
 
         text_parts: list[str] = []
         if headers:
@@ -775,9 +736,6 @@ class PdfParser(DocumentParser):
             text_parts.append(" | ".join(cell["text"] for cell in row["cells"]))
 
         all_asset_ids = list({a.asset_id: a for a in table_asset_ids}.values())
-        element_metadata: dict[str, Any] = {"page": page_number, "source": "pdf_table_detection"}
-        if table_link_urls:
-            element_metadata["link_urls"] = table_link_urls
 
         self._append_element(state, ParsedElement(
             doc_id=state.doc_id,
@@ -791,7 +749,7 @@ class PdfParser(DocumentParser):
                 page=page_number,
                 section_path=list(state.section_path),
             ),
-            metadata=element_metadata,
+            metadata={},
         ))
 
         bbox = table_data.get("bbox")
@@ -880,11 +838,10 @@ class PdfParser(DocumentParser):
             else:
                 ext = base_image.get("ext", "png")
                 filename = f"pdf-image-p{page_number}-{xref}.{ext}"
-                mime_type = self._guess_image_mime(ext)
                 asset = Asset(
                     doc_id=doc.doc_id,
                     asset_type=AssetType.image,
-                    original_uri=f"pdf://{doc.doc_id}/page/{page_number}/xref/{xref}/{filename}",
+                    original_uri="",                # 嵌入类型无外部来源
                     storage_uri=None,
                     content_hash=content_hash_val,
                     status=AssetStatus.ready,
@@ -894,7 +851,6 @@ class PdfParser(DocumentParser):
                         "xref": xref,
                         "file_name": filename,
                         "source": "pdf_image",
-                        "mime_type": mime_type,
                         "width": base_image.get("width"),
                         "height": base_image.get("height"),
                     },
@@ -904,6 +860,7 @@ class PdfParser(DocumentParser):
                 state.assets_by_key[key] = _AssetRecord(asset=asset, key=key)
 
             # 图片作为附属资源，由段落元素承载位置和引用信息。
+            ph = state.next_ph("image")
             self._append_element(
                 state,
                 ParsedElement(
@@ -911,8 +868,8 @@ class PdfParser(DocumentParser):
                     doc_version=state.doc_version,
                     sequence_order=state.next_seq(),
                     element_type=ElementType.paragraph,
-                    text=f"[图片: {page_number} 页]",
-                    asset_data=[AssetData(placeholder="", asset_id=asset.asset_id)],
+                    text=ph,
+                    asset_data=[AssetData(placeholder=ph, asset_id=asset.asset_id)],
                     source_location=SourceLocation(
                         page=page_number,
                         section_path=list(state.section_path),
@@ -942,10 +899,7 @@ class PdfParser(DocumentParser):
             asset_type = self._asset_type_for_url(url)
             if asset_type is None:
                 continue  # 普通网页链接，不创Asset
-            asset = self._asset_for_url(url, asset_type, state, doc, {
-                "page": page_number,
-                "source": "pdf_text_url",
-            })
+            asset = self._asset_for_url(url, asset_type, state, doc, {})
             asset_ids.append(asset)
         return asset_ids
 
@@ -985,33 +939,16 @@ class PdfParser(DocumentParser):
                 if (asset_type.value, uri) in state.assets_by_key:
                     continue
 
-            # 创建 Asset（普通网页链接跳过）
+            # 资源链接创建 Asset，与段落规则一致
             if asset_type is not None:
-                asset = self._asset_for_url(uri, asset_type, state, doc, {
-                    "page": page_number,
-                    "source": "pdf_link_fallback",
-                    "link_kind": link.get("kind", ""),
-                })
-            else:
-                asset = None
-                # 普通网页链接去重：检metadata["link_urls"]
-                already_recorded = any(
-                    uri in el.metadata.get("link_urls", [])
-                    for el in state.elements
-                )
-                if already_recorded:
-                    continue
-
-            # 兜底关联到当前页最后一个元素。
-            for el in reversed(state.elements):
-                if asset is not None:
+                asset = self._asset_for_url(uri, asset_type, state, doc, {})
+                # 兜底关联到当前页最后一个元素
+                for el in reversed(state.elements):
                     if not any(ad.asset_id == asset.asset_id for ad in el.asset_data):
                         el.asset_data.append(AssetData(placeholder="", asset_id=asset.asset_id))
                     if not asset.element_id:
                         asset.element_id = el.element_id
-                else:
-                    el.metadata.setdefault("link_urls", []).append(uri)
-                break
+                    break
 
     def _asset_for_url(
         self,
@@ -1036,7 +973,6 @@ class PdfParser(DocumentParser):
             extracted_text=None,
             metadata={
                 **metadata,
-                "mime_type": self._guess_mime(url, asset_type),
             },
         )
         state.assets.append(asset)
@@ -1085,49 +1021,3 @@ class PdfParser(DocumentParser):
                 record.asset.element_id = element.element_id
         state.elements.append(element)
 
-    # ── MIME 推断 ─────────────────────────────────────────────────
-
-    @staticmethod
-    def _guess_mime(url: str, asset_type: AssetType) -> str:
-        """根据 URL 后缀和资源类型推断 MIME 类型。"""
-        suffix = PurePosixPath(url.split("?", 1)[0]).suffix.lower()
-        mime_map = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".gif": "image/gif",
-            ".webp": "image/webp",
-            ".bmp": "image/bmp",
-            ".mp4": "video/mp4",
-            ".webm": "video/webm",
-            ".mov": "video/quicktime",
-            ".m4v": "video/mp4",
-            ".pdf": "application/pdf",
-            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            ".zip": "application/zip",
-        }
-        if suffix in mime_map:
-            return mime_map[suffix]
-        if asset_type == AssetType.image:
-            return "image/*"
-        if asset_type == AssetType.video:
-            return "video/*"
-        return "application/octet-stream"
-
-    @staticmethod
-    def _guess_image_mime(ext: str) -> str:
-        """根据图片扩展名推断 MIME 类型。"""
-        ext_lower = ext.lower().lstrip(".")
-        mime_map = {
-            "png": "image/png",
-            "jpg": "image/jpeg",
-            "jpeg": "image/jpeg",
-            "gif": "image/gif",
-            "webp": "image/webp",
-            "bmp": "image/bmp",
-            "tiff": "image/tiff",
-            "tif": "image/tiff",
-        }
-        return mime_map.get(ext_lower, f"image/{ext_lower}")

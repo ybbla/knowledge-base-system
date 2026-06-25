@@ -239,25 +239,10 @@ class RetrievalPipeline:
                 return result, debug_info
             return result
 
-        # 5. 从 PostgreSQL 批量补齐完整领域模型。Milvus 负责召回，PG 负责返回
-        # asset_refs/source_refs 等模型字段，避免索引副本字段不完整。
+        # 5. 从 Milvus 字段构建候选（Milvus 已存完整字段，无需查 PG）
         top_chunk_ids = [cid for cid, _ in top_fused]
-        stored_chunks: dict[str, KnowledgeChunk] = {}
-        if self._chunk_store is not None and hasattr(self._chunk_store, "get_batch"):
-            try:
-                stored_chunks = {
-                    chunk.chunk_id: chunk
-                    for chunk in self._chunk_store.get_batch(top_chunk_ids)
-                }
-            except Exception:
-                logger.exception("批量读取知识块详情失败，回退使用 Milvus 字段")
-
         candidates: list[KnowledgeChunk] = []
         for cid in top_chunk_ids:
-            stored = stored_chunks.get(cid)
-            if stored is not None:
-                candidates.append(stored)
-                continue
             fields = fields_map.get(cid)
             if not fields:
                 continue
@@ -295,13 +280,12 @@ class RetrievalPipeline:
             and all("relevance_score" in entry for entry in reranked)
         )
 
-        # 6. 构建结果（直接用 Milvus 字段，不查 PG）
+        # 6. 构建结果（Milvus 已含完整字段，PG 补全由 API 层 _filter_and_enrich_result 负责）
         items: list[SearchResultItem] = []
         score_map: dict[str, float] = dict(top_fused)
         vec_map = {c: s for c, s, _ in vec_results}
         bm25_map = {c: s for c, s, _ in bm25_results}
 
-        # 排序：Rerank 全成功按 LLM 分降序，否则按 RRF 分降序
         sorted_items = sorted(
             reranked,
             key=lambda r: r.get("relevance_score", score_map.get(r["chunk_id"], 0.0)) if all_reranked
@@ -315,56 +299,39 @@ class RetrievalPipeline:
             if not fields:
                 continue
 
-            stored = stored_chunks.get(cid)
-            if stored is not None:
-                title = stored.title
-                content = stored.content
-                category_value = stored.category
-                knowledge_type_value = stored.knowledge_type
-                asset_refs = [ref.model_dump(mode="json") for ref in stored.asset_refs]
-                src_refs = [ref.model_dump(mode="json") for ref in stored.source_refs]
-                meta = stored.metadata
-            else:
-                title = fields.get("title", "")
-                content = fields.get("content", "")
-                category_value = fields.get("category", "通用")
-                try:
-                    knowledge_type_value = KnowledgeType(
-                        fields.get("knowledge_type", "declarative")
-                    )
-                except ValueError:
-                    knowledge_type_value = KnowledgeType.declarative
-                asset_refs = []
-                raw_src = _parse_json_field(fields.get("source_refs"), [])
-                src_refs = [
-                    SourceRef(
-                        doc_id=r.get("doc_id", ""),
-                        doc_version=r.get("doc_version", 1),
-                        element_id=r.get("element_id", ""),
-                        source_location=SourceLocation.model_validate(r.get("source_location") or {}),
-                    )
-                    if isinstance(r, dict) else r
-                    for r in raw_src
-                ]
-                meta = _parse_json_field(fields.get("metadata"), {})
+            try:
+                kt = KnowledgeType(fields.get("knowledge_type", "declarative"))
+            except ValueError:
+                kt = KnowledgeType.declarative
 
             items.append(
                 SearchResultItem(
                     chunk_id=cid,
-                    title=title,
-                    content=content,
+                    doc_id=fields.get("doc_id", ""),
+                    doc_title=fields.get("doc_title", ""),
+                    status=fields.get("status", "active"),
+                    title=fields.get("title", ""),
+                    content=fields.get("content", ""),
                     score=rank_entry.get("relevance_score") if all_reranked else score_map.get(cid, 0.0),
-                    category=category_value,
-                    knowledge_type=knowledge_type_value,
+                    category=fields.get("category", "通用"),
+                    knowledge_type=kt,
                     score_components=ScoreComponents(
                         vector=vec_map.get(cid, 0.0),
                         bm25=bm25_map.get(cid, 0.0),
                         rrf=score_map.get(cid, 0.0),
                         rerank=rank_entry.get("relevance_score"),
                     ),
-                    asset_refs=asset_refs,
-                    source_refs=src_refs,
-                    metadata=meta,
+                    asset_refs=_parse_json_field(fields.get("asset_refs"), []),
+                    source_refs=[
+                        SourceRef(
+                            doc_id=r.get("doc_id", ""),
+                            doc_version=r.get("doc_version", 1),
+                            element_id=r.get("element_id", ""),
+                            source_location=SourceLocation.model_validate(r.get("source_location") or {}),
+                        )
+                        if isinstance(r, dict) else r
+                        for r in _parse_json_field(fields.get("source_refs"), [])
+                    ],
                 )
             )
 

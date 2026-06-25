@@ -44,7 +44,6 @@ class SearchOptions(BaseModel):
     rewrite: bool = Field(default=True, description="是否执行查询改写")
     hybrid: bool = Field(default=True, description="是否使用混合检索")
     rerank: bool = Field(default=True, description="是否执行 LLM 重排")
-    highlight: bool = Field(default=False, description="是否返回高亮摘要")
     include_assets: bool = Field(default=True, description="是否包含资源引用")
     include_sources: bool = Field(default=True, description="是否包含来源引用")
     include_score_components: bool = Field(default=True, description="是否包含评分明细")
@@ -67,7 +66,6 @@ async def _execute_search(request: SearchRequest) -> dict[str, Any]:
     确保所有指定分类的候选结果都能被公平召回。
     """
     filters = request.filters
-    retrieval_top_k = max(request.top_k * 10, 50)
 
     # 确定需要检索的 category 和 knowledge_type 列表
     if filters.categories and len(filters.categories) >= 2:
@@ -89,7 +87,7 @@ async def _execute_search(request: SearchRequest) -> dict[str, Any]:
         result = await asyncio.to_thread(
             retrieval_pipeline.search,
             request.query,
-            top_k=retrieval_top_k,
+            top_k=request.top_k,
             category=cat,
             knowledge_type=kt,
             rewrite=request.options.rewrite,
@@ -140,16 +138,15 @@ def _parse_dt(raw: str | None) -> datetime | None:
         return None
 
 
-def _matches_filters(chunk, doc, filters: SearchFilters) -> bool:
-    """判断知识块和文档是否满足 v1 检索过滤条件。"""
-    chunk_doc_id = chunk.doc_id or (chunk.source_refs[0].doc_id if chunk.source_refs else "")
-    if filters.doc_ids and chunk_doc_id not in filters.doc_ids:
+def _matches_item_filters(item: dict, doc, filters: SearchFilters) -> bool:
+    """从 Milvus item 读取 chunk 字段过滤，doc 级字段仍需查 PG。"""
+    if filters.doc_ids and item.get("doc_id", "") not in filters.doc_ids:
         return False
-    if filters.categories and chunk.category not in filters.categories:
+    if filters.categories and item.get("category", "") not in filters.categories:
         return False
-    if filters.knowledge_types and _value(chunk.knowledge_type) not in filters.knowledge_types:
+    if filters.knowledge_types and item.get("knowledge_type", "") not in filters.knowledge_types:
         return False
-    if filters.chunk_status and _value(chunk.status) not in filters.chunk_status:
+    if filters.chunk_status and item.get("status", "") not in filters.chunk_status:
         return False
     if filters.source_types:
         source_type = getattr(doc, "source_type", None)
@@ -173,45 +170,31 @@ def _matches_filters(chunk, doc, filters: SearchFilters) -> bool:
     return True
 
 
-def _make_highlight(content: str, query: str) -> str:
-    """生成简单高亮摘要。"""
-    if not content:
-        return ""
-    idx = content.lower().find(query.lower())
-    if idx < 0:
-        return content[:160]
-    start = max(0, idx - 60)
-    end = min(len(content), idx + len(query) + 60)
-    return (
-        content[start:idx]
-        + "<mark>"
-        + content[idx: idx + len(query)]
-        + "</mark>"
-        + content[idx + len(query):end]
-    )
-
-
 def _filter_and_enrich_result(result_dict: dict, request: SearchRequest) -> dict:
-    """应用 v1 过滤条件，并补充前端展示字段。"""
+    """应用过滤 + 补充文档展示字段。chunk 数据优先用 Milvus 字段，PG 仅补 Document 级信息。"""
     filtered_items: list[dict[str, Any]] = []
+    filters = request.filters
+    # 是否需要用 PG doc 级过滤（source_type / doc_status / 时间范围）
+    need_doc = bool(filters.source_types or filters.doc_status
+                    or filters.created_after or filters.created_before)
+
     for item in result_dict.get("results", []):
-        chunk = _get_chunk(item.get("chunk_id", ""))
-        if chunk is None:
-            continue
-        chunk_doc_id = chunk.doc_id or (chunk.source_refs[0].doc_id if chunk.source_refs else "")
-        doc = _get_doc(chunk_doc_id)
-        if not _matches_filters(chunk, doc, request.filters):
+        item_doc_id = item.get("doc_id", "")
+        item_doc_title = item.get("doc_title", "")
+
+        # doc：doc_title 空或需要 doc 级过滤时查 PG，否则跳过
+        doc = None
+        if not item_doc_title or need_doc:
+            doc = _get_doc(item_doc_id) if item_doc_id else None
+            if not item_doc_title:
+                item_doc_title = getattr(doc, "title", "") if doc else item_doc_id
+
+        if not _matches_item_filters(item, doc, filters):
             continue
 
-        item["doc_id"] = chunk_doc_id
-        item["doc_title"] = getattr(doc, "title", None) or chunk.metadata.get("title", chunk_doc_id)
-        item["doc_version"] = getattr(doc, "version", 1)
-        # 以 PostgreSQL 中的领域模型为准，补齐索引未保存的完整资源与溯源引用。
-        item["asset_refs"] = [ref.model_dump(mode="json") for ref in chunk.asset_refs]
-        item["source_refs"] = [ref.model_dump(mode="json") for ref in chunk.source_refs]
-        item["metadata"] = chunk.metadata
-        if request.options.highlight:
-            item["highlight"] = _make_highlight(item.get("content", ""), request.query)
+        item["doc_id"] = item_doc_id
+        item["doc_title"] = item_doc_title
+        item["doc_version"] = getattr(doc, "version", 1) if doc else 1
         filtered_items.append(item)
         if len(filtered_items) >= request.top_k:
             break
@@ -245,8 +228,8 @@ async def search(request: SearchRequest):
         result = await _execute_search(request)
         result = _enrich_result(result, request.options)
         return APIResponse(
-            data=result,
-            meta={
+            data={"results": result.get("results", [])},
+            metadata={
                 "search_id": result.get("search_id", ""),
                 "query": request.query,
                 "rewritten_query": result.get("rewritten_query", ""),

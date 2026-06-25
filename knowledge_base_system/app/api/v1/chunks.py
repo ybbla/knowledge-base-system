@@ -184,7 +184,7 @@ async def list_chunks(
             page=pagination.page, page_size=pagination.page_size,
             total=total, total_pages=total_pages,
         )
-        return PaginatedResponse(data=items, meta=meta.model_dump()).model_dump(mode="json")
+        return PaginatedResponse(data=items, metadata=meta.model_dump()).model_dump(mode="json")
 
     return error_json(
         ErrorCode.SERVICE_UNAVAILABLE,
@@ -297,7 +297,7 @@ async def list_chunk_ids(
             if page * page_size >= total or not chunks:
                 break
             page += 1
-        return APIResponse(data=chunk_ids, meta={"total": len(chunk_ids)}).model_dump(mode="json")
+        return APIResponse(data=chunk_ids, metadata={"total": len(chunk_ids)}).model_dump(mode="json")
 
     return error_json(ErrorCode.SERVICE_UNAVAILABLE, "PostgreSQL 知识块存储不可用", 503)
 
@@ -493,5 +493,5 @@ async def batch_chunk_operation(body: dict[str, Any] = Body(...)):
 
     return APIResponse(
         data={"action": action, "updated": updated},
-        meta={"total_submitted": len(chunk_ids)},
+        metadata={"total_submitted": len(chunk_ids)},
     ).model_dump(mode="json")

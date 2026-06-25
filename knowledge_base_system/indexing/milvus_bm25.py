@@ -19,7 +19,7 @@ from indexing.milvus_vector import (
 
 logger = logging.getLogger(__name__)
 
-JSON_TEXT_FIELDS = {"source_refs", "metadata"}
+JSON_TEXT_FIELDS = {"source_refs", "asset_refs"}
 
 
 class MilvusBM25Index(BM25Index):
@@ -86,8 +86,8 @@ class MilvusBM25Index(BM25Index):
 
     # 与 vector_index 共享同一 collection，检索 pipeline 实际使用的标量字段
     _SEARCH_OUTPUT_FIELDS = [
-        "chunk_id", "doc_id", "title", "content", "category",
-        "knowledge_type", "source_refs", "metadata",
+        "chunk_id", "doc_id", "doc_title", "title", "content", "category",
+        "knowledge_type", "source_refs", "asset_refs",
     ]
 
     def search(

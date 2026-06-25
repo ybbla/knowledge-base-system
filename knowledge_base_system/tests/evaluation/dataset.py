@@ -22,6 +22,7 @@ class EvalItem:
 
     # ── 元数据字段（用于溯源和保护人工标注） ──
     doc_id: str | None = None       # 来源文档 ID
+    doc_version: int = 1            # 来源文档版本号（重入库后递增，旧版本标注自动失效）
     source: str = "auto"            # auto（自动生成）或 manual（人工标注）
 
     @classmethod
@@ -39,6 +40,7 @@ class EvalItem:
             expected_chunk_ids=data.get("expected_chunk_ids", []),
             expected_content_contains=data.get("expected_content_contains", []),
             doc_id=data.get("doc_id") or data.get("source_doc_id"),
+            doc_version=data.get("doc_version", 1),
             source=data.get("source", "auto"),
         )
 
@@ -111,6 +113,7 @@ def save_dataset(items: list[EvalItem], path: Path | str | None = None) -> Path:
             "expected_chunk_ids": item.expected_chunk_ids,
             "expected_content_contains": item.expected_content_contains,
             "doc_id": item.doc_id,
+            "doc_version": item.doc_version,
             "source": item.source,
         }
         for item in items

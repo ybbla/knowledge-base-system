@@ -20,7 +20,7 @@ from app.core.models import (
     compute_hash,
 )
 from parsers.base import DocumentParser, ParseResult
-from parsers.utils import classify_link, guess_mime
+from parsers.utils import classify_link
 
 
 @dataclass
@@ -52,11 +52,21 @@ class _PptxParseState:
     seq: int = 0
     section_path: list[str] = field(default_factory=list)
     link_urls: list[str] = field(default_factory=list)  # 普通网页链接（与其他解析器一致）
+    _counters: dict[str, int] = field(default_factory=dict)
 
     def next_seq(self) -> int:
         """生成递增的元素序号。"""
         self.seq += 1
         return self.seq
+
+    _PH_MAP = {"image": "image", "video": "video", "image_link": "image",
+               "video_link": "video", "document_link": "doc", "web_link": "web"}
+
+    def next_ph(self, asset_type: str) -> str:
+        """生成递增占位符 {{type:n}}。"""
+        prefix = self._PH_MAP.get(asset_type, "res")
+        self._counters[prefix] = self._counters.get(prefix, 0) + 1
+        return f"{{{{{prefix}:{self._counters[prefix]}}}}}"
 
     def consume_link_urls(self) -> list[str]:
         """消费并清空普通网页链接列表。"""
@@ -221,7 +231,6 @@ class PptxParser(DocumentParser):
                 sequence_order=state.next_seq(),
                 element_type=ElementType.list,
                 text="",
-                structured_data={"links": shape_links} if shape_links else None,
                 source_location=SourceLocation(section_path=list(state.section_path)),
                 metadata={
                     **self._slide_metadata(slide_index),
@@ -269,14 +278,12 @@ class PptxParser(DocumentParser):
                 + self._asset_ids_for_shape_hyperlinks(record, slide_index, state, doc)
             )
         )
-        link_urls = state.consume_link_urls()
+        link_urls = state.consume_link_urls()  # 不再写入 metadata，链接信息已在 structured_data.links 中
         links = self._collect_shape_links(record, slide_index, state, doc)
         metadata = {
             **self._slide_metadata(slide_index),
             **self._shape_metadata(record),
         }
-        if link_urls:
-            metadata["link_urls"] = link_urls
         self._append_element(
             state,
             ParsedElement(
@@ -286,7 +293,6 @@ class PptxParser(DocumentParser):
                 element_type=ElementType.paragraph,
                 text=text,
                 asset_data=self._asset_data_from_ids(asset_ids, state),
-                structured_data={"links": links} if links else None,
                 source_location=SourceLocation(section_path=list(state.section_path)),
                 metadata=metadata,
             ),
@@ -299,17 +305,11 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> None:
-        """处理表格形状，生成结构化表格元素
-        处理流程        1. 遍历单元格，通过文本正则提取 URL 并创Asset
-        2. 收集表格形状级超链接（click_action）和各单元格运行级超链接
-        3. 将普通网页链接记录到 metadata.link_urls
-        4. 将链接信息写structured_data.links
-        """
+        """处理表格形状，生成结构化表格元素。
+        资源链接创建 Asset，规则与段落元素一致。"""
         table = record.shape.table
         rows: list[list[dict[str, Any]]] = []
         asset_ids: list[str] = []
-        link_urls: list[str] = []
-        table_links: list[dict[str, str]] = []
 
         for row_index, row in enumerate(table.rows, start=1):
             cells = []
@@ -322,12 +322,12 @@ class PptxParser(DocumentParser):
                     state,
                     doc,
                 )
-                # 收集本单元格产生的普通网页链                link_urls.extend(state.consume_link_urls())
+                # 收集本单元格产生的资源链接
+                state.consume_link_urls()  # 清空，不再写入 metadata
                 asset_ids.extend(cell_asset_ids)
                 cells.append(
                     {
                         "text": text,
-                        "asset_data": [ad.model_dump() for ad in self._asset_data_from_ids(cell_asset_ids, state)],
                         "metadata": {
                             "row": row_index,
                             "column": col_index,
@@ -357,13 +357,6 @@ class PptxParser(DocumentParser):
                             addr = None
                         if addr:
                             table_hyperlink_urls.append(addr)
-                            run_text = self._normalize_text(run.text)
-                            if run_text:
-                                table_links.append({
-                                    "text": run_text,
-                                    "url": addr,
-                                    "link_type": classify_link(addr),
-                                })
 
         # ── 单元格文本中内嵌URL（正则匹配，非超链接──
         seen_hyperlink_urls = set(table_hyperlink_urls)
@@ -377,11 +370,6 @@ class PptxParser(DocumentParser):
                         kind = classify_link(url)
                         if kind != "url":
                             table_hyperlink_urls.append(url)
-                        table_links.append({
-                            "text": url,
-                            "url": url,
-                            "link_type": kind,
-                        })
 
         # ── 形状级超链接 ──
         try:
@@ -390,11 +378,6 @@ class PptxParser(DocumentParser):
             addr = None
         if addr:
             table_hyperlink_urls.append(addr)
-            table_links.append({
-                "text": self._shape_text(record.shape),
-                "url": addr,
-                "link_type": classify_link(addr),
-            })
 
         # 创建超链Asset，同时普通网页链接进state.link_urls
         table_asset_ids = self._asset_ids_for_urls(
@@ -404,7 +387,8 @@ class PptxParser(DocumentParser):
         )
         asset_ids.extend(table_asset_ids)
 
-        # 收尾：合并本表格产生的所有普通网页链        link_urls.extend(state.consume_link_urls())
+        # 清空累积的普通网页链接（不再写入 metadata）
+        state.consume_link_urls()
 
         headers = [cell["text"] for cell in rows[0]]
         data_rows = [{"cells": row} for row in rows[1:]]
@@ -421,8 +405,6 @@ class PptxParser(DocumentParser):
                 },
             }
         }
-        if table_links:
-            structured["links"] = table_links
 
         text_parts = []
         if headers:
@@ -434,8 +416,6 @@ class PptxParser(DocumentParser):
             **self._slide_metadata(slide_index),
             **self._shape_metadata(record),
         }
-        if link_urls:
-            metadata["link_urls"] = link_urls
 
         self._append_element(
             state,
@@ -478,7 +458,7 @@ class PptxParser(DocumentParser):
                 metadata={
                     **self._slide_metadata(slide_index),
                     **self._shape_metadata(record),
-                    "mime_type": image.content_type or guess_mime(filename, AssetType.image),
+                    "mime_type": image.content_type,
                     "file_name": filename,
                     "source": "pptx_image",
                 },
@@ -506,9 +486,8 @@ class PptxParser(DocumentParser):
                 doc_version=state.doc_version,
                 sequence_order=state.next_seq(),
                 element_type=ElementType.paragraph,
-                text=f"[图片: {filename}]",
-                asset_data=self._asset_data_from_ids(element_asset_ids, state),
-                structured_data={"links": links} if links else None,
+                text=(ph := state.next_ph("image")),
+                asset_data=self._asset_data_from_ids(element_asset_ids, state, placeholder=ph),
                 source_location=SourceLocation(section_path=list(state.section_path)),
                 metadata={
                     **self._slide_metadata(slide_index),
@@ -687,7 +666,7 @@ class PptxParser(DocumentParser):
             storage_uri=None,
             status=AssetStatus.ready,
             extracted_text=None,
-            metadata={**metadata, "mime_type": guess_mime(url, asset_type)},
+            metadata={**metadata},
         )
         state.assets.append(asset)
         state.assets_by_key[key] = _AssetRecord(asset=asset, key=key)
@@ -697,9 +676,10 @@ class PptxParser(DocumentParser):
         self,
         asset_ids: list[str],
         state: _PptxParseState,
+        placeholder: str = "",
     ) -> list[AssetData]:
         """将 asset_id 列表转换为 AssetData 列表。"""
-        return [AssetData(placeholder="", asset_id=aid) for aid in asset_ids]
+        return [AssetData(placeholder=placeholder, asset_id=aid) for aid in asset_ids]
 
     @staticmethod
     def _append_element(state: _PptxParseState, element: ParsedElement) -> None:

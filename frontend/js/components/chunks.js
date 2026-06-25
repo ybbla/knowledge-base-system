@@ -213,7 +213,7 @@ const Chunks = (() => {
     if (selectAll) { selectAll.checked = false; selectAll.disabled = data.length === 0; }
     const tbody = document.getElementById('chunkTableBody');
     if (!tbody) return;
-    const meta = res?.meta || {};
+    const meta = res?.metadata || {};
     const total = meta.total || 0;
     const countEl = document.getElementById('chunkCountText');
     if (countEl) countEl.textContent = `共 ${total} 个知识块`;
