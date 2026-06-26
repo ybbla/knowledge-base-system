@@ -223,7 +223,7 @@ const API = (() => {
    * @param {object} [options] - 检索选项（是否启用混合检索、查询改写、高亮等）
    */
   async function search(query, topK = 10, filters = {}, options = {}) {
-    return post('/api/v1/search', { query, top_k: topK, filters, options }, { timeout: 60000 });
+    return post('/api/v1/search', { query, top_k: topK, filters, options }, { timeout: 180000 });
   }
   /** 获取检索可用的筛选项（分类列表、知识类型列表等） */
   async function searchFilters() { return get('/api/v1/search/filters'); }

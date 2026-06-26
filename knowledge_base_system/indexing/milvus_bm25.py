@@ -61,6 +61,7 @@ class MilvusBM25Index(BM25Index):
             meta = metadata or {}
             fields = {
                 "doc_id": str(meta.get("doc_id", "")),
+                "doc_title": str(meta.get("doc_title", ""))[:512],
                 "title": str(meta.get("title", ""))[:512],
                 "content": text[:65535],
                 "category": str(meta.get("category", "")),

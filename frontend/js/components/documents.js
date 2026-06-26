@@ -4,6 +4,8 @@
 
 const Documents = (() => {
 
+  const MAX_CONCURRENT_UPLOADS = 8;  // 并行上传上限，避免压垮浏览器和后端
+
   let currentPage = 1;
   let currentKeyword = '';
   let currentStatus = 'active';
@@ -1056,7 +1058,34 @@ const Documents = (() => {
   }
 
   /**
-   * 执行文档上传并自动入库，支持替换模式（同名文档覆盖）
+   * 带并发上限的并行执行：最多同时运行 limit 个任务，完成一个补一个。
+   * @param {Array} tasks - 返回 Promise 的函数数组
+   * @param {number} limit - 最大并发数
+   * @returns {Promise<Array>} - 与输入顺序一致的结果数组（每项为 {status, value/reason}）
+   */
+  async function runWithConcurrencyLimit(tasks, limit) {
+    const results = new Array(tasks.length);
+    let index = 0;
+
+    async function worker() {
+      while (index < tasks.length) {
+        const i = index++;
+        try {
+          results[i] = { status: 'fulfilled', value: await tasks[i]() };
+        } catch (e) {
+          results[i] = { status: 'rejected', reason: e };
+        }
+      }
+    }
+
+    const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker());
+    await Promise.all(workers);
+    return results;
+  }
+
+  /**
+   * 执行文档上传并自动入库，支持多文件并行上传和替换模式（同名文档覆盖）
+   * 并发上限由 MAX_CONCURRENT_UPLOADS 控制
    * @param {string|null} [replaceDocId=null] - 要替换的文档 ID
    * @param {boolean} [confirmReplace=false] - 是否已确认替换
    */
@@ -1074,7 +1103,7 @@ const Documents = (() => {
       }
     }
 
-    // 立即关闭弹窗，显示弹条
+    // 立即关闭弹窗，显示处理中弹条
     const fileList = selectedFiles.slice();
     closeUploadModal();
     currentTab = 'active';
@@ -1085,42 +1114,51 @@ const Documents = (() => {
     let success = 0;
     let duplicate = 0;
     let failed = 0;
-    let successItems = [];
+    let needConfirm = 0;
+    const successItems = [];
 
-    try {
-      for (let i = 0; i < fileList.length; i++) {
-        const file = fileList[i];
-        try {
-          const result = await API.uploadDocument(file, title, category, {
-            ingestAfterCreate: true,
-            replaceDocId,
-            confirmReplace,
-          });
-          const data = result?.data || {};
-          if (data.duplicate) {
-            duplicate++;
-            UI.toast(`「${file.name}」内容重复，已跳过`, 'info');
-          } else if (data.suggested_replace && !confirmReplace) {
-            // 同名替换提示，重新打开弹窗
-            showReplaceConfirmModal(data, file, title, category);
-            return;
-          } else {
-            success++;
-            successItems.push({ title: file.name, docId: data.doc_id });
-          }
-        } catch (e) {
-          failed++;
-          UI.toast(`「${file.name}」上传失败: ${e.message}`, 'error');
-        }
+    // 并行上传（受并发上限控制）
+    const tasks = fileList.map(file => () =>
+      API.uploadDocument(file, title, category, {
+        ingestAfterCreate: true,
+        replaceDocId,
+        confirmReplace,
+      })
+    );
+    const results = await runWithConcurrencyLimit(tasks, MAX_CONCURRENT_UPLOADS);
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      const fileName = fileList[i].name;
+
+      if (result.status === 'rejected') {
+        failed++;
+        UI.toast(`「${fileName}」上传失败: ${result.reason?.message || result.reason}`, 'error');
+        continue;
       }
 
-      UI.toast(`上传完成：成功 ${success}，重复 ${duplicate}${failed ? `，失败 ${failed}` : ''}`, failed ? 'error' : 'success');
-      loadPage(1);
-      // 更新弹条为实际 docId 以便轮询
-      if (successItems.length) showProcessingToast(successItems);
-    } catch (e) {
-      UI.toast(`上传失败: ${e.message}`, 'error');
+      const data = result.value?.data || {};
+      if (data.duplicate) {
+        duplicate++;
+        UI.toast(`「${fileName}」内容重复，已跳过`, 'info');
+      } else if (data.suggested_replace && !confirmReplace) {
+        // 并行上传时不支持交互式替换确认，提示用户单独处理
+        needConfirm++;
+        UI.toast(`「${fileName}」与已有文档同名，请单独上传并确认替换`, 'warning');
+      } else {
+        success++;
+        successItems.push({ title: fileName, docId: data.doc_id });
+      }
     }
+
+    const parts = [`成功 ${success}`];
+    if (duplicate) parts.push(`重复 ${duplicate}`);
+    if (needConfirm) parts.push(`需确认 ${needConfirm}`);
+    if (failed) parts.push(`失败 ${failed}`);
+    UI.toast(`上传完成：${parts.join('，')}`, failed || needConfirm ? 'warning' : 'success');
+    loadPage(1);
+    // 更新弹条为实际 docId 以便轮询入库状态
+    if (successItems.length) showProcessingToast(successItems);
   }
 
   function showReplaceConfirmModal(suggestedData, file, title, category) {

@@ -1,0 +1,697 @@
+[
+  {
+    "query": "我家门店的店员说找不到直播间订单的入口，要怎么处理？",
+    "expected_chunk_ids": [
+      "chunk_aae5f3d7bddc",
+      "chunk_4bf9d23d499b"
+    ],
+    "expected_content_contains": [
+      "功能设置",
+      "权限设置",
+      "直播间订单入口",
+      "打开功能权限"
+    ],
+    "doc_id": "doc_11f9d483fe82",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "顾客到店提直播间买的商品，我该怎么操作核对订单完成提货？",
+    "expected_chunk_ids": [
+      "chunk_ba325b029319"
+    ],
+    "expected_content_contains": [
+      "按顾客查询",
+      "确认提货",
+      "扫描二维码",
+      "订单状态"
+    ],
+    "doc_id": "doc_11f9d483fe82",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "直播结束后还有顾客没买到想要的商品，要怎么发链接让他们补单？",
+    "expected_chunk_ids": [
+      "chunk_8502cbbda500"
+    ],
+    "expected_content_contains": [
+      "直播商品应用",
+      "下单截止时间",
+      "转发"
+    ],
+    "doc_id": "doc_11f9d483fe82",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "人康直播都可以从哪些地方下载呀？",
+    "expected_chunk_ids": [
+      "chunk_b4ad9e2cbe68"
+    ],
+    "expected_content_contains": [
+      "QR二维码",
+      "回字形定位标识"
+    ],
+    "doc_id": "doc_1dff37e6f64a",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "电脑端企业微信怎么使用人康直播开播啊？",
+    "expected_chunk_ids": [
+      "chunk_74e163025452"
+    ],
+    "expected_content_contains": [
+      "企业微信工作台",
+      "预约直播",
+      "必填项",
+      "回放",
+      "polyv开播"
+    ],
+    "doc_id": "doc_1dff37e6f64a",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "polyv直播软件有哪些可用的功能啊？",
+    "expected_chunk_ids": [
+      "chunk_299f5a93147b",
+      "chunk_99f5533e3d06"
+    ],
+    "expected_content_contains": [
+      "AI智能抠像",
+      "文档功能",
+      "屏幕共享",
+      "多媒体功能",
+      "摄像头"
+    ],
+    "doc_id": "doc_1dff37e6f64a",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我们门店以前用的白名单要货账户现在要更换，该走什么流程啊？",
+    "expected_chunk_ids": [
+      "chunk_b1101105223c",
+      "chunk_a79ca679cbc5"
+    ],
+    "expected_content_contains": [
+      "富友账户",
+      "白名单",
+      "资金迁移",
+      "7开头的富友唯一账号",
+      "门店绑定"
+    ],
+    "doc_id": "doc_3c6e10cde258",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "门店要货下单之后想退款，有哪些需要注意的规则？",
+    "expected_chunk_ids": [
+      "chunk_cadcaba08f6a"
+    ],
+    "expected_content_contains": [
+      "自助取消订单",
+      "原路退回",
+      "重试退款",
+      "夜间23:00~24:00处理",
+      "历史订单"
+    ],
+    "doc_id": "doc_3c6e10cde258",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "要帮加盟商开通富友账户并且绑定到门店，可以在哪操作啊？",
+    "expected_chunk_ids": [
+      "chunk_2d029b6d734b",
+      "chunk_b1101105223c"
+    ],
+    "expected_content_contains": [
+      "扶商端",
+      "ERP管理后台",
+      "新增开户",
+      "富友账户管理",
+      "门店绑定"
+    ],
+    "doc_id": "doc_3c6e10cde258",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "顾客提现老是失败自动退回来，该怎么处理？",
+    "expected_chunk_ids": [
+      "chunk_2350a94c161f"
+    ],
+    "expected_content_contains": [
+      "提现失败",
+      "重新尝试",
+      "市场财务"
+    ],
+    "doc_id": "doc_3f59cb770761",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "企业微信之前绑的微信想换成新的，要怎么操作呀？",
+    "expected_chunk_ids": [
+      "chunk_2350a94c161f"
+    ],
+    "expected_content_contains": [
+      "账号与安全",
+      "解除绑定",
+      "身份验证",
+      "微信授权"
+    ],
+    "doc_id": "doc_3f59cb770761",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我手机装不上人康课堂APP，有没有解决办法？",
+    "expected_chunk_ids": [
+      "chunk_2350a94c161f"
+    ],
+    "expected_content_contains": [
+      "应用市场",
+      "App Store",
+      "安卓7以上"
+    ],
+    "doc_id": "doc_3f59cb770761",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我在app上提钱一直失败是啥原因啊咋解决？",
+    "expected_chunk_ids": [
+      "chunk_c0d9576cbd58"
+    ],
+    "expected_content_contains": [
+      "提现失败",
+      "微信版本",
+      "8.0.45",
+      "重新尝试"
+    ],
+    "doc_id": "doc_5017d55442c9",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我在平台发了说说之后看不到，刷新也没用咋整？",
+    "expected_chunk_ids": [
+      "chunk_c0d9576cbd58",
+      "chunk_da82bccbe7cb"
+    ],
+    "expected_content_contains": [
+      "说说发表",
+      "清除缓存",
+      "切换网络"
+    ],
+    "doc_id": "doc_5017d55442c9",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我想把企业微信绑定的微信换成新的，要咋操作啊？",
+    "expected_chunk_ids": [
+      "chunk_fa251f896e97"
+    ],
+    "expected_content_contains": [
+      "企业微信",
+      "换绑微信",
+      "账号与安全",
+      "解除绑定",
+      "微信授权"
+    ],
+    "doc_id": "doc_5017d55442c9",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我华为手机搜不到人康课堂还装不上，该怎么处理啊",
+    "expected_chunk_ids": [
+      "chunk_2f5fdc0dfafa",
+      "chunk_777553aaf42c"
+    ],
+    "expected_content_contains": [
+      "上架审核",
+      "浏览器扫描二维码",
+      "纯净模式",
+      "允许安装应用"
+    ],
+    "doc_id": "doc_52f6ceaefd0a",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我看视频本来能领现金，现在不给我发了是啥原因啊",
+    "expected_chunk_ids": [
+      "chunk_d3368d134e2c"
+    ],
+    "expected_content_contains": [
+      "累计有效观看天数",
+      "中断观看≥3天",
+      "黑名单用户",
+      "小程序用户"
+    ],
+    "doc_id": "doc_52f6ceaefd0a",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我在直播间买的东西要退款，得怎么操作啊",
+    "expected_chunk_ids": [
+      "chunk_b6bcfb969cae"
+    ],
+    "expected_content_contains": [
+      "直联",
+      "间联",
+      "预留金额",
+      "富友渠道",
+      "微信子商户号"
+    ],
+    "doc_id": "doc_52f6ceaefd0a",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "新平台的店长端我点不开，有啥解决办法吗？",
+    "expected_chunk_ids": [
+      "chunk_787ad686af6d"
+    ],
+    "expected_content_contains": [
+      "新平台店长端",
+      "清理缓存",
+      "重新登录",
+      "刷新页面"
+    ],
+    "doc_id": "doc_6b7f6da7cfbf",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我在人康课堂玩养鸡游戏，鸡蛋莫名其妙没了该咋办啊？",
+    "expected_chunk_ids": [
+      "chunk_aea95b350a84"
+    ],
+    "expected_content_contains": [
+      "人康课堂",
+      "鸡蛋兑换",
+      "登错账户",
+      "原门店"
+    ],
+    "doc_id": "doc_6b7f6da7cfbf",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "人康课堂里的红包提现失败，是什么原因啊要怎么处理？",
+    "expected_chunk_ids": [
+      "chunk_13840f79029b",
+      "chunk_5229e0ce4412"
+    ],
+    "expected_content_contains": [
+      "红包提现",
+      "提现记录",
+      "康邻家园"
+    ],
+    "doc_id": "doc_6b7f6da7cfbf",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我想加盟咱们品牌开店，整体要走什么流程呀？",
+    "expected_chunk_ids": [
+      "chunk_b077d8e54452"
+    ],
+    "expected_content_contains": [
+      "招商查区",
+      "意向金",
+      "打款",
+      "签约",
+      "开店审批"
+    ],
+    "doc_id": "doc_6c6a7aa8dfec",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我登店长端的时候弹出提示说我不是本店负责人，用不了门店功能，该咋弄啊？",
+    "expected_chunk_ids": [
+      "chunk_b077d8e54452"
+    ],
+    "expected_content_contains": [
+      "入职部门",
+      "调整部门",
+      "刘建业",
+      "修改权限"
+    ],
+    "doc_id": "doc_6c6a7aa8dfec",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我的企业微信账号被禁用了，有啥解决办法不？",
+    "expected_chunk_ids": [
+      "chunk_b077d8e54452"
+    ],
+    "expected_content_contains": [
+      "违禁词",
+      "新企信号",
+      "客户数据迁移",
+      "24小时",
+      "调店带客户审批"
+    ],
+    "doc_id": "doc_6c6a7aa8dfec",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我要开微信子商户号收直播的钱，得准备啥材料，手续费收多少啊？",
+    "expected_chunk_ids": [
+      "chunk_549d0e5db0e4",
+      "chunk_2921236c3468"
+    ],
+    "expected_content_contains": [
+      "营业执照",
+      "法人身份证",
+      "基本存款账户信息"
+    ],
+    "doc_id": "doc_7317e5dee86f",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我是门店负责人，开通微信子商户号的步骤是啥？开完之后怎么设置自动提现呀？",
+    "expected_chunk_ids": [
+      "chunk_a0caf0084115",
+      "chunk_13c1f58fda42"
+    ],
+    "expected_content_contains": [
+      "新平台店长端",
+      "法人实名微信",
+      "微信支付官方平台",
+      "自动提现"
+    ],
+    "doc_id": "doc_7317e5dee86f",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我家是加盟门店，想换微信子商户号的结算卡，有啥规则，要怎么操作啊？",
+    "expected_chunk_ids": [
+      "chunk_66376ddefd15"
+    ],
+    "expected_content_contains": [
+      "加盟门店",
+      "直营门店",
+      "微信支付商户后台",
+      "银行结算账户",
+      "修改账户"
+    ],
+    "doc_id": "doc_7317e5dee86f",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "团购直播发红包怎么防止同一个用户看多场重复领奖励呀？",
+    "expected_chunk_ids": [
+      "chunk_8d94a602ebf4",
+      "chunk_ed538bbd5c85"
+    ],
+    "expected_content_contains": [
+      "重复领取奖励",
+      "多场关联直播"
+    ],
+    "doc_id": "doc_807c211db566",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我是店长，要给顾客退试服小单的钱，咋操作，有啥限制不？",
+    "expected_chunk_ids": [
+      "chunk_0ffc0e8183e1",
+      "chunk_11fbeb4b6600"
+    ],
+    "expected_content_contains": [
+      "店长端-订单管理",
+      "线上原路退款",
+      "试服小单",
+      "线上支付",
+      "部分退款"
+    ],
+    "doc_id": "doc_807c211db566",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "微信支付老是弹风险提示，哪些情况会触发风控啊？",
+    "expected_chunk_ids": [
+      "chunk_a8c1e9706457",
+      "chunk_cd687c51a965"
+    ],
+    "expected_content_contains": [
+      "交易存在风险",
+      "频繁交易",
+      "客户投诉率高"
+    ],
+    "doc_id": "doc_807c211db566",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我用苹果手机上人康课堂想连麦，结果提示获取不了设备权限该咋弄啊",
+    "expected_chunk_ids": [
+      "chunk_71f804f8dc64"
+    ],
+    "expected_content_contains": [
+      "麦克风",
+      "摄像头",
+      "设备权限",
+      "手机设置",
+      "人康课堂"
+    ],
+    "doc_id": "doc_b699813ae223",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我安卓手机版本特别老，要怎么才能下载安装人康课堂啊",
+    "expected_chunk_ids": [
+      "chunk_6bc9faae51f0"
+    ],
+    "expected_content_contains": [
+      "安卓8",
+      "自带浏览器",
+      "扫码下载",
+      "微信扫码无效",
+      "人康课堂"
+    ],
+    "doc_id": "doc_b699813ae223",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我苹果手机上的人康课堂经常闪退，还找不到提现按钮是什么原因啊",
+    "expected_chunk_ids": [
+      "chunk_71f804f8dc64",
+      "chunk_6bc9faae51f0"
+    ],
+    "expected_content_contains": [
+      "iOS版本较低",
+      "注册30天",
+      "iOS12",
+      "提现按钮"
+    ],
+    "doc_id": "doc_b699813ae223",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "直播间订单要做称重退差的话，操作入口在哪呀？",
+    "expected_chunk_ids": [
+      "chunk_1cd02e102a18"
+    ],
+    "expected_content_contains": [
+      "企信应用",
+      "扫码查订单",
+      "直播间订单",
+      "企信工作台"
+    ],
+    "doc_id": "doc_d136878ed9d9",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我进到扫码查订单应用之后，遇到不同的称重场景分别要咋处理啊？",
+    "expected_chunk_ids": [
+      "chunk_8315de6a3530"
+    ],
+    "expected_content_contains": [
+      "扫码退差",
+      "直接提货",
+      "重新扫码"
+    ],
+    "doc_id": "doc_d136878ed9d9",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "直播间订单称重退差所有商品都扫完码了，接下来结算步骤是啥？",
+    "expected_chunk_ids": [
+      "chunk_411a44a9da06"
+    ],
+    "expected_content_contains": [
+      "自动计算合计金额",
+      "退款退积分",
+      "付款并提货",
+      "微信扫码付款"
+    ],
+    "doc_id": "doc_d136878ed9d9",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我有意向加盟开店，选址的时候都要注意啥呀",
+    "expected_chunk_ids": [
+      "chunk_df28351390cb"
+    ],
+    "expected_content_contains": [
+      "查区",
+      "意向金",
+      "高德地图",
+      "地址保护"
+    ],
+    "doc_id": "doc_e8fa924f5753",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "查区通过之后要开店，得走啥审批流程准备啥材料啊",
+    "expected_chunk_ids": [
+      "chunk_df28351390cb"
+    ],
+    "expected_content_contains": [
+      "用章申请",
+      "营业执照",
+      "打款截图",
+      "商学院学习证书",
+      "入企申请"
+    ],
+    "doc_id": "doc_e8fa924f5753",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我登店长端的时候提示不是本店负责人，这咋处理啊",
+    "expected_chunk_ids": [
+      "chunk_df28351390cb"
+    ],
+    "expected_content_contains": [
+      "店长端",
+      "入职部门",
+      "刘建业",
+      "权限"
+    ],
+    "doc_id": "doc_e8fa924f5753",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我想做咱们品牌的加盟商，有没有哪些区域是不让搞加盟的啊？",
+    "expected_chunk_ids": [
+      "chunk_9a5adf5e2c66",
+      "chunk_0c1b52dbf60d"
+    ],
+    "expected_content_contains": [
+      "上海、台湾",
+      "长江以南",
+      "全品牌查区系统"
+    ],
+    "doc_id": "doc_ea333d070100",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我进不去店长端，弹窗说我加入企业超过30天了，要怎么解决啊？",
+    "expected_chunk_ids": [
+      "chunk_586b10e3de74",
+      "chunk_fd5c705adff6"
+    ],
+    "expected_content_contains": [
+      "《合作入门学习班》",
+      "人康商学院",
+      "学习证书",
+      "30天"
+    ],
+    "doc_id": "doc_ea333d070100",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我要处理对公打款、报销的事，该联系总部哪个对接人啊？",
+    "expected_chunk_ids": [
+      "chunk_a6e37b2cd3b8",
+      "chunk_eae5e5d2ad89"
+    ],
+    "expected_content_contains": [
+      "对公账户打款",
+      "报销",
+      "任泽擎",
+      "胡又文",
+      "闫涵博"
+    ],
+    "doc_id": "doc_ea333d070100",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我是门店负责人，想开通富友的收款账户，具体要走什么流程啊？",
+    "expected_chunk_ids": [
+      "chunk_da8bffc1b315"
+    ],
+    "expected_content_contains": [
+      "富友账户",
+      "营业执照",
+      "法人身份证",
+      "银行卡",
+      "人脸验证"
+    ],
+    "doc_id": "doc_fef251bc3768",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "开通富友收款码的时候要选主体类型，我该怎么判断选企业还是个体户啊？",
+    "expected_chunk_ids": [
+      "chunk_da8bffc1b315"
+    ],
+    "expected_content_contains": [
+      "主体类型",
+      "有限公司",
+      "个体工商户",
+      "营业执照"
+    ],
+    "doc_id": "doc_fef251bc3768",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "我把开通富友收款的资料提交之后，还要做哪些操作才能正常用啊？",
+    "expected_chunk_ids": [
+      "chunk_da8bffc1b315"
+    ],
+    "expected_content_contains": [
+      "人脸验证",
+      "对公账户",
+      "银行卡流水",
+      "微信二维码",
+      "收款码功能"
+    ],
+    "doc_id": "doc_fef251bc3768",
+    "doc_version": 1,
+    "source": "auto"
+  }
+]

@@ -610,3 +610,50 @@ def shutdown_asset_worker_pool() -> None:
     if asset_worker_pool is not None:
         shutdown_thread_pool(asset_worker_pool, wait=True, cancel_futures=False)
         asset_worker_pool = None
+
+
+# ── 检索线程池（生命周期由 lifespan 管理） ──────────────────────────
+
+search_executor: ThreadPoolExecutor | None = None
+"""检索专用线程池，8 线程。
+
+每次搜索内部向量检索 + BM25 检索在此池中并行执行。
+全局复用避免高并发搜索时频繁创建/销毁临时线程池导致线程膨胀。
+
+8 线程 → 最多 4 次并发搜索（每次 2 任务：向量 + BM25），匹配火山引擎 Embedding QPS 限制。
+"""
+
+
+def startup_search_pool(
+    max_workers: int = 8,
+    *,
+    thread_name_prefix: str = "kb-search",
+) -> ThreadPoolExecutor:
+    """创建检索专用线程池。
+
+    应在 FastAPI lifespan startup 阶段调用。
+
+    Args:
+        max_workers: 最大工作线程数，默认 8。
+        thread_name_prefix: 线程名前缀。
+
+    Returns:
+        配置好的 ThreadPoolExecutor 实例。
+    """
+    global search_executor
+    search_executor = create_thread_pool(
+        max_workers=max_workers,
+        thread_name_prefix=thread_name_prefix,
+    )
+    return search_executor
+
+
+def shutdown_search_pool() -> None:
+    """关闭检索线程池。
+
+    应在 FastAPI lifespan shutdown 阶段调用。
+    """
+    global search_executor
+    if search_executor is not None:
+        shutdown_thread_pool(search_executor, wait=True, cancel_futures=False)
+        search_executor = None

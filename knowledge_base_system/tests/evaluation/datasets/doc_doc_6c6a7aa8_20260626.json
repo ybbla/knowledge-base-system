@@ -1,0 +1,60 @@
+{
+  "metadata": {
+    "doc_id": "doc_6c6a7aa8dfec",
+    "doc_title": "品牌通用知识",
+    "doc_version": 1,
+    "generated_at": "2026-06-26T10:18:57.930587",
+    "generated_by": "auto-ingest",
+    "chunk_count": 1,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "我想加盟咱们品牌开店，整体要走什么流程呀？",
+      "expected_chunk_ids": [
+        "chunk_b077d8e54452"
+      ],
+      "expected_content_contains": [
+        "招商查区",
+        "意向金",
+        "打款",
+        "签约",
+        "开店审批"
+      ],
+      "doc_id": "doc_6c6a7aa8dfec",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "我登店长端的时候弹出提示说我不是本店负责人，用不了门店功能，该咋弄啊？",
+      "expected_chunk_ids": [
+        "chunk_b077d8e54452"
+      ],
+      "expected_content_contains": [
+        "入职部门",
+        "调整部门",
+        "刘建业",
+        "修改权限"
+      ],
+      "doc_id": "doc_6c6a7aa8dfec",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "我的企业微信账号被禁用了，有啥解决办法不？",
+      "expected_chunk_ids": [
+        "chunk_b077d8e54452"
+      ],
+      "expected_content_contains": [
+        "违禁词",
+        "新企信号",
+        "客户数据迁移",
+        "24小时",
+        "调店带客户审批"
+      ],
+      "doc_id": "doc_6c6a7aa8dfec",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

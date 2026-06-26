@@ -24,6 +24,8 @@ from app.core.models import (
     ScoreComponents,
     SearchResult,
     SearchResultItem,
+    SourceLocation,
+    SourceRef,
 )
 
 
@@ -90,11 +92,13 @@ class RetrievalPipeline:
         bm25_index: BM25Index,
         chunk_store: Any,
         asset_store: AssetStore | None = None,
+        executor: ThreadPoolExecutor | None = None,
     ) -> None:
         self._vector_index = vector_index
         self._bm25_index = bm25_index
         self._chunk_store = chunk_store
         self._asset_store = asset_store
+        self._executor = executor  # 全局复用检索线程池，避免频繁创建/销毁
         self._rewriter = QueryRewriter()
         self._reranker = Reranker()
 
@@ -180,27 +184,33 @@ class RetrievalPipeline:
                 knowledge_type=knowledge_type,
             )
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_vec = executor.submit(_search_vector) if query_vec is not None else None
-            future_bm25 = executor.submit(_search_bm25) if hybrid else None
+        # 优先使用全局检索线程池，避免高并发时线程膨胀
+        executor = self._executor or ThreadPoolExecutor(max_workers=2)
+        own_executor = self._executor is None
 
-            if future_bm25 is not None:
-                try:
-                    bm25_results = future_bm25.result()
-                except Exception as e:
-                    err_msg = f"BM25 retrieval failed: {e}"
-                    logger.exception(err_msg)
-                    if debug and debug_info:
-                        debug_info.errors.append(err_msg)
+        future_vec = executor.submit(_search_vector) if query_vec is not None else None
+        future_bm25 = executor.submit(_search_bm25) if hybrid else None
 
-            if future_vec is not None:
-                try:
-                    vec_results = future_vec.result()
-                except Exception as e:
-                    err_msg = f"Vector retrieval failed: {e}"
-                    logger.exception(err_msg)
-                    if debug and debug_info:
-                        debug_info.errors.append(err_msg)
+        if future_bm25 is not None:
+            try:
+                bm25_results = future_bm25.result()
+            except Exception as e:
+                err_msg = f"BM25 retrieval failed: {e}"
+                logger.exception(err_msg)
+                if debug and debug_info:
+                    debug_info.errors.append(err_msg)
+
+        if future_vec is not None:
+            try:
+                vec_results = future_vec.result()
+            except Exception as e:
+                err_msg = f"Vector retrieval failed: {e}"
+                logger.exception(err_msg)
+                if debug and debug_info:
+                    debug_info.errors.append(err_msg)
+
+        if own_executor:
+            executor.shutdown(wait=True)
 
         # 从 Milvus 返回字段构建 chunk 数据（无需查 PG）
         fields_map: dict[str, dict] = {}

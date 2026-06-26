@@ -62,25 +62,43 @@ def make_minio_key(doc_id: str, file_name: str, asset_id: str | None = None) -> 
     return f"{prefix}/{doc_id}/{safe_name}"
 
 
-def make_asset_key(content_hash: str) -> str:
+# MIME 类型 → 文件扩展名映射（用于 MinIO object key 后缀）
+_MIME_TO_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/webm": ".webm",
+    "video/avi": ".avi",
+}
+
+
+def make_asset_key(content_hash: str, mime_type: str | None = None) -> str:
     """生成内容寻址的 MinIO object key，确保同内容文件在 MinIO 中仅存一份。
 
-    格式：{hash_hex[:2]}/{hash_hex}，取 hex digest 前两位作为分片前缀（256 个目录）。
+    格式：{hash_hex[:2]}/{hash_hex}[.ext]，取 hex digest 前两位作为分片前缀（256 个目录）。
+    传入 mime_type 时追加对应的文件扩展名；未传入或无法识别时回退为无后缀 key。
     同 content_hash → 同 key → 跨文档自动复用，不受文档删除影响。
 
     举例：content_hash="sha256:a1b2c3d4e5f6..." → "a1/a1b2c3d4e5f6..."
+          content_hash="sha256:a1b2c3d4e5f6...", mime_type="video/mp4" → "a1/a1b2c3d4e5f6....mp4"
 
     Args:
         content_hash: Asset 的 content_hash（格式: "sha256:<hex>"）。
+        mime_type: 可选，MIME 类型字符串（如 "video/mp4"），用于追加文件扩展名。
 
     Returns:
-        内容寻址的 MinIO object key 字符串。
+        内容寻址的 MinIO object key 字符串（含扩展名后缀，如果可识别）。
     """
     if ":" in content_hash:
         hash_hex = content_hash.split(":", 1)[-1]
     else:
         hash_hex = content_hash
-    return f"{hash_hex[:2]}/{hash_hex}"
+    ext = _MIME_TO_EXT.get(mime_type or "", "")
+    return f"{hash_hex[:2]}/{hash_hex}{ext}"
 
 
 class MinioAssetStore(AssetStore):

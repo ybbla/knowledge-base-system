@@ -88,6 +88,9 @@ class DocxParser(DocumentParser):
         # 4. 回填 Asset.element_id 关联
         self._link_assets_to_elements(elements, state.assets)
 
+        # 5. 孤立 asset 补占位符并关联到第一个元素
+        self._attach_orphan_assets(elements, state)
+
         # 6. 计算文档内容哈希
         doc.source_hash = compute_hash(content)
 
@@ -716,6 +719,29 @@ class DocxParser(DocumentParser):
             if not asset.element_id:
                 asset.element_id = elements_by_asset_id.get(asset.asset_id, "")
 
+    def _attach_orphan_assets(
+        self,
+        elements: list[ParsedElement],
+        state: "_DocxParseState",
+    ) -> None:
+        """孤立 asset（未被任何元素引用）补占位符并挂载到第一个元素。"""
+        orphans = [a for a in state.assets if not a.element_id]
+        if not orphans or not elements:
+            return
+
+        first = elements[0]
+        extra_parts: list[str] = []
+        extra_ads: list[AssetData] = []
+
+        for asset in orphans:
+            placeholder = state.next_placeholder(asset.asset_type.value)
+            extra_parts.append(placeholder)
+            extra_ads.append(AssetData(placeholder=placeholder, asset_id=asset.asset_id))
+            asset.element_id = first.element_id
+
+        first.text = first.text + "\n" + " ".join(extra_parts)
+        first.asset_data = list(first.asset_data) + extra_ads
+
     # ── 不支持对象检──────────────────────────────────────────
 
     def _has_unsupported_object(self, p_el) -> bool:
@@ -738,7 +764,7 @@ class _DocxParseState(_BaseParseState):
     _next_seq() 方法    扩展资源跟踪字段，支持内联图片和超链接的关联    """
 
     _current_list_id: str | None = None
-    _list_buffer: list[str] = field(default_factory=list)  # 连续列表项文本缓冲区
+    _list_buffer: list[tuple[str, list[AssetData]]] = field(default_factory=list)  # 连续列表项缓冲区：(文本, 关联资源)
     _tracked_assets: list[AssetData] = field(default_factory=list)
     _link_urls: list[str] = field(default_factory=list)
     _image_asset_map: dict[str, Asset] = field(default_factory=dict)
@@ -845,15 +871,25 @@ class _DocxParseState(_BaseParseState):
         多个连续列表项缓冲后，在遇到下一个非列表元素或解析结束时
         由 _flush_list_buffer() 合并为一个 paragraph 整体输出。
         """
-        self.consume_tracked_assets()  # 列表项不关联资源
+        asset_data = self.consume_tracked_assets()
         self.consume_link_urls()
-        self._list_buffer.append(text)
+        self._list_buffer.append((text, asset_data))
 
     def _flush_list_buffer(self) -> None:
-        """将缓冲区中的连续列表项合并为一个 paragraph 元素并清空缓冲区。"""
+        """将缓冲区中的连续列表项合并为一个 paragraph 元素并清空缓冲区。
+
+        每个列表项的 asset_data 合并到最终元素中，确保列表内嵌的图片/视频/链接等资源不丢失。
+        """
         if not self._list_buffer:
             return
-        merged_text = "\n".join(self._list_buffer)
+        merged_text = "\n".join(item[0] for item in self._list_buffer)
+        merged_assets: list[AssetData] = []
+        seen: set[str] = set()
+        for _, asset_list in self._list_buffer:
+            for ad in asset_list:
+                if ad.asset_id not in seen:
+                    seen.add(ad.asset_id)
+                    merged_assets.append(ad)
         self._list_buffer.clear()
         self._current_list_id = None
         self.elements.append(
@@ -863,6 +899,7 @@ class _DocxParseState(_BaseParseState):
                 sequence_order=self._next_seq(),
                 element_type=ElementType.paragraph,
                 text=merged_text,
+                asset_data=merged_assets,
                 source_location=SourceLocation(section_path=list(self._section_path)),
             )
         )

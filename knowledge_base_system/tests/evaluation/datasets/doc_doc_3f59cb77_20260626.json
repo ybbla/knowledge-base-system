@@ -1,0 +1,56 @@
+{
+  "metadata": {
+    "doc_id": "doc_3f59cb770761",
+    "doc_title": "常见问题及对应答案汇总",
+    "doc_version": 1,
+    "generated_at": "2026-06-26T09:17:51.521735",
+    "generated_by": "auto-ingest",
+    "chunk_count": 1,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "顾客提现老是失败自动退回来，该怎么处理？",
+      "expected_chunk_ids": [
+        "chunk_2350a94c161f"
+      ],
+      "expected_content_contains": [
+        "提现失败",
+        "重新尝试",
+        "市场财务"
+      ],
+      "doc_id": "doc_3f59cb770761",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "企业微信之前绑的微信想换成新的，要怎么操作呀？",
+      "expected_chunk_ids": [
+        "chunk_2350a94c161f"
+      ],
+      "expected_content_contains": [
+        "账号与安全",
+        "解除绑定",
+        "身份验证",
+        "微信授权"
+      ],
+      "doc_id": "doc_3f59cb770761",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "我手机装不上人康课堂APP，有没有解决办法？",
+      "expected_chunk_ids": [
+        "chunk_2350a94c161f"
+      ],
+      "expected_content_contains": [
+        "应用市场",
+        "App Store",
+        "安卓7以上"
+      ],
+      "doc_id": "doc_3f59cb770761",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

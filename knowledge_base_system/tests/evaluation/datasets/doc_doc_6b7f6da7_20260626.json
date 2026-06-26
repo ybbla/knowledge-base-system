@@ -1,0 +1,58 @@
+{
+  "metadata": {
+    "doc_id": "doc_6b7f6da7cfbf",
+    "doc_title": "现有知识库问答对（终版）",
+    "doc_version": 1,
+    "generated_at": "2026-06-26T13:21:56.614575",
+    "generated_by": "auto-ingest",
+    "chunk_count": 19,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "新平台的店长端我点不开，有啥解决办法吗？",
+      "expected_chunk_ids": [
+        "chunk_787ad686af6d"
+      ],
+      "expected_content_contains": [
+        "新平台店长端",
+        "清理缓存",
+        "重新登录",
+        "刷新页面"
+      ],
+      "doc_id": "doc_6b7f6da7cfbf",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "我在人康课堂玩养鸡游戏，鸡蛋莫名其妙没了该咋办啊？",
+      "expected_chunk_ids": [
+        "chunk_aea95b350a84"
+      ],
+      "expected_content_contains": [
+        "人康课堂",
+        "鸡蛋兑换",
+        "登错账户",
+        "原门店"
+      ],
+      "doc_id": "doc_6b7f6da7cfbf",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "人康课堂里的红包提现失败，是什么原因啊要怎么处理？",
+      "expected_chunk_ids": [
+        "chunk_13840f79029b",
+        "chunk_5229e0ce4412"
+      ],
+      "expected_content_contains": [
+        "红包提现",
+        "提现记录",
+        "康邻家园"
+      ],
+      "doc_id": "doc_6b7f6da7cfbf",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

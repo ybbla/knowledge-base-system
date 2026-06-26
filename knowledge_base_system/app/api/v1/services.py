@@ -110,12 +110,14 @@ def reindex_chunk(
     doc_id = chunk.doc_id or (chunk.source_refs[0].doc_id if chunk.source_refs else "")
     metadata = {
         "doc_id": doc_id,
+        "doc_title": chunk.metadata.get("doc_title", ""),
         "title": chunk.title,
         "content": chunk.content,
         "category": chunk.category,
         "knowledge_type": chunk.knowledge_type.value if hasattr(chunk.knowledge_type, "value") else str(chunk.knowledge_type),
         "status": chunk.status.value if hasattr(chunk.status, "value") else str(chunk.status),
         "source_refs": [ref.model_dump(mode="json") for ref in chunk.source_refs],
+        "asset_refs": [ref.model_dump(mode="json") for ref in chunk.asset_refs],
         "metadata": chunk.metadata,
     }
 

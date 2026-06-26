@@ -113,13 +113,6 @@ def _value(raw: Any) -> str:
     return raw.value if hasattr(raw, "value") else str(raw)
 
 
-def _get_chunk(chunk_id: str):
-    """从 chunk_store 获取知识块。"""
-    if hasattr(chunk_store, "get"):
-        return chunk_store.get(chunk_id)
-    return None
-
-
 def _get_doc(doc_id: str):
     """从 document_repo 获取文档。"""
     if document_repo is not None and hasattr(document_repo, "get"):

@@ -282,6 +282,7 @@ class MilvusVectorIndex(VectorIndex):
         fields = {
             "dense_vector": [float(v) for v in vector],
             "doc_id": str(metadata.get("doc_id", "")),
+            "doc_title": str(metadata.get("doc_title", ""))[:512],
             "title": str(metadata.get("title", ""))[:512],
             "content": str(metadata.get("content", ""))[:65535],
             "category": str(metadata.get("category", "")),

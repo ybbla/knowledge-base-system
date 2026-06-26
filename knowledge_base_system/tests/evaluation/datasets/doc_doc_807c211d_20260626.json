@@ -1,0 +1,59 @@
+{
+  "metadata": {
+    "doc_id": "doc_807c211db566",
+    "doc_title": "关联直播发红包小单退款培训",
+    "doc_version": 1,
+    "generated_at": "2026-06-26T09:28:37.925164",
+    "generated_by": "auto-ingest",
+    "chunk_count": 9,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "团购直播发红包怎么防止同一个用户看多场重复领奖励呀？",
+      "expected_chunk_ids": [
+        "chunk_8d94a602ebf4",
+        "chunk_ed538bbd5c85"
+      ],
+      "expected_content_contains": [
+        "重复领取奖励",
+        "多场关联直播"
+      ],
+      "doc_id": "doc_807c211db566",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "我是店长，要给顾客退试服小单的钱，咋操作，有啥限制不？",
+      "expected_chunk_ids": [
+        "chunk_0ffc0e8183e1",
+        "chunk_11fbeb4b6600"
+      ],
+      "expected_content_contains": [
+        "店长端-订单管理",
+        "线上原路退款",
+        "试服小单",
+        "线上支付",
+        "部分退款"
+      ],
+      "doc_id": "doc_807c211db566",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "微信支付老是弹风险提示，哪些情况会触发风控啊？",
+      "expected_chunk_ids": [
+        "chunk_a8c1e9706457",
+        "chunk_cd687c51a965"
+      ],
+      "expected_content_contains": [
+        "交易存在风险",
+        "频繁交易",
+        "客户投诉率高"
+      ],
+      "doc_id": "doc_807c211db566",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

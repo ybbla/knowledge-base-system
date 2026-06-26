@@ -1,29 +1,85 @@
-"""LLM 重排序模块 — 对候选知识块逐条独立打分后按相关性降序排列。
+"""LLM 重排序模块 — 对候选知识块批量打分后按相关性降序排列。
 
-采用并发打分策略：每条 chunk 独立调用 LLM 获取 0~1 的相关性评分，
-代码层负责按分数排序。单条 LLM 失败不影响其他候选，失败条目回退使用 RRF 融合分。
+采用一次性批量打分策略：将所有候选打包进一个 prompt，LLM 在一次调用中
+返回所有候选的评分，代码层负责排序。单次 LLM 调用替代 N 次独立调用，
+将重排耗时从 O(N×单次LLM) 降至 O(1次LLM)，消除并发 API 调用带来的限流和开销。
 """
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from app.core.models import KnowledgeChunk
-from llm.prompts import RERANK_SCHEMA, build_rerank_message
+from llm.prompts import (
+    RERANK_BATCH_SCHEMA,
+    RERANK_SCHEMA,
+    build_rerank_batch_message,
+    build_rerank_message,
+)
 from llm.volcengine_client import llm_client
 
 logger = logging.getLogger(__name__)
 
-# 并发打分最大线程数
-_MAX_WORKERS = 15
+# 批量打分阈值：候选数 ≤ 此值时使用批量调用，超过时分批
+_BATCH_THRESHOLD = 20
+
+
+def _score_batch(
+    query: str, chunks: list[KnowledgeChunk]
+) -> list[dict[str, Any]]:
+    """一次 LLM 调用为所有候选批量打分。
+
+    将所有候选内容打包为一个 prompt，LLM 一次性返回所有评分。
+    任一条目评分失败（LLM 未返回该 chunk_id）时，该条目不设 relevance_score，
+    由 pipeline 层从 RRF 融合分数回退。
+    """
+    candidates = [
+        {"chunk_id": c.chunk_id, "content": c.content} for c in chunks
+    ]
+    try:
+        messages = build_rerank_batch_message(query, candidates)
+        result = llm_client.chat_json(messages, schema=RERANK_BATCH_SCHEMA)
+        scores = result.get("scores", [])
+    except Exception:
+        logger.exception("批量重排打分失败，所有候选回退使用 RRF 分数")
+        return [
+            {"chunk_id": c.chunk_id, "reason": "批量 LLM 调用失败，使用 RRF 融合分数"}
+            for c in chunks
+        ]
+
+    # 构建 chunk_id → score 映射
+    score_map: dict[str, dict[str, Any]] = {}
+    for entry in scores:
+        cid = entry.get("chunk_id", "")
+        if not cid:
+            continue
+        try:
+            score = float(entry.get("relevance_score", 0.0))
+            score_map[cid] = {
+                "chunk_id": cid,
+                "relevance_score": max(0.0, min(1.0, score)),
+                "reason": entry.get("reason", ""),
+            }
+        except (ValueError, TypeError):
+            score_map[cid] = {
+                "chunk_id": cid,
+                "reason": f"LLM 返回无效分值: {entry.get('relevance_score')}",
+            }
+
+    # 确保每个候选都有结果（LLM 遗漏的回退）
+    ranked = []
+    for c in chunks:
+        if c.chunk_id in score_map:
+            ranked.append(score_map[c.chunk_id])
+        else:
+            ranked.append({
+                "chunk_id": c.chunk_id,
+                "reason": "LLM 未返回该条目评分，使用 RRF 融合分数",
+            })
+    return ranked
 
 
 def _score_one(query: str, chunk: KnowledgeChunk) -> dict[str, Any]:
-    """对单条知识块调用 LLM 进行相关性打分（0~1）。
-
-    LLM 调用失败时返回不含 relevance_score 的条目，
-    由 pipeline 层从 RRF 融合分数中取回退值。
-    """
+    """对单条知识块调用 LLM 进行相关性打分（仅候选数=1 时使用）。"""
     try:
         messages = build_rerank_message(query, chunk.content)
         result = llm_client.chat_json(messages, schema=RERANK_SCHEMA)
@@ -35,7 +91,6 @@ def _score_one(query: str, chunk: KnowledgeChunk) -> dict[str, Any]:
         }
     except Exception:
         logger.warning("单条重排打分失败 chunk=%s", chunk.chunk_id, exc_info=True)
-        # 不设 relevance_score，pipeline 会从 score_map 取 RRF 分数
         return {
             "chunk_id": chunk.chunk_id,
             "reason": "LLM 调用失败，使用 RRF 融合分数",
@@ -43,17 +98,18 @@ def _score_one(query: str, chunk: KnowledgeChunk) -> dict[str, Any]:
 
 
 class Reranker:
-    """LLM 重排序器 — 对候选知识块逐条并行打分，代码层负责降序排列。
+    """LLM 重排序器 — 批量打包候选一次打分，代码层负责降序排列。
 
-    并发策略：
-    - 候选数 = 1：串行打分
-    - 候选数 > 1：ThreadPoolExecutor 并发，最大 _MAX_WORKERS 个线程
+    策略：
+    - 候选数 = 0：直接返回空列表
+    - 候选数 = 1：单条 prompt 调用（沿用旧 prompt，输出更简洁）
+    - 候选数 ≥ 2：批量 prompt 调用，一次 LLM 请求返回所有评分
     """
 
     def rerank(
         self, query: str, candidates: list[KnowledgeChunk]
     ) -> list[dict[str, Any]]:
-        """对每条候选独立调用 LLM 打分，并发执行，降序排列。
+        """对候选批量调用 LLM 打分，降序排列。
 
         返回按相关性降序排列的打分条目。
         """
@@ -63,14 +119,7 @@ class Reranker:
         if len(candidates) == 1:
             ranked = [_score_one(query, candidates[0])]
         else:
-            workers = min(_MAX_WORKERS, len(candidates))
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {
-                    executor.submit(_score_one, query, c): c for c in candidates
-                }
-                ranked = []
-                for future in as_completed(futures):
-                    ranked.append(future.result())
+            ranked = _score_batch(query, candidates)
 
         # 代码负责排序 — LLM 只管打分
         ranked.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)

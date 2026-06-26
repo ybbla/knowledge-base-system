@@ -47,7 +47,7 @@ class SemanticExtractor:
     """语义抽取器 — 通过 LLM 将 ParsedElement 列表转换为 KnowledgeChunk 列表。
 
     全文优先策略：95%+ 的文档一次 LLM 调用即可完成抽取。
-    极端大文档触发递进降级：h1 → h2 → h3 → … → embedding 切分 → token 硬切。
+    极端大文档触发递进降级：元素数量超限分批 → h1 → h2 → h3 → … → embedding 切分 → token 硬切。
     LLM 不可用或返回空结果时自动回退为 fallback chunk。
     """
 
@@ -55,6 +55,10 @@ class SemanticExtractor:
         self._max_tokens = settings.max_window_tokens
         # 安全阈值：上下文窗口 × 0.8，给 prompt 模板和 LLM 输出留 20% buffer
         self._safe_threshold = int(settings.context_window_tokens * 0.8)
+        # 单次 LLM 调用的元素数量上限（可通过 LLM_ELEMENTS_BATCH_SIZE 环境变量覆盖）
+        self._max_elements_per_batch = settings.max_elements_per_llm_batch
+        # 批次间重叠比例（可通过 LLM_BATCH_OVERLAP_RATIO 环境变量覆盖）
+        self._overlap_ratio = settings.llm_batch_overlap_ratio
 
     # ── 公共入口 ─────────────────────────────────────────────────────
 
@@ -64,13 +68,22 @@ class SemanticExtractor:
         assets: list[Asset],
         category: str = "通用",
     ) -> list[KnowledgeChunk]:
-        """主入口：全文优先 → 递进降级。
+        """主入口：全文优先 → 元素数量/Token 双重判断 → 递进降级。
 
-        1. 全文 token < 安全阈值 → 单次 LLM 调用（95%+ 文档走此路径）
-        2. 超限 → _split_recursive 按标题层级递进切分
+        1. 元素数 ≤ 上限 且 token < 安全阈值 → 单次 LLM 调用（95%+ 文档走此路径）
+        2. 元素数 > 上限 → _batch_with_overlap 分批重叠滑窗
+        3. token ≥ 安全阈值 → _split_recursive 按标题层级递进切分
         """
         if not elements:
             return []
+
+        # 元素数量超限 → 分批重叠滑窗（先于 token 判断，避免超长 JSON 输出导致 LLM 失败）
+        if len(elements) > self._max_elements_per_batch:
+            logger.info(
+                "元素数量 %d 超过单批上限 %d，启用分批重叠处理",
+                len(elements), self._max_elements_per_batch,
+            )
+            return self._batch_with_overlap(elements, assets, category)
 
         estimated = self._estimate_tokens(elements)
         if estimated < self._safe_threshold:
@@ -106,6 +119,65 @@ class SemanticExtractor:
         if not chunks:
             return False
         return any(c.content.strip() for c in chunks)
+
+    # ── 分批重叠处理 ──────────────────────────────────────────────
+
+    def _batch_with_overlap(
+        self,
+        elements: list[ParsedElement],
+        assets: list[Asset],
+        category: str,
+    ) -> list[KnowledgeChunk]:
+        """元素数量超限时，分批调用 LLM，批次间有重叠保持上下文连续性。
+
+        批次大小 = _max_elements_per_batch，重叠量 = batch_size × _overlap_ratio。
+        每批独立经过 _try_extract_or_fallback（LLM 成功则用 LLM 结果，失败则 fallback）。
+        最终按 content_hash 去重，避免重叠区域产生重复知识块。
+        """
+        batch_size = self._max_elements_per_batch
+        overlap = max(1, int(batch_size * self._overlap_ratio))
+        step = batch_size - overlap
+        # Ceil 除法: 批次数 = ⌈(len - overlap) / step⌉
+        total_batches = (len(elements) - overlap + step - 1) // step if len(elements) > overlap else 1
+
+        logger.info(
+            "分批处理: 共 %d 个元素 → %d 批（每批 %d 个，重叠 %d 个）",
+            len(elements), total_batches, batch_size, overlap,
+        )
+
+        all_chunks: list[KnowledgeChunk] = []
+        seen_hashes: set[str] = set()
+        start = 0
+        batch_idx = 0
+
+        while start < len(elements):
+            batch_idx += 1
+            batch = elements[start : start + batch_size]
+            logger.debug(
+                "第 %d/%d 批: 元素 %d~%d（共 %d 个）",
+                batch_idx, total_batches,
+                start, min(start + len(batch), len(elements)),
+                len(batch),
+            )
+
+            # 每批独立 LLM 抽取（失败自动 fallback）
+            batch_chunks = self._try_extract_or_fallback(batch, assets, category)
+
+            # 按 content_hash 去重（重叠区域可能产出相同知识的 chunk）
+            for chunk in batch_chunks:
+                ch = chunk.content_hash
+                if ch not in seen_hashes:
+                    seen_hashes.add(ch)
+                    all_chunks.append(chunk)
+
+            # 滑动窗口：前进 batch_size - overlap
+            start += batch_size - overlap
+
+        logger.info(
+            "分批处理完成: %d 批共产生 %d 个 chunk（已按 content_hash 去重）",
+            total_batches, len(all_chunks),
+        )
+        return all_chunks
 
     # ── 递进降级切分 ──────────────────────────────────────────────
 

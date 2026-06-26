@@ -1,0 +1,60 @@
+{
+  "metadata": {
+    "doc_id": "doc_7317e5dee86f",
+    "doc_title": "开通微信子商户号",
+    "doc_version": 1,
+    "generated_at": "2026-06-26T09:51:28.646182",
+    "generated_by": "auto-ingest",
+    "chunk_count": 5,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "我要开微信子商户号收直播的钱，得准备啥材料，手续费收多少啊？",
+      "expected_chunk_ids": [
+        "chunk_549d0e5db0e4",
+        "chunk_2921236c3468"
+      ],
+      "expected_content_contains": [
+        "营业执照",
+        "法人身份证",
+        "基本存款账户信息"
+      ],
+      "doc_id": "doc_7317e5dee86f",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "我是门店负责人，开通微信子商户号的步骤是啥？开完之后怎么设置自动提现呀？",
+      "expected_chunk_ids": [
+        "chunk_a0caf0084115",
+        "chunk_13c1f58fda42"
+      ],
+      "expected_content_contains": [
+        "新平台店长端",
+        "法人实名微信",
+        "微信支付官方平台",
+        "自动提现"
+      ],
+      "doc_id": "doc_7317e5dee86f",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "我家是加盟门店，想换微信子商户号的结算卡，有啥规则，要怎么操作啊？",
+      "expected_chunk_ids": [
+        "chunk_66376ddefd15"
+      ],
+      "expected_content_contains": [
+        "加盟门店",
+        "直营门店",
+        "微信支付商户后台",
+        "银行结算账户",
+        "修改账户"
+      ],
+      "doc_id": "doc_7317e5dee86f",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

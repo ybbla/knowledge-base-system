@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     # 入库处理限制
     max_recursion_depth: int = 3
     max_elements_per_doc: int = 1000
+    max_elements_per_llm_batch: int = Field(default=40, validation_alias="LLM_ELEMENTS_BATCH_SIZE")  # 单次 LLM 语义抽取的元素数量上限，超出则分批重叠滑窗
+    llm_batch_overlap_ratio: float = Field(default=0.15, validation_alias="LLM_BATCH_OVERLAP_RATIO")  # 分批间重叠比例，保持边界上下文连续性
     max_window_tokens: int = 3000
     context_window_tokens: int = Field(default=256000, validation_alias="CONTEXT_WINDOW_TOKENS")  # LLM 上下文窗口上限，语义抽取安全阈值 = 此值 × 0.8
     embedding_batch_size: int = Field(default=32, validation_alias="EMBEDDING_BATCH_SIZE")

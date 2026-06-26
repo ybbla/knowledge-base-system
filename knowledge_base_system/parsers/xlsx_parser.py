@@ -73,10 +73,24 @@ class _Region:
 
 
 class XlsxParser(DocumentParser):
-    """XLSX 工作簿解析为统一ParsedElement Asset
-    支持source_type：xlsx    逐工作表处理，多行多列区域视为表格，否则视为段落    支持提取嵌入图片、超链接资源、合并单元格和公式    """
+    """XLSX 工作簿解析为统一 ParsedElement + Asset。
+
+    支持 source_type：xlsx    逐工作表处理，多行多列区域视为表格，否则视为段落
+    支持提取嵌入图片、超链接资源、合并单元格和公式。
+    单元格内的 URL 用占位符替换（{{web:1}}），与 DOCX 行为一致。
+    """
 
     SUPPORTED_TYPES = {"xlsx"}
+
+    # 占位符前缀映射，与 DOCX/md 解析器保持一致
+    _PLACEHOLDER_PREFIX = {
+        "image": "image",
+        "video": "video",
+        "image_link": "image",
+        "video_link": "video",
+        "document_link": "doc",
+        "web_link": "web",
+    }
 
     def supports(self, source_type: str) -> bool:
         return source_type.lower() in self.SUPPORTED_TYPES
@@ -92,12 +106,19 @@ class XlsxParser(DocumentParser):
 
         try:
             wb = load_workbook(io.BytesIO(content), data_only=True, read_only=False)
+        except TypeError as exc:
+            # 部分 xlsx 文件的 styles.xml 中存在非标准 fill 定义（如 extLst 自定义填充），
+            # openpyxl 反序列化时会抛出 TypeError。修复：从 ZIP 中删除有问题的 fill 元素后重试。
+            wb = self._load_without_fill_styles(content, exc)
         except (InvalidFileException, OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
             raise ValueError(f"XLSX 解析失败：{exc}") from exc
 
         state = _XlsxParseState(doc.doc_id, doc.version)
         assets: list[Asset] = []
         assets_by_uri: dict[str, Asset] = {}
+        # 占位符计数器（按类型前缀独立计数）和 URL→占位符 映射
+        placeholder_counter: dict[str, int] = {}
+        placeholder_map: dict[str, str] = {}
 
         for sheet_index, ws in enumerate(wb.worksheets, start=1):
             if ws.sheet_state != "visible":
@@ -116,6 +137,7 @@ class XlsxParser(DocumentParser):
             cells = self._collect_cells(
                 ws, doc, sheet_index, assets, assets_by_uri,
                 formulas_map=formulas_map, image_cell_map=image_cell_map,
+                placeholder_counter=placeholder_counter, placeholder_map=placeholder_map,
             )
             for region in self._find_regions(cells):
                 if region.row_count >= 2 and region.col_count >= 2:
@@ -198,13 +220,22 @@ class XlsxParser(DocumentParser):
         assets_by_uri: dict[str, Asset],
         formulas_map: dict[str, str],
         image_cell_map: dict[tuple[int, int], list[AssetData]] | None = None,
+        placeholder_counter: dict[str, int] | None = None,
+        placeholder_map: dict[str, str] | None = None,
     ) -> dict[tuple[int, int], _CellInfo]:
-        """遍历工作表中的所有单元格，收集文本、公式、超链接和资源
-        公式文本通过预提取的 formulas_map 查询        无论缓存值是否存在都能记录公式信息        嵌入图片asset_id 合并到对应位置的 _CellInfo 中        """
+        """遍历工作表中的所有单元格，收集文本、公式、超链接和资源。
+
+        单元格内的 URL 统一替换为占位符（如 {{web:1}}），
+        使前端能在文本中定位资源渲染点。
+        """
         merged_map = self._build_merged_map(ws)
         cells: dict[tuple[int, int], _CellInfo] = {}
         if image_cell_map is None:
             image_cell_map = {}
+        if placeholder_counter is None:
+            placeholder_counter = {}
+        if placeholder_map is None:
+            placeholder_map = {}
 
         for row in range(1, ws.max_row + 1):
             for col in range(1, ws.max_column + 1):
@@ -237,10 +268,11 @@ class XlsxParser(DocumentParser):
                     if not text and hyperlink.startswith(("http://", "https://")):
                         text = hyperlink
 
-                # 提取可下载资源引用
-                link_asset_data, _link_urls = self._assets_from_cell(
+                # 提取可下载资源引用，URL 用占位符替换
+                link_asset_data, text = self._assets_from_cell(
                     doc, ws.title, coordinate, text, hyperlink,
                     assets, assets_by_uri,
+                    placeholder_counter, placeholder_map,
                 )
 
                 # 合并嵌入图片AssetData（图片优先排在前面）
@@ -348,11 +380,14 @@ class XlsxParser(DocumentParser):
         hyperlink: str | None,
         assets: list[Asset],
         assets_by_uri: dict[str, Asset],
-    ) -> tuple[list[AssetData], list[str]]:
-        """从单元格文本和超链接中提URL 并创Asset
-        video > image > attachment 分类创建 Asset        普通网页链接不创建 Asset，返回为 link_urls        已存在的 URL 通过 assets_by_uri 去重
-        Returns:
-            (asset_data_list, link_urls) 资源数据列表和普通网页链接列表        """
+        placeholder_counter: dict[str, int],
+        placeholder_map: dict[str, str],
+    ) -> tuple[list[AssetData], str]:
+        """从单元格文本和超链接中提取 URL 并创建 Asset。
+
+        所有 URL（含普通网页）统一创建 Asset，
+        文本中的 URL 替换为 {{prefix:N}} 占位符。
+        """
         urls: list[str] = []
         if text:
             urls.extend(match.group(0) for match in HTTP_URL_RE.finditer(text))
@@ -360,15 +395,17 @@ class XlsxParser(DocumentParser):
             urls.append(hyperlink)
 
         asset_data_list: list[AssetData] = []
-        link_urls: list[str] = []
+        modified_text = text
+
         for url in dict.fromkeys(urls):  # 去重保序
             asset = assets_by_uri.get(url)
             if asset is None:
                 asset_type = self._classify_link_asset_type(url)
-                if asset_type is None:
-                    # 普通网页链接，不创Asset
-                    link_urls.append(url)
-                    continue
+                prefix = self._PLACEHOLDER_PREFIX.get(asset_type.value, "res")
+                cnt = placeholder_counter.get(prefix, 0) + 1
+                placeholder_counter[prefix] = cnt
+                placeholder = f"{{{{{prefix}:{cnt}}}}}"
+                placeholder_map[url] = placeholder
                 asset = Asset(
                     doc_id=doc.doc_id,
                     asset_type=asset_type,
@@ -384,15 +421,26 @@ class XlsxParser(DocumentParser):
                 )
                 assets.append(asset)
                 assets_by_uri[url] = asset
+            else:
+                placeholder = placeholder_map.get(url, "")
+
             asset_data_list.append(
-                AssetData(placeholder="", asset_id=asset.asset_id)
+                AssetData(placeholder=placeholder, asset_id=asset.asset_id)
             )
-        return asset_data_list, link_urls
+
+            # 文本中的 URL 替换为占位符
+            if url in modified_text:
+                modified_text = modified_text.replace(url, placeholder)
+
+        return asset_data_list, modified_text
 
     @staticmethod
-    def _classify_link_asset_type(url: str) -> AssetType | None:
-        """根据 URL 判断链接的资源类型
-        优先级：视频 > 图片 > 附件 > 普通网页        普通网页返None，不创建 Asset，只记录metadata.link_urls        Markdown/DOCX 解析器的 _classify_link_url() 行为一致        """
+    def _classify_link_asset_type(url: str) -> AssetType:
+        """根据 URL 判断链接的资源类型。
+
+        优先级：视频 > 图片 > 附件 > 普通网页（兜底 web_link）。
+        与 DOCX 解析器的 classify_link_text() 行为一致：所有链接统一创建 Asset。
+        """
         if is_video_url(url):
             return AssetType.video_link
 
@@ -403,8 +451,8 @@ class XlsxParser(DocumentParser):
         if is_attachment_url(url):
             return AssetType.document_link
 
-        # 普通网页链接，不创Asset
-        return None
+        # 普通网页链接，兜底为 web_link Asset
+        return AssetType.web_link
 
     # ── 区域检────────────────────────────────────────────────────
 
@@ -416,7 +464,8 @@ class XlsxParser(DocumentParser):
         if not cells:
             return []
 
-        # 预构row 该行所有有数据的列的集        occupied_rows: dict[int, set[int]] = {}
+        # 预构 row → 该行所有有数据的列的集合
+        occupied_rows: dict[int, set[int]] = {}
         for row, col in cells:
             occupied_rows.setdefault(row, set()).add(col)
 
@@ -436,6 +485,82 @@ class XlsxParser(DocumentParser):
                 regions.append(_Region(row_start, row_end, col_start, col_end))
 
         return sorted(regions, key=lambda region: (region.min_row, region.min_col))
+
+    # ── 样式兼容性修复 ──────────────────────────────────────────────
+
+    @staticmethod
+    def _load_without_fill_styles(content: bytes, original_error: TypeError):
+        """非标准 fill 样式导致 openpyxl 解析失败时，修复 styles.xml 后重新加载。
+
+        部分 xlsx 文件的 styles.xml 中包含 openpyxl 无法反序列化的 fill 定义
+        （如自定义扩展填充），反序列化时 Fill() 不接受参数导致 TypeError。
+        修复策略：将 <fills> 中所有 fill 替换为等量的默认 patternFill，
+        保持 fill 索引不变，避免 cellXfs 中的 fillId 引用越界。
+        """
+        import io as _io
+        import zipfile as _zipfile
+
+        try:
+            with _zipfile.ZipFile(_io.BytesIO(content), "r") as zf_in:
+                names = zf_in.namelist()
+                if "xl/styles.xml" not in names:
+                    raise ValueError(
+                        f"XLSX 样式兼容性错误（{original_error}），"
+                        "但文件中未找到 styles.xml，无法修复"
+                    ) from original_error
+
+                styles_xml = zf_in.read("xl/styles.xml").decode("utf-8")
+
+                # 统计原有 fill 数量，每个替换为最简 patternFill（保持 count 和索引不变）
+                fill_tags = re.findall(
+                    r"<fill[^/>]*(?:/>|>.*?</fill>)", styles_xml, re.DOTALL,
+                )
+                fill_count = len(fill_tags)
+                default_fills = (
+                    f'<fills count="{fill_count}">'
+                    + "".join(
+                        ["<fill><patternFill patternType=\"none\"/></fill>"]
+                        * fill_count
+                    )
+                    + "</fills>"
+                )
+
+                fill_fixed = re.sub(
+                    r"<fills[^>]*>.*?</fills>",
+                    default_fills,
+                    styles_xml,
+                    flags=re.DOTALL,
+                )
+
+                if fill_fixed == styles_xml:
+                    raise ValueError(
+                        f"XLSX 样式兼容性错误（{original_error}），"
+                        "修复 styles.xml 后内容未变化"
+                    ) from original_error
+
+                # 重建 xlsx ZIP
+                buffer = _io.BytesIO()
+                with _zipfile.ZipFile(
+                    buffer, "w", _zipfile.ZIP_DEFLATED
+                ) as zf_out:
+                    for name in names:
+                        if name == "xl/styles.xml":
+                            zf_out.writestr(name, fill_fixed.encode("utf-8"))
+                        else:
+                            zf_out.writestr(name, zf_in.read(name))
+
+                return load_workbook(
+                    _io.BytesIO(buffer.getvalue()),
+                    data_only=True,
+                    read_only=False,
+                )
+
+        except (ValueError, _zipfile.BadZipFile):
+            raise
+        except Exception as exc:
+            raise ValueError(
+                f"XLSX 样式兼容性错误（{original_error}），修复也失败：{exc}"
+            ) from original_error
 
     # ── 清理 ──────────────────────────────────────────────────────
 
@@ -473,6 +598,17 @@ class _XlsxParseState(_BaseParseState):
             )
         )
 
+    # 每个表格元素最多包含的数据行数，超出按此分片
+    _MAX_ROWS_PER_ELEMENT = 30
+
+    @staticmethod
+    def _strip_cell_meta(meta: dict) -> dict:
+        """去掉 cell metadata 中与 table 级别重复的字段。"""
+        return {
+            k: v for k, v in meta.items()
+            if k not in ("sheet_name", "sheet_index", "text")
+        }
+
     def add_table(
         self,
         sheet_name: str,
@@ -482,68 +618,89 @@ class _XlsxParseState(_BaseParseState):
         assets_by_uri: dict[str, Asset],
         assets: list[Asset] | None = None,
     ) -> None:
-        """为多行多列区域创建表格元素，首行作为标题。"""
+        """将表格区域按 _MAX_ROWS_PER_ELEMENT 分片为多个 ParsedElement。
+
+        首行为表头，每个元素复用同一表头 + 最多 30 行数据。
+        合并单元格通过 _collect_cells 的 merged_map 已展开到各行。
+        """
+        # ── 表头（区域首行），格式对齐 DOCX：[{"text": "列A"}, ...] ──
         headers = [
-            self._cell(cells, region.min_row, col).text
+            {"text": self._cell(cells, region.min_row, col).text}
             for col in range(region.min_col, region.max_col + 1)
         ]
-        header_cells = []
-        rows = []
-        asset_data_list: list[AssetData] = []
+        header_asset_data: list[AssetData] = []
         for col in range(region.min_col, region.max_col + 1):
             cell = self._cell(cells, region.min_row, col)
-            asset_data_list.extend(cell.asset_data)
-            header_cells.append(
-                {"text": cell.text, "metadata": cell.metadata}
-            )
+            header_asset_data.extend(cell.asset_data)
+
+        # ── 收集所有数据行 ──
+        all_rows: list[dict] = []
         for row in range(region.min_row + 1, region.max_row + 1):
             row_cells = []
             for col in range(region.min_col, region.max_col + 1):
                 cell = self._cell(cells, row, col)
-                asset_data_list.extend(cell.asset_data)
                 row_cells.append(
-                    {"text": cell.text, "metadata": cell.metadata}
+                    {"text": cell.text, "metadata": self._strip_cell_meta(cell.metadata)}
                 )
-            rows.append({"cells": row_cells})
+            all_rows.append({"cells": row_cells})
 
-        structured = {
-            "table": {
-                "caption": "",
-                "headers": headers,
-                "header_cells": header_cells,
-                "rows": rows,
-                "metadata": {
-                    "sheet_name": sheet_name,
-                    "sheet_index": sheet_index,
-                    "range": region.range_ref,
-                },
-            }
-        }
-        text = self._table_text(headers, rows)
-        unique_asset_data = list({ad.asset_id: ad for ad in asset_data_list}.values())
-        element_kwargs: dict[str, Any] = {
-            "doc_id": self.doc_id,
-            "doc_version": self.doc_version,
-            "sequence_order": self._next_seq(),
-            "element_type": ElementType.table,
-            "text": text,
-            "structured_data": structured,
-            "asset_data": unique_asset_data,
-            "source_location": SourceLocation(
-                section_path=list(self._section_path),
-                table_path=[
-                    {
+        # ── 按 _MAX_ROWS_PER_ELEMENT 分片创建元素 ──
+        total_rows = len(all_rows)
+        for start in range(0, total_rows, self._MAX_ROWS_PER_ELEMENT):
+            chunk = all_rows[start : start + self._MAX_ROWS_PER_ELEMENT]
+            first_row = region.min_row + 1 + start
+            last_row = first_row + len(chunk) - 1
+
+            # range 包含表头行，表示这个元素覆盖的完整区域
+            chunk_range = _Region(
+                region.min_row, last_row, region.min_col, region.max_col,
+            )
+
+            # 该分片涉及的行范围内的资源，去重注入
+            chunk_asset_data = list(header_asset_data)
+            seen_ids: set[str] = {ad.asset_id for ad in header_asset_data}
+            for r in range(first_row, last_row + 1):
+                for col in range(region.min_col, region.max_col + 1):
+                    cell = self._cell(cells, r, col)
+                    for ad in cell.asset_data:
+                        if ad.asset_id not in seen_ids:
+                            seen_ids.add(ad.asset_id)
+                            chunk_asset_data.append(ad)
+
+            structured = {
+                "table": {
+                    "caption": "",
+                    "headers": headers,
+                    "rows": chunk,
+                    "metadata": {
                         "sheet_name": sheet_name,
                         "sheet_index": sheet_index,
-                        "range": region.range_ref,
-                    }
-                ],
-            ),
-        }
-        element_kwargs["metadata"] = {}
-        element = ParsedElement(**element_kwargs)
-        self._link_assets(element, assets_by_uri, assets)
-        self.elements.append(element)
+                        "range": chunk_range.range_ref,
+                    },
+                }
+            }
+            text = self._table_text(headers, chunk)
+            element = ParsedElement(
+                doc_id=self.doc_id,
+                doc_version=self.doc_version,
+                sequence_order=self._next_seq(),
+                element_type=ElementType.table,
+                text=text,
+                structured_data=structured,
+                asset_data=chunk_asset_data,
+                source_location=SourceLocation(
+                    section_path=list(self._section_path),
+                    table_path=[
+                        {
+                            "sheet_name": sheet_name,
+                            "sheet_index": sheet_index,
+                            "range": chunk_range.range_ref,
+                        }
+                    ],
+                ),
+            )
+            self._link_assets(element, assets_by_uri, assets)
+            self.elements.append(element)
 
     def add_paragraphs(
         self,
@@ -597,11 +754,11 @@ class _XlsxParseState(_BaseParseState):
         )
 
     @staticmethod
-    def _table_text(headers: list[str], rows: list[dict[str, Any]]) -> str:
+    def _table_text(headers: list[dict], rows: list[dict[str, Any]]) -> str:
         """将表格数据序列化为纯文本表示。"""
         parts: list[str] = []
         if headers:
-            parts.append(" | ".join(headers))
+            parts.append(" | ".join(h["text"] for h in headers))
         for row in rows:
             parts.append(" | ".join(cell["text"] for cell in row["cells"]))
         return "\n".join(part for part in parts if part.strip())

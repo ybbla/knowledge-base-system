@@ -166,8 +166,16 @@ def _process_image_data(
     try:
         mime_type = sniff_image_mime(data)
         if mime_type is None:
+            # 检查是否下载到了 HTML 页面（如链接失效返回登录页）
+            preview = data[:200].lstrip()
+            if preview.startswith((b"<", b"<!DOCTYPE", b"<!doctype")):
+                asset.error_message = (
+                    "图片链接返回了网页而非图片文件（可能需要登录或已失效），"
+                    f"响应前 100 字节: {data[:100]!r}"
+                )
+            else:
+                asset.error_message = "invalid_image_type"
             asset.status = AssetStatus.failed
-            asset.error_message = "invalid_image_type"
             asset_store.put(asset)
             return asset
 
@@ -191,12 +199,14 @@ def _process_image_data(
                 if description:
                     asset.extracted_text = description
                 else:
-                    logger.warning("图片 %s 视觉理解返回空结果", asset.asset_id)
+                    logger.warning("图片 %s 视觉理解返回空结果（可能 API Key 未配置或模型调用失败）", asset.asset_id)
+                    asset.metadata["vision_status"] = "no_result"
             except Exception:
                 logger.exception("图片 %s 视觉理解失败，继续上传 MinIO", asset.asset_id)
+                asset.metadata["vision_status"] = "error"
 
         if minio_store is not None:
-            key = make_asset_key(asset.content_hash)
+            key = make_asset_key(asset.content_hash, mime_type)
             asset.storage_uri = minio_store.upload_bytes(
                 minio_store.assets_bucket,
                 key,
@@ -241,7 +251,17 @@ def _process_video_data(
         # 格式校验：通过魔数推断视频容器格式
         mime_type = sniff_video_mime(data)
         if mime_type is None:
-            # 无法识别格式时不直接失败，使用通用 MIME 继续
+            # 无法识别视频容器格式时，检查是否为 HTML/文本响应（如下载链接返回登录页）
+            preview = data[:200].lstrip()
+            if preview.startswith((b"<", b"<!DOCTYPE", b"<!doctype")):
+                asset.status = AssetStatus.failed
+                asset.error_message = (
+                    "视频链接返回了网页而非视频文件（可能需要登录或已失效），"
+                    f"响应前 100 字节: {data[:100]!r}"
+                )
+                asset_store.put(asset)
+                return asset
+            # 其他无法识别格式的情况，使用通用 MIME 继续（容忍非标准容器）
             logger.warning("视频 %s 无法识别容器格式，使用通用 MIME", asset.asset_id)
             mime_type = "video/mp4"
 
@@ -265,13 +285,15 @@ def _process_video_data(
                 if description:
                     asset.extracted_text = description
                 else:
-                    logger.warning("视频 %s 视觉理解返回空结果", asset.asset_id)
+                    logger.warning("视频 %s 视觉理解返回空结果（可能 API Key 未配置或模型调用失败）", asset.asset_id)
+                    asset.metadata["vision_status"] = "no_result"
             except Exception:
                 logger.exception("视频 %s 视觉理解失败，继续上传 MinIO", asset.asset_id)
+                asset.metadata["vision_status"] = "error"
 
         # 上传 MinIO
         if minio_store is not None:
-            key = make_asset_key(asset.content_hash)
+            key = make_asset_key(asset.content_hash, mime_type)
             asset.storage_uri = minio_store.upload_bytes(
                 minio_store.assets_bucket,
                 key,

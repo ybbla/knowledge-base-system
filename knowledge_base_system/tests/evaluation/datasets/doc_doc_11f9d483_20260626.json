@@ -1,0 +1,58 @@
+{
+  "metadata": {
+    "doc_id": "doc_11f9d483fe82",
+    "doc_title": "直播间订单店长操作手册",
+    "doc_version": 1,
+    "generated_at": "2026-06-26T09:08:17.363795",
+    "generated_by": "auto-ingest",
+    "chunk_count": 5,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "我家门店的店员说找不到直播间订单的入口，要怎么处理？",
+      "expected_chunk_ids": [
+        "chunk_aae5f3d7bddc",
+        "chunk_4bf9d23d499b"
+      ],
+      "expected_content_contains": [
+        "功能设置",
+        "权限设置",
+        "直播间订单入口",
+        "打开功能权限"
+      ],
+      "doc_id": "doc_11f9d483fe82",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "顾客到店提直播间买的商品，我该怎么操作核对订单完成提货？",
+      "expected_chunk_ids": [
+        "chunk_ba325b029319"
+      ],
+      "expected_content_contains": [
+        "按顾客查询",
+        "确认提货",
+        "扫描二维码",
+        "订单状态"
+      ],
+      "doc_id": "doc_11f9d483fe82",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "直播结束后还有顾客没买到想要的商品，要怎么发链接让他们补单？",
+      "expected_chunk_ids": [
+        "chunk_8502cbbda500"
+      ],
+      "expected_content_contains": [
+        "直播商品应用",
+        "下单截止时间",
+        "转发"
+      ],
+      "doc_id": "doc_11f9d483fe82",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

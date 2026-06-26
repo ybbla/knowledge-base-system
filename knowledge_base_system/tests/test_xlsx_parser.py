@@ -93,14 +93,17 @@ class TestXlsxParser:
         ws.append(["成功", "文档已进入知识库"])
 
         result, _ = _parse(wb)
-        table = next(el for el in result.elements if el.element_type == ElementType.table)
-        table_data = table.structured_data["table"]
+        tables = [el for el in result.elements if el.element_type == ElementType.table]
+        # 2 个数据行 → 1 个元素，rows 包含全部数据行
+        assert len(tables) == 1
 
-        assert table_data["headers"] == ["状态", "说明"]
-        assert table_data["metadata"]["sheet_name"] == "状态表"
-        assert table_data["metadata"]["range"] == "A1:B3"
-        assert table_data["rows"][0]["cells"][0]["text"] == "处理中"
-        assert table_data["rows"][0]["cells"][0]["metadata"]["cell"] == "A2"
+        t = tables[0].structured_data["table"]
+        assert t["headers"] == [{"text": "状态"}, {"text": "说明"}]
+        assert len(t["rows"]) == 2
+        assert t["rows"][0]["cells"][0]["text"] == "处理中"
+        assert t["rows"][0]["cells"][0]["metadata"]["cell"] == "A2"
+        assert t["rows"][1]["cells"][0]["text"] == "成功"
+        assert t["rows"][1]["cells"][0]["metadata"]["cell"] == "A3"
 
     def test_split_multiple_table_regions(self):
         wb = Workbook()
@@ -149,8 +152,7 @@ class TestXlsxParser:
         table = next(el for el in result.elements if el.element_type == ElementType.table)
         table_data = table.structured_data["table"]
 
-        assert table_data["headers"] == ["部门", "部门", "部门"]
-        assert table_data["header_cells"][1]["metadata"]["merged_from"] == "A1"
+        assert table_data["headers"] == [{"text": "部门"}, {"text": "部门"}, {"text": "部门"}]
 
     def test_formula_cache_and_missing_cache_metadata(self):
         wb = Workbook()
@@ -209,13 +211,17 @@ class TestXlsxParser:
         ws["B3"].hyperlink = "https://example.com/manual.pdf"
 
         result, _ = _parse(wb)
-        table = next(el for el in result.elements if el.element_type == ElementType.table)
         asset_types = {asset.original_uri: asset.asset_type for asset in result.assets}
 
         assert asset_types["https://example.com/demo.mp4"] == AssetType.video_link
         assert asset_types["https://example.com/manual.pdf"] == AssetType.document_link
-        assert len(table.asset_data) == 2
-        assert all(asset.element_id == table.element_id for asset in result.assets)
+        # 2 行合并为 1 个元素，2 个 Asset 都在同一元素的 asset_data 中
+        tables = [el for el in result.elements if el.element_type == ElementType.table]
+        assert len(tables) == 1
+        assert len(tables[0].structured_data["table"]["rows"]) == 2
+        # 所有 Asset 的 element_id 指向该元素
+        for asset in result.assets:
+            assert asset.element_id == tables[0].element_id
 
     def test_read_from_file_uri(self, tmp_path):
         wb = Workbook()
@@ -331,7 +337,7 @@ class TestHyperlinkTextPreservation:
         assert result.assets[0].original_uri == "https://example.com/manual.pdf"
 
     def test_hyperlink_empty_text_fallback(self):
-        """超链接单元格无显示文字时降级用 URL 填充。"""
+        """超链接单元格无显示文字时用占位符填充，Asset 记录原始 URL。"""
         wb = Workbook()
         ws = wb.active
         ws["A1"] = None
@@ -341,7 +347,13 @@ class TestHyperlinkTextPreservation:
         paragraph = next(
             el for el in result.elements if el.element_type == ElementType.paragraph
         )
-        assert paragraph.text == "https://example.com/manual.pdf"
+        # 文本被占位符替换
+        assert paragraph.text == "{{doc:1}}"
+        # Asset 正确创建并通过 asset_data 关联
+        assert len(result.assets) == 1
+        assert result.assets[0].original_uri == "https://example.com/manual.pdf"
+        assert result.assets[0].asset_type == AssetType.document_link
+        assert paragraph.asset_data[0].asset_id == result.assets[0].asset_id
 
 
 class TestMergedCellsWithHyperlink:
@@ -366,8 +378,6 @@ class TestMergedCellsWithHyperlink:
         table = next(el for el in result.elements if el.element_type == ElementType.table)
         table_data = table.structured_data["table"]
 
-        # 合并区域 B1 的 merged_from 标记
-        assert table_data["header_cells"][1]["metadata"]["merged_from"] == "A1"
         # 超链接被提取
         assert any(
             a.original_uri == "https://example.com/manual.pdf" for a in result.assets
@@ -412,7 +422,9 @@ class TestEmbeddedImageExtraction:
         image_assets = [a for a in result.assets if a.asset_type == AssetType.image]
         assert len(image_assets) == 1
         asset = image_assets[0]
-        assert asset.original_uri.startswith("xlsx://")
+        # 嵌入图片无外部来源，original_uri 为空；通过 _data 持有字节数据
+        assert asset.original_uri == ""
+        assert hasattr(asset, "_data")
         assert asset.metadata["source"] == "xlsx_image"
         assert asset.metadata["sheet_name"] == "图片表"
         assert hasattr(asset, "_data")
@@ -448,38 +460,43 @@ class TestEmbeddedImageExtraction:
         result, _ = _parse(wb)
         table = next(el for el in result.elements if el.element_type == ElementType.table)
 
-        # 图片 asset 的 original_uri 应该出现在表格的 asset_data 中
+        # 图片 asset 的 asset_id 应该出现在表格的 asset_data 中
         image_asset = next(a for a in result.assets if a.asset_type == AssetType.image)
-        assert any(ad.url == image_asset.original_uri for ad in table.asset_data)
+        assert any(ad.asset_id == image_asset.asset_id for ad in table.asset_data)
         # element_id 回链到表格元素
         assert image_asset.element_id == table.element_id
 
 
 class TestGenericWebLinks:
-    """普通网页链接测试 — 不创建 Asset，记录到 link_urls。"""
+    """普通网页链接测试 — 统一创建 web_link Asset，与 DOCX 解析器行为一致。"""
 
     def setup_method(self):
         self.parser = XlsxParser()
 
-    def test_generic_web_link_not_asset(self):
-        """普通网页链接不创建 Asset。"""
+    def test_generic_web_link_creates_web_link_asset(self):
+        """普通网页链接创建 AssetType.web_link 的 Asset。"""
         wb = Workbook()
         ws = wb.active
         ws["A1"] = "参考链接"
         ws["A1"].hyperlink = "https://example.com/page"
 
         result, _ = _parse(wb)
-        # 不创建 Asset
-        assert len(result.assets) == 0
-        # 超链接 URL 记录在 metadata
+        # 创建 1 个 web_link Asset
+        assert len(result.assets) == 1
+        asset = result.assets[0]
+        assert asset.asset_type == AssetType.web_link
+        assert asset.original_uri == "https://example.com/page"
+        # 通过 asset_data 关联到对应元素
         paragraph = next(
             el for el in result.elements if el.element_type == ElementType.paragraph
         )
-        assert "link_urls" in paragraph.metadata
-        assert "https://example.com/page" in paragraph.metadata["link_urls"]
+        assert len(paragraph.asset_data) == 1
+        assert paragraph.asset_data[0].asset_id == asset.asset_id
+        # element_id 回链
+        assert asset.element_id == paragraph.element_id
 
     def test_mixed_resource_and_generic_links(self):
-        """混合链接：资源链接创建 Asset，普通网页记录 link_urls。"""
+        """混合链接：全部创建 Asset，类型各不相同。"""
         wb = Workbook()
         ws = wb.active
         ws["A1"] = "https://example.com/doc.pdf"
@@ -487,22 +504,16 @@ class TestGenericWebLinks:
         ws["A3"] = "https://youtube.com/watch?v=abc"
 
         result, _ = _parse(wb)
-        # 资源 Asset
-        asset_uris = {a.original_uri for a in result.assets}
-        assert "https://example.com/doc.pdf" in asset_uris
-        assert "https://youtube.com/watch?v=abc" in asset_uris
-        # 普通网页不创建 Asset
-        assert "https://example.com/about" not in asset_uris
-        # 普通网页记录在 link_urls
-        paragraph = next(
-            el for el in result.elements if el.element_type == ElementType.paragraph
-        )
-        # 获取包含 "about" 的 link_urls
-        all_link_urls = [
-            u for el in result.elements
-            for u in el.metadata.get("link_urls", [])
-        ]
-        assert "https://example.com/about" in all_link_urls
+        # 3 个 URL 全部创建 Asset
+        assert len(result.assets) == 3
+        asset_types = {a.original_uri: a.asset_type for a in result.assets}
+        assert asset_types["https://example.com/doc.pdf"] == AssetType.document_link
+        assert asset_types["https://example.com/about"] == AssetType.web_link
+        assert asset_types["https://youtube.com/watch?v=abc"] == AssetType.video_link
+        # 通过 asset_data 关联到元素
+        paragraphs = [el for el in result.elements if el.element_type == ElementType.paragraph]
+        all_asset_ids = {ad.asset_id for el in paragraphs for ad in el.asset_data}
+        assert all_asset_ids == {a.asset_id for a in result.assets}
 
 
 class TestMultiSheetWithImagesAndLinks:

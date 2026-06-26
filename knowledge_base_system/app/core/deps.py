@@ -13,6 +13,7 @@ from parsers.pdf_parser import PdfParser
 from parsers.pptx_parser import PptxParser
 from parsers.registry import ParserRegistry
 from parsers.xlsx_parser import XlsxParser
+from app.utils.thread_pool import search_executor
 from retrieval.pipeline import RetrievalPipeline
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,7 @@ retrieval_pipeline = RetrievalPipeline(
     bm25_index=bm25_index,
     chunk_store=chunk_store,
     asset_store=asset_store,
+    executor=search_executor,
 )
 
 

@@ -1,0 +1,60 @@
+{
+  "metadata": {
+    "doc_id": "doc_fef251bc3768",
+    "doc_title": "简版店长开通收款账户教程",
+    "doc_version": 1,
+    "generated_at": "2026-06-26T09:23:41.912891",
+    "generated_by": "auto-ingest",
+    "chunk_count": 1,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "我是门店负责人，想开通富友的收款账户，具体要走什么流程啊？",
+      "expected_chunk_ids": [
+        "chunk_da8bffc1b315"
+      ],
+      "expected_content_contains": [
+        "富友账户",
+        "营业执照",
+        "法人身份证",
+        "银行卡",
+        "人脸验证"
+      ],
+      "doc_id": "doc_fef251bc3768",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "开通富友收款码的时候要选主体类型，我该怎么判断选企业还是个体户啊？",
+      "expected_chunk_ids": [
+        "chunk_da8bffc1b315"
+      ],
+      "expected_content_contains": [
+        "主体类型",
+        "有限公司",
+        "个体工商户",
+        "营业执照"
+      ],
+      "doc_id": "doc_fef251bc3768",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "我把开通富友收款的资料提交之后，还要做哪些操作才能正常用啊？",
+      "expected_chunk_ids": [
+        "chunk_da8bffc1b315"
+      ],
+      "expected_content_contains": [
+        "人脸验证",
+        "对公账户",
+        "银行卡流水",
+        "微信二维码",
+        "收款码功能"
+      ],
+      "doc_id": "doc_fef251bc3768",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

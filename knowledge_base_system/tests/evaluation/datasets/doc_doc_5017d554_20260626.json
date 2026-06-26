@@ -1,0 +1,59 @@
+{
+  "metadata": {
+    "doc_id": "doc_5017d55442c9",
+    "doc_title": "常见问题及对应答案汇总",
+    "doc_version": 1,
+    "generated_at": "2026-06-26T13:59:34.025865",
+    "generated_by": "auto-ingest",
+    "chunk_count": 32,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "我在app上提钱一直失败是啥原因啊咋解决？",
+      "expected_chunk_ids": [
+        "chunk_c0d9576cbd58"
+      ],
+      "expected_content_contains": [
+        "提现失败",
+        "微信版本",
+        "8.0.45",
+        "重新尝试"
+      ],
+      "doc_id": "doc_5017d55442c9",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "我在平台发了说说之后看不到，刷新也没用咋整？",
+      "expected_chunk_ids": [
+        "chunk_c0d9576cbd58",
+        "chunk_da82bccbe7cb"
+      ],
+      "expected_content_contains": [
+        "说说发表",
+        "清除缓存",
+        "切换网络"
+      ],
+      "doc_id": "doc_5017d55442c9",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "我想把企业微信绑定的微信换成新的，要咋操作啊？",
+      "expected_chunk_ids": [
+        "chunk_fa251f896e97"
+      ],
+      "expected_content_contains": [
+        "企业微信",
+        "换绑微信",
+        "账号与安全",
+        "解除绑定",
+        "微信授权"
+      ],
+      "doc_id": "doc_5017d55442c9",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

@@ -231,6 +231,13 @@ class IngestionPipeline:
         elements = result.elements
         assets = result.assets
 
+        # DEBUG: 验证解析结果的 asset_data
+        for el in elements:
+            if el.asset_data:
+                logger.warning("DEBUG element %s: asset_data=%d items, ids=%s",
+                    el.element_type.value, len(el.asset_data),
+                    [ad.asset_id[-8:] for ad in el.asset_data])
+
         # Element 先于 Asset 持久化（核心数据优先保证）
         if self._element_repo and elements:
             self._element_repo.create_batch(elements)
@@ -484,7 +491,7 @@ class IngestionPipeline:
                     "chunk_id": chunk.chunk_id,
                     "dense_vector": [float(v) for v in vector],
                     "doc_id": str(meta.get("doc_id", "")),
-                    "doc_title": str(meta.get("doc_title", "")),
+                    "doc_title": str(meta.get("doc_title", ""))[:512],
                     "title": str(meta.get("title", ""))[:512],
                     "content": str(meta.get("content", ""))[:65535],
                     "category": str(meta.get("category", "")),

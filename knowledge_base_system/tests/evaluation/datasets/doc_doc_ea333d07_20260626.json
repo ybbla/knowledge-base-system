@@ -1,0 +1,61 @@
+{
+  "metadata": {
+    "doc_id": "doc_ea333d070100",
+    "doc_title": "品牌通用知识",
+    "doc_version": 1,
+    "generated_at": "2026-06-26T13:30:43.705986",
+    "generated_by": "auto-ingest",
+    "chunk_count": 20,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "我想做咱们品牌的加盟商，有没有哪些区域是不让搞加盟的啊？",
+      "expected_chunk_ids": [
+        "chunk_9a5adf5e2c66",
+        "chunk_0c1b52dbf60d"
+      ],
+      "expected_content_contains": [
+        "上海、台湾",
+        "长江以南",
+        "全品牌查区系统"
+      ],
+      "doc_id": "doc_ea333d070100",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "我进不去店长端，弹窗说我加入企业超过30天了，要怎么解决啊？",
+      "expected_chunk_ids": [
+        "chunk_586b10e3de74",
+        "chunk_fd5c705adff6"
+      ],
+      "expected_content_contains": [
+        "《合作入门学习班》",
+        "人康商学院",
+        "学习证书",
+        "30天"
+      ],
+      "doc_id": "doc_ea333d070100",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "我要处理对公打款、报销的事，该联系总部哪个对接人啊？",
+      "expected_chunk_ids": [
+        "chunk_a6e37b2cd3b8",
+        "chunk_eae5e5d2ad89"
+      ],
+      "expected_content_contains": [
+        "对公账户打款",
+        "报销",
+        "任泽擎",
+        "胡又文",
+        "闫涵博"
+      ],
+      "doc_id": "doc_ea333d070100",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

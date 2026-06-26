@@ -8,6 +8,7 @@ from app.api.v1 import mount_v1_sub_routers, register_v1_exception_handlers, rou
 from app.core.deps import shutdown_resources
 from app.utils.thread_pool import (
     startup_health_pool, shutdown_health_pool,
+    startup_search_pool, shutdown_search_pool,
     startup_upload_pool, shutdown_upload_pool,
     startup_sub_ingest_pool, shutdown_sub_ingest_pool,
     startup_asset_worker_pool, shutdown_asset_worker_pool,
@@ -20,6 +21,7 @@ _FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     startup_health_pool()
+    startup_search_pool()
     startup_upload_pool()
     startup_sub_ingest_pool()
     startup_asset_worker_pool()
@@ -28,6 +30,7 @@ async def lifespan(app: FastAPI):
     finally:
         shutdown_resources()
         shutdown_health_pool()
+        shutdown_search_pool()
         shutdown_asset_worker_pool()
         shutdown_sub_ingest_pool()
         shutdown_upload_pool()

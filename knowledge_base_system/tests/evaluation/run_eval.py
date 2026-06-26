@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tests.evaluation.dataset import load_dataset
 from tests.evaluation.metrics import mrr, recall_at_k, safe_mean
 from tests.evaluation.storage import append_eval_result
+from tests.evaluation.dataset import EvalItem
 
 
 def _run() -> int:
@@ -84,7 +85,7 @@ def _run() -> int:
 
     for i, item in enumerate(active_dataset, 1):
         try:
-            result = retrieval_pipeline.search(item.query, top_k=5)
+            result = retrieval_pipeline.search(query=item.query, top_k=5)
             chunk_ids = [r.chunk_id for r in result.results]
         except Exception as exc:
             print(f"  [{i}/{len(active_dataset)}] 检索异常: {item.query[:40]}... ({exc})")
@@ -128,7 +129,7 @@ def _run() -> int:
         "rewrite": True,           # 当前管线始终启用查询改写
         "vector_top_k": cfg.vector_top_k,
         "bm25_top_k": cfg.bm25_top_k,
-        "rrf_k": cfg.rrf_k,
+        "rrf_k": cfg.fusion_top_k,
         "rerank": True,            # 当前管线始终启用重排序
         "top_k": 5,
     }
