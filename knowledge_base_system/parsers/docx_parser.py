@@ -65,22 +65,20 @@ class DocxParser(DocumentParser):
 
     def parse(self, doc: Document, content: bytes | str) -> ParseResult:
         """主解析入口：解析 DOCX 文档的结构化内容
-        新流程：预提取图遍历 body flush 提取视频 回填关联 计算哈希        """
+        流程：遍历 body → 按需提取媒体 → flush → 回填关联 → 计算哈希        """
         if isinstance(content, str):
             content = content.encode("utf-8")
         docx = DocxDocument(io.BytesIO(content))
         state = _DocxParseState(doc.doc_id, doc.version)
 
-        # 1. 预提取所有嵌入图片到 asset map
-        self._build_image_asset_map(content, doc, state)
-
-        # 2. 按文档顺序遍历所有正文元素，不处理页眉和页脚。
+        # 1. 按文档顺序遍历所有正文元素，不处理页眉和页脚。
+        #    嵌入媒体文件在遇到 w:drawing 时按需从 ZIP 提取，不再预扫描。
         for child in docx.element.body:
             tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
             if tag == "p":
-                self._process_paragraph(child, docx, state)
+                self._process_paragraph(child, docx, state, content)
             elif tag == "tbl":
-                self._process_table(child, docx, state)
+                self._process_table(child, docx, state, content)
 
         # 3. 完成解析并获取全部元素。
         elements = state.flush_elements()
@@ -88,10 +86,7 @@ class DocxParser(DocumentParser):
         # 4. 回填 Asset.element_id 关联
         self._link_assets_to_elements(elements, state.assets)
 
-        # 5. 孤立 asset 补占位符并关联到第一个元素
-        self._attach_orphan_assets(elements, state)
-
-        # 6. 计算文档内容哈希
+        # 5. 计算文档内容哈希
         doc.source_hash = compute_hash(content)
 
         return ParseResult(doc=doc, elements=elements, assets=state.assets)
@@ -217,7 +212,7 @@ class DocxParser(DocumentParser):
     # ── 段落处理 ────────────────────────────────────────────────
 
     def _process_paragraph(
-        self, p_el, docx: DocxDocument, state: "_DocxParseState"
+        self, p_el, docx: DocxDocument, state: "_DocxParseState", zip_source: bytes,
     ) -> None:
         """处理一w:p 元素（段落）
         w:p 的直接子元素（w:r w:hyperlink）顺序遍历，
@@ -260,7 +255,7 @@ class DocxParser(DocumentParser):
                 # 先检查内联图片/视频节点（w:drawing），仅追加占位符
                 drawing_rIds = self._extract_drawing_rIds(child)
                 for rId in drawing_rIds:
-                    asset = self._resolve_image_asset(rId, docx, state)
+                    asset = self._resolve_image_asset(rId, docx, state, zip_source)
                     if asset is not None:
                         placeholder = state.next_placeholder(asset.asset_type.value)
                         state.track_asset(AssetData(
@@ -462,24 +457,63 @@ class DocxParser(DocumentParser):
         return rIds
 
     def _resolve_image_asset(
-        self, rId: str, docx: DocxDocument, state: "_DocxParseState"
+        self, rId: str, docx: DocxDocument, state: "_DocxParseState", zip_source: bytes,
     ) -> Asset | None:
-        """通过 rId asset map 中查找对应的图片 Asset
+        """通过 rId 查找或按需创建嵌入媒体 Asset。
+
+        先在 _media_cache 中查找 target_ref，未命中时从 ZIP 按需提取。
+        同一文件多次引用时复用缓存的 Asset，避免重复创建。
+
         Args:
-            rId: w:drawing a:blip r:embed 的值            docx: python-docx Document 对象            state: 当前解析状态（_image_asset_map）
+            rId: w:drawing a:blip r:embed 的值
+            docx: python-docx Document 对象
+            state: 当前解析状态
+            zip_source: 文档原始 ZIP 字节
+
         Returns:
-            匹配Asset，未找到时返None        """
+            匹配的 Asset，未找到时返回 None。
+        """
         try:
             rel = docx.part.rels[rId]
             target = rel.target_ref  # 格式为 media/image1.png，不含 word/ 前缀。
-            return state._image_asset_map.get(target)
         except (KeyError, AttributeError):
             return None
+
+        # 缓存命中 → 直接返回
+        cached = state._media_cache.get(target)
+        if cached is not None:
+            return cached
+
+        # 缓存未命中 → 从 ZIP 按需提取
+        with zipfile.ZipFile(io.BytesIO(zip_source)) as zf:
+            zip_path = f"word/{target}"
+            try:
+                data = zf.read(zip_path)
+            except KeyError:
+                return None
+
+        content_hash = hashlib.sha256(data).hexdigest()
+
+        asset = Asset(
+            doc_id=state.doc_id,
+            element_id="",
+            asset_type=AssetType.image,
+            original_uri="",                # 嵌入类型无外部来源
+            content_hash=f"sha256:{content_hash}",
+            status=AssetStatus.ready,
+            storage_uri=None,
+            extracted_text=None,
+            metadata={},
+        )
+        object.__setattr__(asset, "_data", data)
+        state._media_cache[target] = asset
+        state.assets.append(asset)
+        return asset
 
     # ── 表格处理 ────────────────────────────────────────────────
 
     def _process_table(
-        self, tbl_el, docx: DocxDocument, state: "_DocxParseState"
+        self, tbl_el, docx: DocxDocument, state: "_DocxParseState", zip_source: bytes,
     ) -> None:
         """处理一w:tbl 元素（表格）
         表格的出现意味着列表上下文结束，先刷新列表缓冲区，
@@ -507,20 +541,64 @@ class DocxParser(DocumentParser):
 
                     # 复用段落子元素遍历模板
                     para_text_parts: list[str] = []
+                    in_field = False
+                    field_has_asset = False
+                    pending_placeholder = ""
                     for p_child in tc_child:
                         p_tag = p_child.tag.split("}")[-1] if "}" in p_child.tag else p_child.tag
 
                         if p_tag == "r":
-                            # 内联图片/视频，仅追加占位符
+                            # ── 跟踪 w:fldChar 状态 ──
+                            fld_char_type = self._get_fld_char_type(p_child)
+                            if fld_char_type == "begin":
+                                in_field = True
+                                continue
+                            if fld_char_type == "separate":
+                                continue
+                            if fld_char_type == "end":
+                                in_field = False
+                                field_has_asset = False
+                                pending_placeholder = ""
+                                continue
+
+                            # 内联图片，仅追加占位符
                             drawing_rIds = self._extract_drawing_rIds(p_child)
                             for rId in drawing_rIds:
-                                asset = self._resolve_image_asset(rId, docx, state)
+                                asset = self._resolve_image_asset(rId, docx, state, zip_source)
                                 if asset is not None:
                                     placeholder = state.next_placeholder(asset.asset_type.value)
                                     cell_asset_data.append(AssetData(
                                         placeholder=placeholder, asset_id=asset.asset_id,
                                     ))
                                     para_text_parts.append(placeholder)
+
+                            # 字段指令（企业微信微盘等嵌入文件），文字被占位符替换
+                            instr_url, instr_filename = self._parse_field_instruction(p_child)
+                            if instr_url and instr_filename:
+                                asset_type = classify_link_text(instr_filename)
+                                placeholder = state.next_placeholder(asset_type.value)
+                                asset = Asset(
+                                    doc_id=state.doc_id,
+                                    asset_type=asset_type,
+                                    original_uri=instr_url,
+                                    display_text=instr_filename,
+                                    status=AssetStatus.ready,
+                                    metadata={"source": "field_instruction"},
+                                )
+                                state.assets.append(asset)
+                                cell_asset_data.append(AssetData(
+                                    placeholder=placeholder, asset_id=asset.asset_id,
+                                ))
+                                field_has_asset = True
+                                pending_placeholder = placeholder
+                                continue
+
+                            # 字段显示文字：被占位符替换，不保留原文
+                            if in_field and field_has_asset:
+                                para_text_parts.append(pending_placeholder)
+                                field_has_asset = False
+                                continue
+
                             # 文本
                             for t_node in p_child.iter(qn("w:t")):
                                 if t_node.text:
@@ -639,69 +717,6 @@ class DocxParser(DocumentParser):
         el = ParsedElement(**element_kwargs)
         state.elements.append(el)
 
-    # ── 图片预提──────────────────────────────────────────────
-
-    def _build_image_asset_map(
-        self, content: bytes, doc: Document, state: "_DocxParseState"
-    ) -> None:
-        """docx 归档 word/media/ 目录预提取所有嵌入媒体文件。
-
-        图片和视频统一按扩展名分类存入 state._image_asset_map 和 state.assets。
-        通过 content 参数直接接收原始字节，避免依赖 doc.metadata。
-
-        Args:
-            content: 文档原始字节（zip 格式）
-            doc: 文档对象
-            state: 当前解析状态
-        """
-        if isinstance(content, str):
-            content = content.encode("utf-8")
-        zip_source = content
-
-        try:
-            with zipfile.ZipFile(
-                io.BytesIO(zip_source) if isinstance(zip_source, bytes) else zip_source
-            ) as zf:
-                media_files = [
-                    name for name in zf.namelist()
-                    if name.startswith("word/media/") and not name.endswith("/")
-                ]
-                for idx, name in enumerate(media_files):
-                    data = zf.read(name)
-                    content_hash = hashlib.sha256(data).hexdigest()
-                    ext = name.rsplit(".", 1)[-1].lower() if "." in name else "bin"
-                    filename = name.split("/")[-1]
-
-                    # 根据扩展名区分嵌入图片和视频
-                    is_video = ext in {"mov", "mp4", "webm", "m4v"}
-                    asset_type = AssetType.video if is_video else AssetType.image
-
-                    # 同时保存 ZIP 完整路径与关系文件使用的短路径。
-                    short_path = name.replace("word/", "", 1)  # media/image1.png
-
-                    asset = Asset(
-                        doc_id=state.doc_id,
-                        element_id="",
-                        asset_type=asset_type,
-                        original_uri="",                # 嵌入类型无外部来源
-                        content_hash=f"sha256:{content_hash}",
-                        status=AssetStatus.ready,
-                        storage_uri=None,
-                        extracted_text=None,
-                        metadata={},
-                    )
-                    object.__setattr__(asset, "_data", data)
-
-                    # key 存储
-                    state._image_asset_map[name] = asset       # word/media/image1.png
-                    state._image_asset_map[short_path] = asset  # media/image1.png
-                    state.assets.append(asset)
-
-        except (zipfile.BadZipFile, KeyError) as exc:
-            logger.warning("docx 提取图片失败: %s", exc)
-
-    # ── 视频提取 ────────────────────────────────────────────────
-
     # ── 资源关联回填 ────────────────────────────────────────────
 
     @staticmethod
@@ -718,29 +733,6 @@ class DocxParser(DocumentParser):
         for asset in assets:
             if not asset.element_id:
                 asset.element_id = elements_by_asset_id.get(asset.asset_id, "")
-
-    def _attach_orphan_assets(
-        self,
-        elements: list[ParsedElement],
-        state: "_DocxParseState",
-    ) -> None:
-        """孤立 asset（未被任何元素引用）补占位符并挂载到第一个元素。"""
-        orphans = [a for a in state.assets if not a.element_id]
-        if not orphans or not elements:
-            return
-
-        first = elements[0]
-        extra_parts: list[str] = []
-        extra_ads: list[AssetData] = []
-
-        for asset in orphans:
-            placeholder = state.next_placeholder(asset.asset_type.value)
-            extra_parts.append(placeholder)
-            extra_ads.append(AssetData(placeholder=placeholder, asset_id=asset.asset_id))
-            asset.element_id = first.element_id
-
-        first.text = first.text + "\n" + " ".join(extra_parts)
-        first.asset_data = list(first.asset_data) + extra_ads
 
     # ── 不支持对象检──────────────────────────────────────────
 
@@ -767,7 +759,7 @@ class _DocxParseState(_BaseParseState):
     _list_buffer: list[tuple[str, list[AssetData]]] = field(default_factory=list)  # 连续列表项缓冲区：(文本, 关联资源)
     _tracked_assets: list[AssetData] = field(default_factory=list)
     _link_urls: list[str] = field(default_factory=list)
-    _image_asset_map: dict[str, Asset] = field(default_factory=dict)
+    _media_cache: dict[str, Asset] = field(default_factory=dict)  # target_ref → Asset 按需提取缓存
     _counters: dict[str, int] = field(default_factory=dict)
     assets: list[Asset] = field(default_factory=list)
 
@@ -822,14 +814,15 @@ class _DocxParseState(_BaseParseState):
     def add_title(self, text: str, level: int) -> None:
         """添加标题元素并按层级更新 section_path。
 
-        标题出现时先刷新列表缓冲区，再清空资源跟踪。
+        标题出现时先刷新列表缓冲区，再消费资源跟踪。
+        标题段落也可能包含图片、链接等资源，保留关联不丢弃。
         """
         if not text:
             return
         self._flush_list_buffer()
         self._current_list_id = None
-        self.consume_tracked_assets()  # 丢弃
-        self.consume_link_urls()       # 丢弃
+        asset_data = self.consume_tracked_assets()
+        self.consume_link_urls()
         while len(self._section_path) >= level:
             self._section_path.pop()
         self._section_path.append(text)
@@ -840,6 +833,7 @@ class _DocxParseState(_BaseParseState):
                 sequence_order=self._next_seq(),
                 element_type=ElementType.title,
                 text=text,
+                asset_data=asset_data,
                 source_location=SourceLocation(section_path=list(self._section_path)),
                 metadata={"heading_level": level},
             )
@@ -876,7 +870,7 @@ class _DocxParseState(_BaseParseState):
         self._list_buffer.append((text, asset_data))
 
     def _flush_list_buffer(self) -> None:
-        """将缓冲区中的连续列表项合并为一个 paragraph 元素并清空缓冲区。
+        """将缓冲区中的连续列表项合并为一个 list 元素并清空缓冲区。
 
         每个列表项的 asset_data 合并到最终元素中，确保列表内嵌的图片/视频/链接等资源不丢失。
         """
@@ -897,7 +891,7 @@ class _DocxParseState(_BaseParseState):
                 doc_id=self.doc_id,
                 doc_version=self.doc_version,
                 sequence_order=self._next_seq(),
-                element_type=ElementType.paragraph,
+                element_type=ElementType.list,
                 text=merged_text,
                 asset_data=merged_assets,
                 source_location=SourceLocation(section_path=list(self._section_path)),

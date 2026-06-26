@@ -2,6 +2,7 @@
 使用 openpyxl .xlsx 文件解析为统一ParsedElement Asset支持按区域自动检测表格与散列数据，处理合并单元格、超链接、公式和嵌入图片"""
 
 import io
+import logging
 import re
 import zipfile
 from dataclasses import dataclass, field
@@ -26,11 +27,11 @@ from app.core.models import (
 )
 from parsers.base import DocumentParser, ParseResult, _BaseParseState
 from parsers.utils import (
-    HTTP_URL_RE,
-    classify_link,
     is_attachment_url,
     is_video_url,
 )
+
+logger = logging.getLogger(__name__)
 
 # 图片链接扩展名（docx_parser _IMAGE_EXTENSIONS 保持一致）
 _IMAGE_EXTENSIONS: set[str] = {
@@ -128,7 +129,7 @@ class XlsxParser(DocumentParser):
 
             # 先提取嵌入图片（在收集单元格之前，以便图asset_id 能合并到单元格）
             image_cell_map = self._extract_sheet_images(
-                ws, doc, ws.title, sheet_index, assets,
+                ws, doc, ws.title, sheet_index, assets, placeholder_counter,
             )
 
             # zip 预提取所有公式（无论缓存值是否存在）
@@ -146,6 +147,15 @@ class XlsxParser(DocumentParser):
                     state.add_paragraphs(ws.title, sheet_index, region, cells, assets_by_uri, assets)
 
         doc.source_hash = compute_hash(content)
+
+        # 安全兜底：不应有无主 Asset，若存在则挂到第一个元素
+        orphans = [a for a in assets if not a.element_id]
+        if orphans and state.elements:
+            logger.warning("xlsx 发现 %d 个无主 Asset，挂到首元素", len(orphans))
+            first = state.elements[0]
+            for asset in orphans:
+                asset.element_id = first.element_id
+
         return ParseResult(doc=doc, elements=state.elements, assets=assets)
 
     # ── 嵌入图片提取 ────────────────────────────────────────────────
@@ -157,13 +167,12 @@ class XlsxParser(DocumentParser):
         sheet_name: str,
         sheet_index: int,
         assets: list[Asset],
+        placeholder_counter: dict[str, int],
     ) -> dict[tuple[int, int], list[AssetData]]:
-        """提取工作表中嵌入的图片，创建 Asset 并返单元格→AssetData 映射
-        Args:
-            ws: openpyxl 工作表对象            doc: 文档对象            sheet_name: 工作表名称            sheet_index: 工作表序号（1-based）            assets: 资源列表（就地追加）
-        Returns:
-            {(row, col): [AssetData, ...]}  将图片关联到锚定单元格            后续 _collect_cells() 会将图片 AssetData 合并到对_CellInfo 中，
-            最终通过 ParsedElement.asset_data Asset.element_id 完成溯源        """
+        """提取工作表中嵌入的图片，创建 Asset 并返单元格→AssetData 映射。
+
+        占位符使用 {{image:N}} 与 DOCX 解析器保持一致，同一工作表内 N 递增。
+        """
         image_cell_map: dict[tuple[int, int], list[AssetData]] = {}
 
         for idx, img in enumerate(ws._images):
@@ -182,6 +191,11 @@ class XlsxParser(DocumentParser):
             except Exception:
                 pass
 
+            # 锚点提取失败（非标准锚定方式），无法确定图片属于哪个单元格，跳过
+            if not row or not col:
+                logger.warning("xlsx 图片锚点提取失败，跳过: sheet=%s idx=%d", sheet_name, idx)
+                continue
+
             content_type = img.format or "png"
             ext = content_type.lower()
 
@@ -194,7 +208,7 @@ class XlsxParser(DocumentParser):
                     "source": "xlsx_image",
                     "sheet_name": sheet_name,
                     "sheet_index": sheet_index,
-                    "cell": f"{get_column_letter(col)}{row}" if row and col else None,
+                    "cell": f"{get_column_letter(col)}{row}",
                     "row": row,
                     "col": col,
                 },
@@ -202,10 +216,13 @@ class XlsxParser(DocumentParser):
             object.__setattr__(asset, "_data", data)
             assets.append(asset)
 
-            if row and col:
-                image_cell_map.setdefault((row, col), []).append(
-                    AssetData(placeholder="", asset_id=asset.asset_id)
-                )
+            prefix = "image"
+            cnt = placeholder_counter.get(prefix, 0) + 1
+            placeholder_counter[prefix] = cnt
+            placeholder = f"{{{{{prefix}:{cnt}}}}}"
+            image_cell_map.setdefault((row, col), []).append(
+                AssetData(placeholder=placeholder, asset_id=asset.asset_id)
+            )
 
         return image_cell_map
 
@@ -225,8 +242,7 @@ class XlsxParser(DocumentParser):
     ) -> dict[tuple[int, int], _CellInfo]:
         """遍历工作表中的所有单元格，收集文本、公式、超链接和资源。
 
-        单元格内的 URL 统一替换为占位符（如 {{web:1}}），
-        使前端能在文本中定位资源渲染点。
+        仅处理真正的超链接对象（可 Ctrl+单击跳转），不提取纯文本 URL。
         """
         merged_map = self._build_merged_map(ws)
         cells: dict[tuple[int, int], _CellInfo] = {}
@@ -383,56 +399,49 @@ class XlsxParser(DocumentParser):
         placeholder_counter: dict[str, int],
         placeholder_map: dict[str, str],
     ) -> tuple[list[AssetData], str]:
-        """从单元格文本和超链接中提取 URL 并创建 Asset。
+        """从单元格超链接中提取 URL 并创建 Asset。
 
-        所有 URL（含普通网页）统一创建 Asset，
-        文本中的 URL 替换为 {{prefix:N}} 占位符。
+        仅处理真正的超链接对象（可 Ctrl+单击跳转），不提取纯文本 URL。
         """
-        urls: list[str] = []
-        if text:
-            urls.extend(match.group(0) for match in HTTP_URL_RE.finditer(text))
-        if hyperlink and hyperlink.startswith(("http://", "https://")):
-            urls.append(hyperlink)
+        if not hyperlink or not hyperlink.startswith(("http://", "https://")):
+            return [], text
 
+        url = hyperlink
         asset_data_list: list[AssetData] = []
-        modified_text = text
 
-        for url in dict.fromkeys(urls):  # 去重保序
-            asset = assets_by_uri.get(url)
-            if asset is None:
-                asset_type = self._classify_link_asset_type(url)
-                prefix = self._PLACEHOLDER_PREFIX.get(asset_type.value, "res")
-                cnt = placeholder_counter.get(prefix, 0) + 1
-                placeholder_counter[prefix] = cnt
-                placeholder = f"{{{{{prefix}:{cnt}}}}}"
-                placeholder_map[url] = placeholder
-                asset = Asset(
-                    doc_id=doc.doc_id,
-                    asset_type=asset_type,
-                    original_uri=url,
-                    storage_uri=None,
-                    status=AssetStatus.ready,
-                    extracted_text=None,
-                    metadata={
-                        "source": "xlsx_cell",
-                        "sheet_name": sheet_name,
-                        "cell": coordinate,
-                    },
-                )
-                assets.append(asset)
-                assets_by_uri[url] = asset
-            else:
-                placeholder = placeholder_map.get(url, "")
-
-            asset_data_list.append(
-                AssetData(placeholder=placeholder, asset_id=asset.asset_id)
+        asset = assets_by_uri.get(url)
+        if asset is None:
+            asset_type = self._classify_link_asset_type(url)
+            prefix = self._PLACEHOLDER_PREFIX.get(asset_type.value, "res")
+            cnt = placeholder_counter.get(prefix, 0) + 1
+            placeholder_counter[prefix] = cnt
+            placeholder = f"{{{{{prefix}:{cnt}}}}}"
+            placeholder_map[url] = placeholder
+            display_text = text if text and text != url else ""
+            asset = Asset(
+                doc_id=doc.doc_id,
+                asset_type=asset_type,
+                original_uri=url,
+                display_text=display_text,
+                storage_uri=None,
+                status=AssetStatus.ready,
+                extracted_text=None,
+                metadata={
+                    "source": "xlsx_cell",
+                    "sheet_name": sheet_name,
+                    "cell": coordinate,
+                },
             )
+            assets.append(asset)
+            assets_by_uri[url] = asset
+        else:
+            placeholder = placeholder_map.get(url, "")
 
-            # 文本中的 URL 替换为占位符
-            if url in modified_text:
-                modified_text = modified_text.replace(url, placeholder)
+        asset_data_list.append(
+            AssetData(placeholder=placeholder, asset_id=asset.asset_id)
+        )
 
-        return asset_data_list, modified_text
+        return asset_data_list, text
 
     @staticmethod
     def _classify_link_asset_type(url: str) -> AssetType:
