@@ -20,6 +20,7 @@ from app.core.deps import (
     document_repo,
     retrieval_pipeline,
 )
+from app.utils.thread_pool import search_executor
 
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger(__name__)
@@ -62,50 +63,39 @@ class SearchRequest(BaseModel):
 async def _execute_search(request: SearchRequest) -> dict[str, Any]:
     """执行检索 pipeline，返回完整结果。
 
-    当 filters.categories 包含多个值时，对每个 category 分别检索后合并去重，
-    确保所有指定分类的候选结果都能被公平召回。
+    多 category 时通过 Milvus category in [...] 单次检索完成，
+    消除逐 category 循环带来的重复 LLM 改写 / Embedding / Rerank 开销。
     """
     filters = request.filters
 
-    # 确定需要检索的 category 和 knowledge_type 列表
-    if filters.categories and len(filters.categories) >= 2:
-        categories = filters.categories
-    elif filters.categories and len(filters.categories) == 1:
-        categories = [filters.categories[0]]
+    # 构建过滤列表（None 表示不过滤，由 Milvus 层用 in [...] 处理多值）
+    if filters.categories:
+        categories: list[str] | None = list(filters.categories)
     else:
-        categories = [None]
+        categories = None
 
-    # knowledge_type：多值保持 Python 侧过滤，单值传入 Milvus expr
-    kt = None
-    if filters.knowledge_types and len(filters.knowledge_types) == 1:
-        kt = filters.knowledge_types[0]
+    if filters.knowledge_types:
+        ktypes: list[str] | None = list(filters.knowledge_types)
+    else:
+        ktypes = None
 
-    # 对每个 category 分别检索，合并结果
-    all_results: dict[str, dict[str, Any]] = {}
-    for cat in categories:
-        # 检索包含 LLM、Embedding 和外部索引 I/O，在线程中执行以免阻塞事件循环。
-        result = await asyncio.to_thread(
-            retrieval_pipeline.search,
-            request.query,
-            top_k=request.top_k,
-            category=cat,
-            knowledge_type=kt,
-            rewrite=request.options.rewrite,
-            hybrid=request.options.hybrid,
-            rerank=request.options.rerank,
-        )
-        result_dict = result.model_dump(mode="json")
-        for item in result_dict.get("results", []):
-            chunk_id = item.get("chunk_id", "")
-            if chunk_id not in all_results or item.get("score", 0) > all_results[chunk_id].get("score", 0):
-                all_results[chunk_id] = item
-
-    # 构建合并后的结果（按分数降序排列）
-    merged_items = sorted(all_results.values(), key=lambda x: x.get("score", 0), reverse=True)
-    merged_dict = result_dict.copy()
-    merged_dict["results"] = merged_items
-
-    return _filter_and_enrich_result(merged_dict, request)
+    # 单次检索，通过专用线程池隔离并发搜索，避免使用 FastAPI 默认线程池。
+    # pipeline 内部自行创建临时池跑 Vector+BM25 双路并行。
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        search_executor,
+        retrieval_pipeline.search,
+        request.query,
+        request.top_k,
+        categories,                 # categories
+        ktypes,                     # knowledge_types
+        False,                      # debug
+        request.options.rewrite,    # rewrite
+        request.options.hybrid,     # hybrid
+        request.options.rerank,     # rerank
+    )
+    result_dict = result.model_dump(mode="json")
+    return _filter_and_enrich_result(result_dict, request)
 
 
 def _value(raw: Any) -> str:
@@ -164,23 +154,42 @@ def _matches_item_filters(item: dict, doc, filters: SearchFilters) -> bool:
 
 
 def _filter_and_enrich_result(result_dict: dict, request: SearchRequest) -> dict:
-    """应用过滤 + 补充文档展示字段。chunk 数据优先用 Milvus 字段，PG 仅补 Document 级信息。"""
+    """应用过滤 + 补充文档展示字段。chunk 数据优先用 Milvus 字段，PG 仅补 Document 级信息。
+
+    当需要 doc 级过滤（source_type / doc_status / 时间范围）时，
+    先批量加载所有候选 doc，消除 N+1 查询。
+    """
     filtered_items: list[dict[str, Any]] = []
     filters = request.filters
-    # 是否需要用 PG doc 级过滤（source_type / doc_status / 时间范围）
+    results = result_dict.get("results", [])
+    if not results:
+        result_dict["results"] = []
+        result_dict["total_count"] = 0
+        return result_dict
+
+    # 是否需要用 PG doc 级过滤
     need_doc = bool(filters.source_types or filters.doc_status
                     or filters.created_after or filters.created_before)
 
-    for item in result_dict.get("results", []):
+    # 批量预加载文档：有 doc 级过滤或有缺失 doc_title 时一次性查 PG
+    docs_map: dict[str, Any] = {}
+    if need_doc and document_repo is not None:
+        doc_ids = list({item.get("doc_id", "") for item in results if item.get("doc_id")})
+        if doc_ids and hasattr(document_repo, "get_batch"):
+            docs_map = document_repo.get_batch(doc_ids)
+
+    for item in results:
         item_doc_id = item.get("doc_id", "")
         item_doc_title = item.get("doc_title", "")
 
-        # doc：doc_title 空或需要 doc 级过滤时查 PG，否则跳过
-        doc = None
-        if not item_doc_title or need_doc:
-            doc = _get_doc(item_doc_id) if item_doc_id else None
-            if not item_doc_title:
-                item_doc_title = getattr(doc, "title", "") if doc else item_doc_id
+        doc = docs_map.get(item_doc_id) if need_doc else None
+
+        # 补全缺失的 doc_title（通常 Milvus 已有，仅作兜底）
+        if not item_doc_title:
+            if not need_doc and document_repo is not None:
+                # 无批量加载时走单条查询
+                doc = _get_doc(item_doc_id) if item_doc_id else None
+            item_doc_title = getattr(doc, "title", "") if doc else item_doc_id
 
         if not _matches_item_filters(item, doc, filters):
             continue

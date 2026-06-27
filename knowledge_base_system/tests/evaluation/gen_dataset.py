@@ -36,8 +36,12 @@ SYSTEM_PROMPT = """你是知识库检索评测数据构建助手。
 
 要求：
 - 精确生成 {target_count} 条查询，将知识块视为同一篇文档的不同章节
-- 查询用自然的用户提问方式，不要直接复制 chunk 原文中的完整句子
-- 优先使用口语化表述、模糊查询和同义改写（如将"异步处理"说成"不用等待就能执行"）
+- 查询风格要多样化，模拟真实用户的检索行为，包含以下类型（均匀分布）：
+  - 完整疑问句（"怎么配置超时时间？"）
+  - 关键词组合（"超时 配置 参数"）
+  - 短语/口语片段（"那个异步处理的东西"）
+  - 祈使/陈述句（"查一下分片逻辑""给个配置示例"）
+- 不要直接复制 chunk 原文中的完整句子，使用同义改写和口语化表述
 - 每个 chunk ID 必须是知识块列表中真实存在的 ID
 - 输出格式：一个 JSON 对象，包含 items 数组。每个 item 有 query（查询文本）、
   expected_chunk_ids（能回答该查询的 chunk ID 列表，1-3 个）、
@@ -70,20 +74,16 @@ def _generate(chunks: list[dict], target_count: int) -> list[dict]:
         return []
 
     chunks_json = json.dumps(chunks, ensure_ascii=False, indent=2)
-    user_msg = USER_PROMPT_TEMPLATE.format(
-        chunk_count=len(chunks),
-        target_count=target_count,
-        chunks_json=chunks_json,
-    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT.format(target_count=target_count)},
+        {"role": "user", "content": USER_PROMPT_TEMPLATE.format(
+            chunk_count=len(chunks),
+            target_count=target_count,
+            chunks_json=chunks_json,
+        )},
+    ]
 
-    result = llm_client.chat_json(
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT.format(target_count=target_count)},
-            {"role": "user", "content": user_msg},
-        ],
-        schema=OUTPUT_SCHEMA,
-        temperature=0.3,
-    )
+    result = llm_client.chat_json(messages, schema=OUTPUT_SCHEMA)
     return result.get("items", [])
 
 
@@ -179,18 +179,19 @@ def generate_for_chunks(
     all_items: list[dict] = []
     all_errors: list[str] = []
 
-    # 分片：每批 ≤ LLM_INPUT_CHUNK_LIMIT 个 chunk
+    # 分片：每批 ≤ LLM_INPUT_CHUNK_LIMIT 个 chunk，每批独立生成 query_count 条
+    max_total = query_count * 2  # 分片场景总量上限，避免大文档生成过多条目
     if len(chunks) > LLM_INPUT_CHUNK_LIMIT:
-        logger.info(
-            "知识块总数 %d 超过限制 %d，分 %d 批生成",
-            len(chunks), LLM_INPUT_CHUNK_LIMIT,
-            (len(chunks) + LLM_INPUT_CHUNK_LIMIT - 1) // LLM_INPUT_CHUNK_LIMIT,
-        )
         batch_count = (len(chunks) + LLM_INPUT_CHUNK_LIMIT - 1) // LLM_INPUT_CHUNK_LIMIT
-        per_batch = max(1, query_count // batch_count)
+        logger.info(
+            "知识块总数 %d 超过限制 %d，分 %d 批生成（每批 %d 条，上限 %d 条）",
+            len(chunks), LLM_INPUT_CHUNK_LIMIT, batch_count, query_count, max_total,
+        )
         for i in range(0, len(chunks), LLM_INPUT_CHUNK_LIMIT):
+            if len(all_items) >= max_total:
+                break
             batch = chunks[i : i + LLM_INPUT_CHUNK_LIMIT]
-            items = _generate(batch, target_count=per_batch)
+            items = _generate(batch, target_count=query_count)
             if items:
                 valid_items, errors = _validate_annotations(items, chunks)
                 all_items.extend(valid_items)
@@ -199,6 +200,10 @@ def generate_for_chunks(
         items = _generate(chunks, target_count=query_count)
         if items:
             all_items, all_errors = _validate_annotations(items, chunks)
+
+    # 截断到上限
+    if len(all_items) > max_total:
+        all_items = all_items[:max_total]
 
     if not all_items and not all_errors:
         all_errors.append("LLM 未生成任何条目")

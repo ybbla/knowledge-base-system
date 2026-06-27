@@ -36,43 +36,22 @@ const Dashboard = (() => {
   async function render() {
     UI.setBreadcrumb([{ label: '仪表盘' }]);
 
-    // ── 第一步：获取系统健康状态 ──
-    let healthOk = false;
-    let apiOnline = false;   // API 服务自身是否可达（请求成功即为在线）
-    let depStatuses = {};
+    // ── 全部数据并行获取（health + 4 个统计查询，每个独立容错） ──
+    const [healthRes, docsRes, chunksRes, failedRes, processingRes] = await Promise.all([
+      API.health().catch(() => null),
+      API.listDocuments({ page: 1, page_size: 1 }).catch(() => null),
+      API.listChunks({ page: 1, page_size: 1 }).catch(() => null),
+      API.listDocuments({ page: 1, page_size: 1, status: 'failed' }).catch(() => null),
+      API.listDocuments({ page: 1, page_size: 1, status: 'processing' }).catch(() => null),
+    ]);
 
-    try {
-      const res = await API.health();
-      apiOnline = true;                          // 请求成功 → API 服务在线
-      healthOk = res?.data?.status === 'ok';     // 全部依赖 ok 才为 true
-      depStatuses = res?.data?.dependencies || {};
-    } catch (e) { /* apiOnline 保持 false → 前端显示"离线" */ }
-
-    // ── 第二步：获取文档和知识块统计数据（并行请求） ──
-    let docCount = 0;
-    let chunkCount = 0;
-    let failedDocCount = 0;
-    let processingDocCount = 0;
-
-    try {
-      // 文档总数 + 知识块总数
-      const [docsRes, chunksRes] = await Promise.all([
-        API.listDocuments({ page: 1, page_size: 1 }),
-        API.listChunks({ page: 1, page_size: 1 }),
-      ]);
-      docCount = docsRes?.metadata?.total || 0;
-      chunkCount = chunksRes?.metadata?.total || 0;
-    } catch (e) { /* 统计数据获取失败使用默认值 0 */ }
-
-    try {
-      // 失败 + 处理中文档数（并行请求）
-      const [failedRes, processingRes] = await Promise.all([
-        API.listDocuments({ page: 1, page_size: 1, status: 'failed' }),
-        API.listDocuments({ page: 1, page_size: 1, status: 'processing' }),
-      ]);
-      failedDocCount = failedRes?.metadata?.total || 0;
-      processingDocCount = processingRes?.metadata?.total || 0;
-    } catch (e) { /* 统计数据获取失败使用默认值 0 */ }
+    const apiOnline = healthRes !== null;
+    const healthOk = healthRes?.data?.status === 'ok';
+    const depStatuses = healthRes?.data?.dependencies || {};
+    const docCount = docsRes?.metadata?.total || 0;
+    const chunkCount = chunksRes?.metadata?.total || 0;
+    const failedDocCount = failedRes?.metadata?.total || 0;
+    const processingDocCount = processingRes?.metadata?.total || 0;
 
     // ── 第三步：组装外部依赖列表（按固定顺序） ──
     const externalDeps = [

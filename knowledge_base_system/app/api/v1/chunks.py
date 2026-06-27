@@ -56,37 +56,69 @@ def _get_primary_doc_id(chunk: KnowledgeChunk) -> str:
     return ""
 
 
-def _get_doc_title(doc_id: str) -> str | None:
-    """获取文档标题，用于列表展示。"""
-    if not doc_id:
+def _batch_load_doc_info(doc_ids: set[str]) -> dict[str, dict[str, str]]:
+    """批量加载文档标题和来源类型，消除列表页 N+1 查询。
+
+    Args:
+        doc_ids: 去重后的文档 ID 集合。
+
+    Returns:
+        {doc_id: {"title": ..., "source_type": ...}} 字典，缺失的 doc_id 不在 keys 中。
+    """
+    cache: dict[str, dict[str, str]] = {}
+    if document_repo is None:
+        return cache
+    for doc_id in doc_ids:
+        if not doc_id:
+            continue
+        doc = document_repo.get(doc_id)
+        if doc:
+            cache[doc_id] = {"title": doc.title, "source_type": doc.source_type}
+    return cache
+
+
+def _resolve_doc_title(doc_id: str) -> str | None:
+    """单条文档标题查询，供详情页等低频场景使用。"""
+    if not doc_id or document_repo is None:
         return None
-    if document_repo is not None:
-        doc = document_repo.get(doc_id)
-        if doc:
-            return doc.title
-    return None
+    doc = document_repo.get(doc_id)
+    return doc.title if doc else None
 
 
-def _get_doc_source_type(doc_id: str) -> str:
-    """获取文档来源类型，用于列表展示。"""
-    if not doc_id:
+def _resolve_doc_source_type(doc_id: str) -> str:
+    """单条文档来源类型查询，供详情页等低频场景使用。"""
+    if not doc_id or document_repo is None:
         return ""
-    if document_repo is not None:
-        doc = document_repo.get(doc_id)
-        if doc:
-            return doc.source_type
-    return ""
+    doc = document_repo.get(doc_id)
+    return doc.source_type if doc else ""
 
 
-def _chunk_to_list_item(chunk: KnowledgeChunk) -> dict[str, Any]:
-    """将知识块转为列表条目（含内容摘要、时间等展示字段）。"""
+def _chunk_to_list_item(
+    chunk: KnowledgeChunk,
+    doc_info_cache: dict[str, dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """将知识块转为列表条目（含内容摘要、时间等展示字段）。
+
+    Args:
+        chunk: 知识块对象。
+        doc_info_cache: 批量预加载的文档信息缓存，避免逐条 N+1 查询。
+    """
     preview = chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content
     doc_id = _get_primary_doc_id(chunk)
+
+    if doc_info_cache and doc_id in doc_info_cache:
+        doc_info = doc_info_cache[doc_id]
+        doc_title = doc_info["title"]
+        doc_source_type = doc_info["source_type"]
+    else:
+        doc_title = _resolve_doc_title(doc_id)
+        doc_source_type = _resolve_doc_source_type(doc_id)
+
     return {
         "chunk_id": chunk.chunk_id,
         "doc_id": doc_id,
-        "doc_title": _get_doc_title(doc_id),
-        "doc_source_type": _get_doc_source_type(doc_id),
+        "doc_title": doc_title,
+        "doc_source_type": doc_source_type,
         "title": chunk.title,
         "content_preview": preview,
         "knowledge_type": chunk.knowledge_type.value if hasattr(chunk.knowledge_type, "value") else chunk.knowledge_type,
@@ -124,7 +156,7 @@ def _chunk_to_detail(chunk: KnowledgeChunk) -> dict[str, Any]:
     return {
         "chunk_id": chunk.chunk_id,
         "doc_id": doc_id,
-        "doc_title": _get_doc_title(doc_id),
+        "doc_title": _resolve_doc_title(doc_id),
         "title": chunk.title,
         "content": chunk.content,
         "content_hash": chunk.content_hash,
@@ -178,7 +210,12 @@ async def list_chunks(
             sort_by=pagination.sort_by or "created_at",
             sort_order=pagination.sort_order,
         )
-        items = [_chunk_to_list_item(c) for c in chunks]
+        # 批量预加载文档信息，消除列表页 N+1 查询
+        unique_doc_ids = {_get_primary_doc_id(c) for c in chunks}
+        unique_doc_ids.discard("")
+        doc_info_cache = _batch_load_doc_info(unique_doc_ids) if unique_doc_ids else {}
+
+        items = [_chunk_to_list_item(c, doc_info_cache=doc_info_cache) for c in chunks]
         total_pages = (total + pagination.page_size - 1) // pagination.page_size if total > 0 else 0
         meta = PaginationMeta(
             page=pagination.page, page_size=pagination.page_size,

@@ -38,9 +38,14 @@ class VectorIndex(ABC):
         self,
         query_vector: list[float],
         top_k: int,
-        category: str | None = None,
+        categories: list[str] | None = None,
     ) -> list[tuple[str, float]]:
-        """向量相似度检索，返回 (chunk_id, score) 列表，按分数降序排列。"""
+        """向量相似度检索，返回 (chunk_id, score) 列表，按分数降序排列。
+
+        参数:
+            categories: 分类过滤列表，None 表示不过滤，单元素用 ==，
+                        多元素用 in [...] 表达式。
+        """
 
 
 class BM25Index(ABC):
@@ -72,6 +77,11 @@ class BM25Index(ABC):
         self,
         query: str,
         top_k: int,
-        category: str | None = None,
+        categories: list[str] | None = None,
     ) -> list[tuple[str, float]]:
-        """BM25 关键词检索，返回 (chunk_id, score) 列表，按分数降序排列。"""
+        """BM25 关键词检索，返回 (chunk_id, score) 列表，按分数降序排列。
+
+        参数:
+            categories: 分类过滤列表，None 表示不过滤，单元素用 ==，
+                        多元素用 in [...] 表达式。
+        """

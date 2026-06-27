@@ -111,6 +111,25 @@ class DocumentRepository(BaseRepository):
                 return None
             return self._from_db(db_doc)
 
+    def get_batch(self, doc_ids: list[str]) -> dict[str, Document]:
+        """批量加载文档，一次查询消除 N+1。
+
+        Args:
+            doc_ids: 文档 ID 列表。
+
+        Returns:
+            {doc_id: Document} 字典，不存在的 doc_id 不在 keys 中。
+        """
+        if not doc_ids:
+            return {}
+        with self._session() as session:
+            rows = (
+                session.query(DbDocument)
+                .filter(DbDocument.doc_id.in_(doc_ids))
+                .all()
+            )
+            return {row.doc_id: self._from_db(row) for row in rows}
+
     def update(self, doc: Document) -> Document:
         """更新文档字段。"""
         doc.updated_at = datetime.now(timezone.utc)

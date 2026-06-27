@@ -71,8 +71,8 @@ class TestSearchExprStatusFilter:
         monkeypatch.setattr(mv, "_escape_expr_value", lambda v: v)
 
         index = MilvusVectorIndex(_fake_mgr)
-        index.search([0.1] * DENSE_DIM, top_k=5, category="产品使用")
+        index.search([0.1] * DENSE_DIM, top_k=5, categories=["产品使用"])
 
         assert len(captured) >= 1
         expr = captured[0]
-        assert expr == '(category == "产品使用") && (status == "active")'
+        assert expr == 'status == "active" && category == "产品使用"'

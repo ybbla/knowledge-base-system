@@ -1,7 +1,32 @@
 """检索质量评测指标计算。
 
-提供标准 Recall@K 和 MRR 两个核心指标，以及安全的均值汇总函数。
+提供四个标准指标：Hit@K、Recall@K、Precision@K、MRR，以及安全的均值汇总函数。
 """
+
+
+def precision_at_k(
+    results: list[str],
+    expected: list[str],
+    k: int = 5,
+) -> float | None:
+    """计算标准 Precision@K：top-K 中命中的期望 chunk 数占 K 的比例。
+
+    例如：top-5 命中 2 个 → Precision@5 = 2/5 = 0.4。
+
+    Args:
+        results: 检索返回的 chunk_id 列表，按分数降序排列。
+        expected: 期望命中的 chunk_id 列表。
+        k: 截断位置，默认 5。
+
+    Returns:
+        Precision@K 分数 (float)；
+        如果 expected 为空则返回 None（无标注，不计入汇总）。
+    """
+    if not expected:
+        return None
+    top_k = set(results[:k])
+    hits = len(top_k & set(expected))
+    return hits / k
 
 
 def recall_at_k(
@@ -52,6 +77,30 @@ def mrr(
         if chunk_id in expected_set:
             return 1.0 / rank
     return 0.0
+
+
+def hit_at_k(
+    results: list[str],
+    expected: list[str],
+    k: int = 5,
+) -> float | None:
+    """计算 Hit@K：top-K 中是否至少命中一个期望 chunk。
+
+    命中返回 1.0，未命中返回 0.0。批量使用时取均值即命中率。
+
+    Args:
+        results: 检索返回的 chunk_id 列表，按分数降序排列。
+        expected: 期望命中的 chunk_id 列表。
+        k: 截断位置，默认 5。
+
+    Returns:
+        1.0 或 0.0；
+        如果 expected 为空则返回 None（无标注，不计入汇总）。
+    """
+    if not expected:
+        return None
+    top_k = set(results[:k])
+    return 1.0 if (top_k & set(expected)) else 0.0
 
 
 def safe_mean(values: list[float | None]) -> float | None:

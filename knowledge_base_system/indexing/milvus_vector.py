@@ -220,6 +220,24 @@ class MilvusCollectionManager:
         self.collection.delete(expr=f'chunk_id == "{_escape_expr_value(chunk_id)}"')
         self.collection.flush()
 
+    def delete_batch(self, chunk_ids: list[str]) -> None:
+        """批量删除知识块，一次 RPC + 一次 flush。
+
+        适用于重入库清理、批量删除等场景，避免逐条 delete 的 RPC 开销。
+        """
+        if not chunk_ids:
+            return
+        self.ensure_collection()
+        if self.collection is None:
+            raise RuntimeError("Milvus collection is not initialized")
+        for chunk_id in chunk_ids:
+            self._cache.pop(chunk_id, None)
+        quoted = ", ".join(
+            f'"{_escape_expr_value(cid)}"' for cid in chunk_ids
+        )
+        self.collection.delete(expr=f"chunk_id in [{quoted}]")
+        self.collection.flush()
+
 
 class MilvusVectorIndex(VectorIndex):
     """基于 Milvus 的稠密向量索引实现（HNSW + COSINE 相似度）。
@@ -315,13 +333,17 @@ class MilvusVectorIndex(VectorIndex):
         self,
         query_vector: list[float],
         top_k: int,
-        category: str | None = None,
-        knowledge_type: str | None = None,
+        categories: list[str] | None = None,
+        knowledge_types: list[str] | None = None,
     ) -> list[tuple[str, float, dict]]:
         """稠密向量相似度检索（HNSW + COSINE）。
 
         返回 (chunk_id, score, fields_dict) 列表，按分数降序排列。
         自动过滤 status!='active' 的记录。
+
+        参数:
+            categories: 分类过滤列表，None 不过滤；单元素用 ==，多元素用 in [...]。
+            knowledge_types: 知识类型过滤列表，None 不过滤。
         """
         self._manager.ensure_collection()
         collection = self._manager.collection
@@ -329,10 +351,18 @@ class MilvusVectorIndex(VectorIndex):
             raise RuntimeError("Milvus collection is not initialized")
 
         expr_parts = ['status == "active"']
-        if category is not None:
-            expr_parts.append(f'category == "{_escape_expr_value(category)}"')
-        if knowledge_type is not None:
-            expr_parts.append(f'knowledge_type == "{_escape_expr_value(knowledge_type)}"')
+        if categories:
+            if len(categories) == 1:
+                expr_parts.append(f'category == "{_escape_expr_value(categories[0])}"')
+            else:
+                quoted = ", ".join(f'"{_escape_expr_value(c)}"' for c in categories)
+                expr_parts.append(f"category in [{quoted}]")
+        if knowledge_types:
+            if len(knowledge_types) == 1:
+                expr_parts.append(f'knowledge_type == "{_escape_expr_value(knowledge_types[0])}"')
+            else:
+                quoted = ", ".join(f'"{_escape_expr_value(k)}"' for k in knowledge_types)
+                expr_parts.append(f"knowledge_type in [{quoted}]")
         expr = " && ".join(expr_parts)
 
         results = collection.search(

@@ -92,13 +92,11 @@ class RetrievalPipeline:
         bm25_index: BM25Index,
         chunk_store: Any,
         asset_store: AssetStore | None = None,
-        executor: ThreadPoolExecutor | None = None,
     ) -> None:
         self._vector_index = vector_index
         self._bm25_index = bm25_index
         self._chunk_store = chunk_store
         self._asset_store = asset_store
-        self._executor = executor  # 全局复用检索线程池，避免频繁创建/销毁
         self._rewriter = QueryRewriter()
         self._reranker = Reranker()
 
@@ -106,8 +104,8 @@ class RetrievalPipeline:
         self,
         query: str,
         top_k: int | None = None,
-        category: str | None = None,
-        knowledge_type: str | None = None,
+        categories: list[str] | None = None,
+        knowledge_types: list[str] | None = None,
         debug: bool = False,
         rewrite: bool = True,
         hybrid: bool = True,
@@ -118,8 +116,8 @@ class RetrievalPipeline:
         参数:
             query: 用户原始查询
             top_k: 最终返回结果数量（默认从配置读取）
-            category: 知识块分类过滤（Milvus expr）
-            knowledge_type: 知识类型过滤（Milvus expr）
+            categories: 知识块分类过滤列表，None 不过滤；单元素用 ==，多元素用 in [...]
+            knowledge_types: 知识类型过滤列表，None 不过滤
             debug: 为 True 时返回 (SearchResult, RetrievalDebugInfo) 元组
             rewrite: 是否执行查询改写
             hybrid: 是否启用 BM25；为 False 时仅执行向量检索
@@ -172,24 +170,23 @@ class RetrievalPipeline:
             return self._vector_index.search(
                 query_vec,
                 top_k=cfg.vector_top_k,
-                category=category,
-                knowledge_type=knowledge_type,
+                categories=categories,
+                knowledge_types=knowledge_types,
             )
 
         def _search_bm25():
             return self._bm25_index.search(
                 keywords_str,
                 top_k=cfg.bm25_top_k,
-                category=category,
-                knowledge_type=knowledge_type,
+                categories=categories,
+                knowledge_types=knowledge_types,
             )
 
-        # 优先使用全局检索线程池，避免高并发时线程膨胀
-        executor = self._executor or ThreadPoolExecutor(max_workers=2)
-        own_executor = self._executor is None
+        # 临时 2 线程池跑双路检索并行（外层已有 search_executor 隔离并发搜索）
+        inner_pool = ThreadPoolExecutor(max_workers=2)
 
-        future_vec = executor.submit(_search_vector) if query_vec is not None else None
-        future_bm25 = executor.submit(_search_bm25) if hybrid else None
+        future_vec = inner_pool.submit(_search_vector) if query_vec is not None else None
+        future_bm25 = inner_pool.submit(_search_bm25) if hybrid else None
 
         if future_bm25 is not None:
             try:
@@ -209,8 +206,7 @@ class RetrievalPipeline:
                 if debug and debug_info:
                     debug_info.errors.append(err_msg)
 
-        if own_executor:
-            executor.shutdown(wait=True)
+        inner_pool.shutdown(wait=True)
 
         # 从 Milvus 返回字段构建 chunk 数据（无需查 PG）
         fields_map: dict[str, dict] = {}

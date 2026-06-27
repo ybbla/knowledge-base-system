@@ -32,8 +32,8 @@ After upload, the system shows parsing status:
 
 
 class _SearchPipeline:
-    def search(self, query, top_k=None, category=None):
-        if category != "manuals":
+    def search(self, query, top_k=None, categories=None):
+        if not categories or "manuals" not in categories:
             return SearchResult(query=query, rewritten_query=query)
         return SearchResult(
             query=query,
@@ -105,7 +105,7 @@ class TestSearchPipeline:
             json={
                 "query": "How do users know document parsing succeeded?",
                 "top_k": 5,
-                "filters": {"category": "manuals"},
+                "filters": {"categories": ["manuals"]},
             },
         )
         assert resp.status_code == 200, f"Search failed: {resp.text}"
@@ -144,7 +144,7 @@ class TestSearchPipeline:
             json={
                 "query": "upload document",
                 "top_k": 5,
-                "filters": {"category": "support"},
+                "filters": {"categories": ["support"]},
             },
         )
         assert resp.status_code == 200

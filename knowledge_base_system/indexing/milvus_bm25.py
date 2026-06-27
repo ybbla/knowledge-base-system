@@ -95,20 +95,33 @@ class MilvusBM25Index(BM25Index):
         self,
         query: str,
         top_k: int,
-        category: str | None = None,
-        knowledge_type: str | None = None,
+        categories: list[str] | None = None,
+        knowledge_types: list[str] | None = None,
     ) -> list[tuple[str, float, dict]]:
-        """BM25 关键词检索，直接传入原始查询文本。"""
+        """BM25 关键词检索，直接传入原始查询文本。
+
+        参数:
+            categories: 分类过滤列表，None 不过滤；单元素用 ==，多元素用 in [...]。
+            knowledge_types: 知识类型过滤列表，None 不过滤。
+        """
         self._manager.ensure_collection()
         collection = self._manager.collection
         if collection is None:
             raise RuntimeError("Milvus collection is not initialized")
 
         expr_parts = ['status == "active"']
-        if category is not None:
-            expr_parts.append(f'category == "{_escape_expr_value(category)}"')
-        if knowledge_type is not None:
-            expr_parts.append(f'knowledge_type == "{_escape_expr_value(knowledge_type)}"')
+        if categories:
+            if len(categories) == 1:
+                expr_parts.append(f'category == "{_escape_expr_value(categories[0])}"')
+            else:
+                quoted = ", ".join(f'"{_escape_expr_value(c)}"' for c in categories)
+                expr_parts.append(f"category in [{quoted}]")
+        if knowledge_types:
+            if len(knowledge_types) == 1:
+                expr_parts.append(f'knowledge_type == "{_escape_expr_value(knowledge_types[0])}"')
+            else:
+                quoted = ", ".join(f'"{_escape_expr_value(k)}"' for k in knowledge_types)
+                expr_parts.append(f"knowledge_type in [{quoted}]")
         expr = " && ".join(expr_parts)
 
         results = collection.search(

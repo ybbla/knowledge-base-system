@@ -77,6 +77,7 @@ def merge_doc_to_global(doc_id: str) -> int:
     # ── 4. 按 (doc_id, query) 去重合并 ──
     added = 0
     skipped = 0
+    updated = 0
     for item in new_items:
         q = item.get("query", "")
         d = item.get("doc_id", "")
@@ -86,10 +87,23 @@ def merge_doc_to_global(doc_id: str) -> int:
         key = (d, q)
         if key in existing_keys:
             existing_idx = existing_keys[key]
-            if existing_items[existing_idx].get("source") == "manual":
+            existing = existing_items[existing_idx]
+
+            # 人工标注永远不覆盖
+            if existing.get("source") == "manual":
                 skipped += 1
                 continue
-            skipped += 1
+
+            # 自动标注直接用新标注替换，过期 chunk 由 run_eval 过滤
+            existing_items[existing_idx] = {
+                "query": q,
+                "expected_chunk_ids": item.get("expected_chunk_ids", []),
+                "expected_content_contains": item.get("expected_content_contains", []),
+                "doc_id": item.get("doc_id"),
+                "doc_version": item.get("doc_version", 1),
+                "source": item.get("source", "auto"),
+            }
+            updated += 1
             continue
 
         # 新条目 → 添加到全局数据集
@@ -112,7 +126,8 @@ def merge_doc_to_global(doc_id: str) -> int:
 
     print(f"\n📊 合并完成:")
     print(f"   新增: {added} 条")
-    print(f"   跳过: {skipped} 条（已存在）")
+    print(f"   更新: {updated} 条")
+    print(f"   跳过: {skipped} 条（人工标注保护）")
     print(f"   全局数据集总计: {len(existing_items)} 条")
     print(f"   📄 {global_path}")
 

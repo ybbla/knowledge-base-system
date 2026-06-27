@@ -39,7 +39,7 @@
 │  │                    核心服务层                           │  │
 │  │  ┌──────────┐  ┌──────────┐  ┌────────────────────┐  │  │
 │  │  │ 解析器    │  │ 入库管道  │  │ 检索管道            │  │  │
-│  │  │ (多格式)  │  │ (语义抽取) │  │ (向量+BM25+RRF)    │  │  │
+│  │  │ (7种格式) │  │ (语义抽取) │  │ (向量+BM25+RRF)    │  │  │
 │  │  └──────────┘  └──────────┘  └────────────────────┘  │  │
 │  └───────────────────────────────────────────────────────┘  │
 └──────────────────────────┬───────────────────────────────────┘
@@ -47,8 +47,8 @@
         ┌──────────────────┼──────────────────┐
         │                  │                  │
 ┌───────▼───────┐  ┌───────▼───────┐  ┌───────▼───────┐
-│   火山引擎     │  │  Milvus/内存  │  │ PostgreSQL/内存│
-│ LLM/Embedding │  │   向量索引     │  │   数据存储      │
+│   火山引擎     │  │    Milvus     │  │  PostgreSQL   │
+│ LLM/Embedding │  │ 混合向量索引   │  │   数据存储      │
 └───────────────┘  └───────────────┘  └───────────────┘
 ```
 
@@ -60,17 +60,18 @@
                                     ┌────▼────┐
                                     │ 双路索引 │
                                     └─┬───┬──┘
-                              向量索引   BM25全文
-                              (Faiss/   (jieba+
-                              Milvus)   rank-bm25)
+                           HNSW 向量索引  BM25 稀疏索引
+                           (COSINE)      (Milvus 原生 Tantivy)
                                     │    │
                                     └┬──┬┘
-                                    RRF 融合
+                                   RRF 融合
                                       │
                                   LLM Rerank
                                       │
                                    最终结果
 ```
+
+**检索链路已完全去 PG 化**：Milvus 存储全量标量字段（chunk_id / doc_id / title / content / category 等），检索时直接返回完整元数据，无需回查 PostgreSQL。
 
 ---
 
@@ -82,11 +83,13 @@
 | **语言** | Python 3.10+ | 类型注解 `X \| None`、`list[X]` 语法 |
 | **数据模型** | Pydantic v2 | 请求/响应校验，Settings 配置管理 |
 | **LLM** | 火山引擎 doubao-seed-2-0-pro | 语义抽取、查询重写、Rerank |
-| **Embedding** | 火山引擎 doubao-embedding-vision | 文本+视觉联合向量化 |
-| **向量检索** | Faiss (内存) / Milvus 2.5 (持久) | 自动回退：Milvus 不可用时降级到 Faiss |
-| **全文检索** | BM25 + jieba 分词 | rank-bm25 库，内存索引 |
-| **数据库** | PostgreSQL + pgvector (可选) / 内存 | 自动回退：PG 不可用时降级到内存 |
-| **对象存储** | MinIO (可选) / 本地文件系统 | 自动回退 |
+| **Embedding** | 火山引擎 doubao-embedding-vision | 文本+视觉联合向量化（1024 维） |
+| **向量检索** | Milvus 2.5 HNSW + COSINE | 持久化稠密向量索引 |
+| **全文检索** | Milvus 2.5 原生 BM25 | Tantivy 引擎 + chinese 分析器，自动稀疏向量化 |
+| **融合排序** | RRF + LLM Rerank | 倒数排序融合 + 深度语义重排 |
+| **数据库** | PostgreSQL | 文档/知识块/资产元数据持久化 |
+| **对象存储** | MinIO + 内容寻址 | 资产去重存储，SHA-256 哈希为 Key |
+| **PDF 精准解析** | MinerU API + PyMuPDF | 布局分析、阅读顺序、公式识别，自动降级 |
 | **前端** | Vanilla JS SPA | 自制路由、组件化，无框架依赖 |
 | **样式** | 自定义 CSS | 思源黑体 + JetBrains Mono |
 | **容器化** | Docker Compose | PostgreSQL + Milvus + MinIO + etcd + Attu |
@@ -109,18 +112,14 @@ knowledge-base-system/
 │           ├── dashboard.js           # 仪表盘页面
 │           ├── documents.js           # 文档列表页面
 │           ├── document-detail.js     # 文档详情页面
-│           ├── search.js              # 搜索 + 调试检索页面
-│           ├── ingestion.js           # 入库任务管理页面
+│           ├── search.js              # 搜索页面（含调试模式）
 │           └── chunks.js              # 知识块管理页面
 │
 ├── knowledge_base_system/             # Python 后端
 │   ├── app/                           # FastAPI 应用
 │   │   ├── main.py                    # 应用入口，路由挂载，静态文件
 │   │   ├── api/                       # API 路由
-│   │   │   ├── documents.py           # 旧版文档接口 [已废弃]
-│   │   │   ├── ingest.py              # 旧版入库接口 [已废弃]
-│   │   │   ├── search.py              # 旧版检索接口 [已废弃]
-│   │   │   ├── upload.py              # 旧版上传接口 [已废弃]
+│   │   │   ├── upload_utils.py        # 上传工具（去重检测、文件保存）
 │   │   │   └── v1/                    # ✨ v1 API（当前主力）
 │   │   │       ├── __init__.py        # 路由挂载与异常处理器注册
 │   │   │       ├── schemas.py         # 统一响应模型 (APIResponse/Error/Pagination)
@@ -129,40 +128,45 @@ knowledge-base-system/
 │   │   │       ├── health.py          # 健康检查 (/live /ready /dependencies)
 │   │   │       ├── documents.py       # 文档 CRUD + 上传 + 入库触发
 │   │   │       ├── chunks.py          # 知识块 CRUD + 批量操作 + 索引重建
-│   │   │       ├── ingest.py          # 入库任务查询/重试/取消
-│   │   │       └── search.py          # 混合检索 + 调试检索 + 过滤器
+│   │   │       ├── search.py          # 混合检索 + 调试检索 + 过滤器
 │   │   ├── core/                      # 核心基础设施
 │   │   │   ├── config.py              # 配置管理 (pydantic-settings)
 │   │   │   ├── deps.py                # 全局依赖：LLM/Embedding/索引/仓库
 │   │   │   ├── models.py              # 核心数据模型
 │   │   │   ├── errors.py              # 业务异常类
 │   │   │   └── paths.py               # 路径工具
-│   │   └── db/                        # 数据库层
-│   │       ├── engine.py              # 数据库引擎（自动创建表+扩展）
-│   │       ├── models.py              # SQLAlchemy ORM 模型
-│   │       └── repositories/          # 仓库模式（Document/Element/Chunk）
+│   │   ├── db/                        # 数据库层
+│   │   │   ├── engine.py              # 数据库引擎（自动创建表+扩展）
+│   │   │   ├── models.py              # SQLAlchemy ORM 模型
+│   │   │   └── repositories/          # 仓库模式
+│   │   │       ├── base.py            # 基础仓库类
+│   │   │       ├── documents.py       # 文档仓库
+│   │   │       ├── elements.py        # 解析元素仓库
+│   │   │       ├── chunks.py          # 知识块仓库
+│   │   │       └── assets.py          # 资产仓库
+│   │   └── utils/                     # 工具模块
+│   │       └── thread_pool.py         # 多业务线隔离的线程池体系（6 个专用池）
 │   │
 │   ├── parsers/                       # 文档解析器
 │   │   ├── base.py                    # 解析器基类 + ParsedElement 模型
 │   │   ├── registry.py                # 解析器注册表（自动发现）
-│   │   ├── docx_parser.py             # Word (.docx) 解析
+│   │   ├── utils.py                   # 解析通用工具（链接分类等）
 │   │   ├── pdf_parser.py              # PDF 解析 (PyMuPDF)
+│   │   ├── pdf_mineru_parser.py       # PDF 精准解析 (MinerU API + PyMuPDF 混合)
+│   │   ├── docx_parser.py             # Word (.docx) 解析
 │   │   ├── pptx_parser.py             # PowerPoint (.pptx) 解析
 │   │   ├── xlsx_parser.py             # Excel (.xlsx) 解析
 │   │   ├── html_parser.py             # HTML 解析 (BeautifulSoup)
 │   │   └── markdown_parser.py         # Markdown 解析
 │   │
 │   ├── ingestion/                     # 入库管道
-│   │   ├── pipeline.py                # 主入库流程（解析→抽取→索引→资产处理）
-│   │   └── recursive_loader.py        # 递归目录加载器
+│   │   └── pipeline.py                # 主入库流程（解析→抽取→索引→资产处理）
 │   │
 │   ├── indexing/                      # 索引层
-│   │   ├── base.py                    # 索引抽象基类
-│   │   ├── memory_vector.py           # 内存向量索引 (Faiss)
-│   │   ├── memory_bm25.py             # 内存 BM25 索引 (jieba + rank-bm25)
-│   │   ├── milvus_vector.py           # Milvus 稠密向量索引
-│   │   ├── milvus_sparse.py           # Milvus 稀疏向量索引 (BM25)
-│   │   ├── milvus_hybrid.py           # Milvus 混合检索
+│   │   ├── base.py                    # 索引抽象基类 (VectorIndex / BM25Index)
+│   │   ├── memory_vector.py           # 内存向量索引（仅测试用）
+│   │   ├── milvus_vector.py           # Milvus 稠密向量索引 (HNSW + COSINE)
+│   │   ├── milvus_bm25.py             # Milvus 原生 BM25 索引 (Tantivy 引擎)
 │   │   └── fusion.py                  # RRF 融合算法
 │   │
 │   ├── retrieval/                     # 检索管道
@@ -178,37 +182,58 @@ knowledge-base-system/
 │   ├── assets/                        # 资产处理
 │   │   ├── base.py                    # 资产存储抽象
 │   │   ├── memory_store.py            # 本地文件存储
-│   │   ├── minio_store.py             # MinIO 对象存储
-│   │   └── image_processor.py         # 图片视觉理解 (LLM Vision)
+│   │   ├── minio_store.py             # MinIO 对象存储（内容寻址）
+│   │   ├── downloader.py              # HTTP 资源下载工具
+│   │   └── asset_processor.py         # 资产处理器（图片/视频视觉理解）
+│   │
+│   ├── scripts/                       # 运维脚本
+│   │   ├── setup_services.py          # 外部服务初始化（PG 建表 + Milvus 建 Collection + MinIO 建 Bucket）
+│   │   └── clear_services.py          # 外部服务数据清空（不可逆）
 │   │
 │   ├── tests/                         # 测试套件
 │   │   ├── conftest.py                # 测试配置与 Fixtures
 │   │   ├── test_models.py             # 数据模型单元测试 (38KB)
 │   │   ├── test_db_models.py          # 数据库模型测试 (35KB)
+│   │   ├── test_db_repositories.py    # 仓库层测试
 │   │   ├── test_api_contracts.py      # API 契约测试
-│   │   ├── test_v1_*.py               # v1 API 接口测试
-│   │   ├── test_*_parser.py           # 各格式解析器测试
-│   │   ├── test_ingestion_*.py        # 入库流程测试
+│   │   ├── test_v1_*.py               # v1 API 接口测试（health/contracts/documents_chunks/search/real_endpoints）
+│   │   ├── test_*_parser.py           # 各格式解析器测试（pdf/docx/pptx/xlsx/html）
+│   │   ├── test_parser_utils.py       # 解析器通用工具测试
+│   │   ├── test_parser_registry.py    # 解析器注册表测试
+│   │   ├── test_ingestion_*.py        # 入库流程测试（pdf/pptx/xlsx/html, with_milvus_minio）
+│   │   ├── test_markdown_ingest.py    # Markdown 入库测试
+│   │   ├── test_semantic_extractor_*.py # 语义抽取器测试（full_doc/asset_descriptions）
 │   │   ├── test_search_pipeline.py    # 检索管道测试
+│   │   ├── test_search_with_milvus.py # Milvus 检索测试
+│   │   ├── test_milvus_indexing.py    # Milvus 索引测试
+│   │   ├── test_milvus_status_filter.py # Milvus 状态过滤测试
+│   │   ├── test_fusion.py             # RRF 融合算法测试
+│   │   ├── test_batch_indexing.py     # 批量索引测试
+│   │   ├── test_document_dedup.py     # 文档去重测试
+│   │   ├── test_asset_*.py            # 资产处理测试（processing/processor_vision）
+│   │   ├── test_downloader.py         # 下载器测试
+│   │   ├── test_minio_storage.py      # MinIO 存储测试
+│   │   ├── test_vision_client.py      # 视觉客户端测试
 │   │   ├── evaluation/                # 评测系统
-│   │   │   ├── dataset.py             # 数据集加载
-│   │   │   ├── gen_dataset.py         # 自动生成评测数据集
-│   │   │   ├── filter.py              # 多维度筛选器
-│   │   │   ├── metrics.py             # 评测指标 (Recall/Precision/MRR/NDCG)
-│   │   │   ├── storage.py             # 结果持久化
-│   │   │   ├── tune_params.py         # 参数调优
-│   │   │   ├── eval_dataset.json      # 评测数据集 (15KB)
-│   │   │   ├── datasets/              # 多版本数据集
-│   │   │   ├── results/               # 评测结果
-│   │   │   └── test_*.py              # 评测系统测试
-│   │   ├── integration/               # 集成测试
+│   │   │   ├── dataset.py             # 数据集模型与加载
+│   │   │   ├── gen_dataset.py         # 入库时 LLM 自动生成评测数据
+│   │   │   ├── merge_to_global.py     # 手动合并到全局数据集
+│   │   │   ├── run_eval.py            # 评测执行入口
+│   │   │   ├── metrics.py             # 评测指标 (Recall@K / MRR)
+│   │   │   ├── storage.py             # 分文档存储 + JSONL 历史追加
+│   │   │   ├── README.md              # 评测系统详细文档
+│   │   │   ├── eval_dataset.json      # 全局评测数据集
+│   │   │   ├── datasets/              # 分文档评测数据
+│   │   │   ├── results/               # 评测历史
+│   │   │   └── tests/                 # 评测系统自测试
+│   │   ├── integration/               # 集成测试（documents/chunks/search/dashboard API）
 │   │   └── integration_mock/          # Mock 集成测试
 │   │
 │   ├── requirements.txt               # Python 依赖
 │   └── .env                           # 环境变量配置
 │
 ├── docs/                              # 文档
-│   └── API接口汇总.md                  # 全部 36 个 API 接口说明
+│   └── API接口汇总.md                  # 全部 API 接口说明
 │
 ├── data/                              # 数据目录
 │   ├── source_documents/              # 原始文档
@@ -230,6 +255,7 @@ knowledge-base-system/
 - Python 3.10+
 - Docker & Docker Compose（用于 PostgreSQL / Milvus / MinIO）
 - 火山引擎 API Key（LLM 和 Embedding 服务）
+- MinerU API Token（可选，用于 PDF 精准解析）
 
 ### 1. 克隆项目
 
@@ -254,9 +280,11 @@ pip install -r knowledge_base_system/requirements.txt
 
 ```env
 VOLCENGINE_API_KEY=your-api-key-here
+# 可选：MinerU PDF 精准解析
+# MINERU_API_TOKEN=your-mineru-token
 ```
 
-### 4. 启动基础服务（可选）
+### 4. 启动基础服务
 
 ```bash
 # 启动 PostgreSQL + Milvus + MinIO（需要 Docker）
@@ -273,16 +301,22 @@ docker compose up -d
 > | Milvus | `19530` | 向量数据库 |
 > | Attu | `8001` | Milvus Web 管理界面 |
 
-> **注意**：后端默认自动尝试连接外部服务，不可用时自动回退到内存/本地存储。因此 Docker 服务是可选的，直接运行也能正常工作。
-
-### 5. 启动应用
+### 5. 初始化外部服务（首次运行）
 
 ```bash
 cd knowledge_base_system
+python scripts/setup_services.py
+```
+
+该脚本幂等地完成：PostgreSQL 建表、Milvus 建 Collection（HNSW + BM25 双索引）、MinIO 建 Bucket。
+
+### 6. 启动应用
+
+```bash
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 6. 访问系统
+### 7. 访问系统
 
 - **前端界面**：http://localhost:8000
 - **API 文档 (Swagger)**：http://localhost:8000/docs
@@ -300,90 +334,115 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `VOLCENGINE_API_KEY` | — | 火山引擎 API Key（**必填**） |
-| `VOLCENGINE_LLM_MODEL` | `doubao-seed-2-0-pro` | LLM 模型 |
-| `VOLCENGINE_EMBEDDING_MODEL` | `doubao-embedding-vision` | Embedding 模型 |
+| `VOLCENGINE_LLM_MODEL` | `doubao-seed-2-0-pro-260215` | LLM 模型 |
+| `VOLCENGINE_EMBEDDING_MODEL` | `doubao-embedding-vision-251215` | Embedding 模型（1024 维） |
+| `VOLCENGINE_TIMEOUT_SECONDS` | `3600` | API 请求超时（秒） |
 
-### 后端模式
+### 数据库
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `BACKEND` | `postgres` | 设为 `memory` 强制使用内存存储 |
+| `BACKEND` | `postgres` | 后端存储模式（仅支持 postgres） |
 | `DATABASE_URL` | `postgresql://kbuser:kbpass@localhost:5432/knowledge_base` | PostgreSQL 连接串 |
 
 ### Milvus 向量检索
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `MILVUS_ENABLED` | `true` | 启用 Milvus（不可用时自动回退内存） |
+| `MILVUS_ENABLED` | `true` | 启用 Milvus |
 | `MILVUS_HOST` | `localhost` | Milvus 主机 |
 | `MILVUS_PORT` | `19530` | Milvus 端口 |
+| `MILVUS_COLLECTION` | `knowledge_chunks` | Collection 名称 |
+| `MILVUS_HNSW_M` | `16` | HNSW 图连接数 |
+| `MILVUS_HNSW_EF_CONSTRUCTION` | `200` | HNSW 构建时搜索宽度 |
+| `MILVUS_HNSW_EF` | `200` | HNSW 搜索时候选集大小（建议 ≥ top_k×4） |
+| `MILVUS_SPARSE_EF` | `100` | BM25 稀疏向量搜索候选集大小（建议 ≥ top_k×2） |
 
 ### MinIO 对象存储
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `MINIO_ENABLED` | `true` | 启用 MinIO（不可用时自动回退本地） |
+| `MINIO_ENABLED` | `true` | 启用 MinIO |
 | `MINIO_ENDPOINT` | `localhost:9000` | MinIO 地址 |
 | `MINIO_ACCESS_KEY` | `minioadmin` | 访问密钥 |
 | `MINIO_SECRET_KEY` | `minioadmin` | 秘密密钥 |
+| `MINIO_BUCKET_INPUT` | `kb-input` | 原始文件 Bucket |
+| `MINIO_BUCKET_ASSETS` | `kb-assets` | 资产 Bucket（图片/视频） |
+| `MINIO_PRESIGNED_EXPIRY` | `3600` | 预签名 URL 有效期（秒） |
+
+### MinerU PDF 精准解析
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `MINERU_API_TOKEN` | — | MinerU API Token（不配置则自动降级到 PyMuPDF） |
+| `MINERU_API_BASE` | `https://mineru.net` | MinerU API 基础地址 |
+| `MINERU_USE_VLM` | `false` | 是否启用 VLM 辅助识别 |
 
 ### 检索参数
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `VECTOR_TOP_K` | `50` | 向量召回候选数 |
-| `BM25_TOP_K` | `50` | BM25 召回候选数 |
-| `FUSION_TOP_K` | `20` | RRF 融合后保留数 |
+| `VECTOR_TOP_K` | `30` | 向量召回候选数 |
+| `BM25_TOP_K` | `30` | BM25 召回候选数 |
+| `FUSION_TOP_K` | `15` | RRF 融合后保留数 |
 | `FINAL_TOP_K` | `5` | 最终返回数 |
 | `RRF_K` | `60` | RRF 平滑因子 |
 
-### 入库限制
+### 入库与抽取
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
+| `MAX_UPLOAD_SIZE_MB` | `100` | 上传文件大小上限（MB） |
+| `MAX_ELEMENTS_PER_DOC` | `1000` | 单文档解析元素上限 |
+| `LLM_ELEMENTS_BATCH_SIZE` | `40` | 单次 LLM 语义抽取的元素数上限 |
+| `LLM_BATCH_OVERLAP_RATIO` | `0.15` | 分批间重叠比例 |
+| `CONTEXT_WINDOW_TOKENS` | `256000` | LLM 上下文窗口上限 |
 | `EMBEDDING_BATCH_SIZE` | `32` | Embedding 批处理大小 |
 | `INDEX_UPSERT_BATCH_SIZE` | `100` | 索引批量写入大小 |
-| `MAX_ASSET_SIZE_MB` | `100` | 单资源最大体积 |
-| `MAX_ASSETS_PER_DOC` | `100` | 单文档最多资源数 |
+
+### 视觉理解与评测
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `IMAGE_VISION_ENABLED` | `true` | 启用图片视觉理解 |
+| `VIDEO_VISION_ENABLED` | `true` | 启用视频视觉理解 |
+| `AUTO_EVAL_ENABLED` | `true` | 入库后自动生成评测数据 |
+| `AUTO_EVAL_QUERIES_PER_DOC` | `3` | 每文档自动生成评测查询数 |
 
 ---
 
 ## API 接口
 
-系统提供 **28 个活跃 v1 API** + 8 个兼容旧版接口，所有 `/api/v1` 接口返回统一的 `{ data, meta, error }` 结构。
+系统当前提供 **23 个活跃 v1 API**，所有 `/api/v1` 接口返回统一的 `{ data, meta, error }` 结构。
 
 ### 接口速览
 
 | 分组 | 方法 | 路径 | 功能 |
 |------|------|------|------|
 | **健康检查** | `GET` | `/api/v1/health/live` | 进程存活检查 |
-| | `GET` | `/api/v1/health/ready` | 核心依赖就绪检查 |
+| | `GET` | `/api/v1/health` | 核心依赖就绪检查 |
 | | `GET` | `/api/v1/health/dependencies` | 依赖状态详情 |
 | **文档管理** | `GET` | `/api/v1/documents` | 文档分页列表 |
 | | `POST` | `/api/v1/documents` | 创建文档 |
 | | `POST` | `/api/v1/documents/upload` | 上传文件并创建文档 |
+| | `GET` | `/api/v1/documents/ids` | 批量获取文档 ID |
 | | `GET` | `/api/v1/documents/{id}` | 文档详情 |
-| | `GET` | `/api/v1/documents/{id}/elements` | 文档解析元素 |
 | | `PATCH` | `/api/v1/documents/{id}` | 更新文档（乐观锁） |
+| | `GET` | `/api/v1/documents/{id}/elements` | 文档解析元素 |
 | | `DELETE` | `/api/v1/documents/{id}` | 软删除文档 |
 | | `POST` | `/api/v1/documents/{id}/restore` | 恢复文档 |
-| | `POST` | `/api/v1/documents/{id}/ingest` | 触发入库 |
+| | `POST` | `/api/v1/documents/{id}/retry` | 重试入库 |
+| | `GET` | `/api/v1/documents/{id}/history` | 文档操作历史 |
 | **知识块** | `GET` | `/api/v1/chunks` | 知识块分页列表 |
 | | `POST` | `/api/v1/chunks` | 创建知识块 |
+| | `GET` | `/api/v1/chunks/ids` | 批量获取知识块 ID |
 | | `GET` | `/api/v1/chunks/{id}` | 知识块详情 |
 | | `PATCH` | `/api/v1/chunks/{id}` | 更新知识块 |
 | | `DELETE` | `/api/v1/chunks/{id}` | 软删除知识块 |
 | | `POST` | `/api/v1/chunks/{id}/restore` | 恢复知识块 |
-| | `POST` | `/api/v1/chunks/{id}/reindex` | 重建索引 |
-| | `POST` | `/api/v1/chunks/batch/reindex` | 批量重建索引 |
 | | `POST` | `/api/v1/chunks/batch` | 批量状态操作 |
-| **检索** | `POST` | `/api/v1/search` | 标准混合检索 |
-| | `POST` | `/api/v1/search/debug` | 调试检索 |
+| **检索** | `POST` | `/api/v1/search` | 混合检索（含 debug 模式） |
 | | `GET` | `/api/v1/search/filters` | 可用筛选项 |
-| **入库任务** | `GET` | `/api/v1/ingest/jobs` | 任务分页列表 |
-| | `GET` | `/api/v1/ingest/jobs/{id}` | 任务详情 |
-| | `POST` | `/api/v1/ingest/jobs/{id}/retry` | 重试失败任务 |
-| | `POST` | `/api/v1/ingest/jobs/{id}/cancel` | 取消等待中任务 |
 
 详细接口文档见 [docs/API接口汇总.md](docs/API接口汇总.md)。
 
@@ -409,18 +468,19 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ### 文档解析器 (parsers/)
 
-支持 6 种文档格式的结构化解析，统一输出 `ParsedElement` 模型：
+支持 7 种文档格式的结构化解析，统一输出 `ParseResult` 模型：
 
 | 解析器 | 支持格式 | 核心能力 |
 |--------|----------|----------|
-| `pdf_parser.py` | PDF | 文本提取、表格检测、图片抽取、层级标题 |
-| `docx_parser.py` | Word | 段落/表格/图片提取，样式识别 |
-| `pptx_parser.py` | PowerPoint | 幻灯片文本、备注、图片、表格 |
-| `xlsx_parser.py` | Excel | 工作表遍历、合并单元格、表格结构化 |
+| `pdf_mineru_parser.py` | PDF | MinerU API 精准解析：布局分析、阅读顺序恢复、表格/公式识别；PyMuPDF 补充超链接与图片提取；失败自动降级 |
+| `pdf_parser.py` | PDF | PyMuPDF 文本提取、表格检测、图片抽取、层级标题 |
+| `docx_parser.py` | Word | 段落/表格/图片提取、超链接处理、嵌入媒体提取 |
+| `pptx_parser.py` | PowerPoint | 幻灯片文本、备注、图片、表格、超链接处理 |
+| `xlsx_parser.py` | Excel | 工作表遍历、合并单元格、表格结构化、超链接处理 |
 | `html_parser.py` | HTML | DOM 解析、标签过滤、语义区块划分 |
 | `markdown_parser.py` | Markdown | 标题层级、代码块、表格、图片引用 |
 
-所有解析器通过 `registry.py` 自动注册，按文件扩展名和内容类型匹配。
+所有解析器通过 `registry.py` 自动注册，按文件扩展名和内容类型匹配。`utils.py` 提供链接分类等通用工具。
 
 ### 入库管道 (ingestion/pipeline.py)
 
@@ -428,18 +488,18 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
                     文档
                      │
               ┌──────▼──────┐
-              │  格式解析    │  → ParsedElement[]
+              │  格式解析    │  → ParseResult（含元素 + 资产）
               └──────┬──────┘
                      │
               ┌──────▼──────┐
-              │  语义抽取    │  → LLM 知识块划分 + 摘要
+              │  语义抽取    │  → LLM 知识块划分 + 摘要（分批重叠滑窗）
               └──────┬──────┘
                      │
          ┌───────────┼───────────┐
          │           │           │
    ┌─────▼─────┐ ┌──▼───┐ ┌─────▼─────┐
-   │ 向量索引    │ │ BM25 │ │ 资产处理   │
-   │ (Embedding)│ │ 索引  │ │ (图片Vision)│
+   │ HNSW 向量  │ │ BM25 │ │ 资产处理   │
+   │ (Embedding)│ │ 索引  │ │ (视觉理解) │
    └───────────┘ └──────┘ └───────────┘
 ```
 
@@ -447,18 +507,20 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - **`force`**：完整入库流程，重建全部知识块和索引
 - **`incremental`**：增量更新，仅更新变化部分并替换旧索引
 
+入库后台任务通过 `app/utils/thread_pool.py` 的全局线程池异步执行。
+
 ### 索引层 (indexing/)
 
-双路索引架构，支持内存和 Milvus 两种后端：
+双路索引统一存储在 Milvus Collection `knowledge_chunks` 中，单 Collection 同时支持稠密向量和稀疏向量检索：
 
-| 组件 | 内存模式 | Milvus 模式 |
-|------|----------|-------------|
-| 向量索引 | `memory_vector.py` (Faiss) | `milvus_vector.py` |
-| BM25 索引 | `memory_bm25.py` (jieba+rank-bm25) | `milvus_sparse.py` |
-| 混合检索 | — | `milvus_hybrid.py` |
-| 融合算法 | `fusion.py` (RRF) | `fusion.py` (RRF) |
+| 组件 | 实现 | 说明 |
+|------|------|------|
+| 向量索引 | `milvus_vector.py` | HNSW + COSINE，1024 维稠密向量 |
+| BM25 索引 | `milvus_bm25.py` | Milvus 2.5 原生 BM25 Function，Tantivy 引擎 + chinese 分析器 |
+| 融合算法 | `fusion.py` | RRF 倒数排序融合 |
+| 内存回退 | `memory_vector.py` | 仅测试用，基于 numpy 余弦相似度 |
 
-后端自动切换：优先尝试 Milvus，连接失败时自动降级到内存索引。
+Milvus Collection 存储全量标量字段（chunk_id / doc_id / doc_title / title / content / category / knowledge_type / status / source_refs / asset_refs / metadata），检索时直接返回，无需回查 PostgreSQL。
 
 ### 检索管道 (retrieval/pipeline.py)
 
@@ -466,15 +528,19 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 用户查询
    │
 ┌──▼──────────┐
-│  查询重写    │  → LLM 优化查询表达
+│  查询重写    │  → LLM 优化查询表达（陈述句 + 关键词列表）
 └──┬──────────┘
    │
 ┌──▼──────────┐
-│  双路召回    │  → 向量 (top_k=50) + BM25 (top_k=50)
+│  Embedding  │  → 查询向量化
 └──┬──────────┘
    │
 ┌──▼──────────┐
-│  RRF 融合   │  → 取 Top 20
+│  双路并行召回 │  → 向量 (HNSW) + BM25（Milvus 原生），支持可开关
+└──┬──────────┘
+   │
+┌──▼──────────┐
+│  RRF 融合   │  → 取 Top 15
 └──┬──────────┘
    │
 ┌──▼──────────┐
@@ -484,15 +550,43 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
    最终结果（含评分明细、高亮片段）
 ```
 
-调试模式 (`/api/v1/search/debug`) 额外返回每阶段候选列表和评分详情。
+- **全链路可开关**：`rewrite` / `hybrid` / `rerank` 参数独立控制各阶段
+- **双路并行召回**：向量 + BM25 在同一请求内通过线程池并行执行，而非串行等待
+- **调试模式** (`POST /api/v1/search` 传入 `debug: true`)：额外返回每阶段候选列表和评分详情
+- **检索链路已去 PG 化**：Milvus 直接返回完整 SearchResult，零数据库回查
 
 ### LLM 客户端 (llm/)
 
 - **volcengine_client.py** — 火山引擎 SDK 封装，支持 `chat_json()` 自动重试与 JSON 提取、Embedding 批量向量化、视觉理解
-- **semantic_extractor.py** — 将解析元素智能划分为语义知识块，生成标题和摘要
+- **semantic_extractor.py** — 将解析元素智能划分为语义知识块，生成标题和摘要（分批重叠滑窗策略）
 - **prompts.py** — 集中管理所有 LLM 提示词模板
-- **query_rewriter.py** — 将用户查询重写为更精确的检索表达
+- **query_rewriter.py** — 将用户查询重写为陈述句 + 关键词列表
 - **reranker.py** — 对融合结果进行深度语义重排序
+
+### 资产处理 (assets/)
+
+- **minio_store.py** — MinIO 对象存储，基于 SHA-256 内容寻址实现资产去重
+- **memory_store.py** — 本地文件存储（MinIO 不可用时回退）
+- **downloader.py** — HTTP/HTTPS 资源统一下载
+- **asset_processor.py** — 图片/视频视觉理解（LLM Vision），生成语义描述
+
+### 运维脚本 (scripts/)
+
+- **setup_services.py** — 首次运行初始化：PostgreSQL 建表 + Milvus 建 Collection（HNSW + BM25 索引）+ MinIO 建 Bucket，全部幂等
+- **clear_services.py** — 清空所有外部服务数据（不可逆），用于测试环境重置
+
+### 并发架构 (app/utils/thread_pool.py)
+
+后端采用**多业务线隔离的线程池体系**，避免不同业务相互争抢线程。所有池由 FastAPI lifespan 统一管理生命周期。
+
+| 池名 | 线程数 | 用途 |
+|------|--------|------|
+| `health_executor` | 4 | 健康检查（4 路依赖并行探测） |
+| `upload_executor` | 8 | 文件上传入库（I/O 密集） |
+| `search_executor` | 8 | 检索任务隔离（每次搜索内部向量+BM25 双路并行） |
+| `asset_worker_pool` | 6 | 资产处理（图片/视频视觉理解 + MinIO 上传） |
+| `sub_ingest_pool` | 4 | 子文档异步入库（document_link 触发） |
+| `eval_gen_pool` | 8 | 评测数据异步生成（入库完成后 LLM 调用） |
 
 ---
 
@@ -505,12 +599,20 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 | 仪表盘 | `/` | `dashboard.js` | 系统概览、服务状态、快捷入口 |
 | 文档列表 | `/documents` | `documents.js` | 文档分页浏览、上传、筛选、批量操作 |
 | 文档详情 | `/documents/:id` | `document-detail.js` | 文档信息、解析元素、知识块列表 |
-| 搜索 | `/search` | `search.js` | 混合检索、筛选、结果高亮 |
-| 调试检索 | `/search-debug` | `search.js` | 检索各阶段可视化调试 |
-| 入库任务 | `/ingestion` | `ingestion.js` | 任务状态监控、重试、取消 |
+| 搜索 | `/search` | `search.js` | 混合检索、筛选、结果高亮、调试模式 |
 | 知识块 | `/chunks` | `chunks.js` | 知识块浏览、创建、编辑、索引管理 |
 
 **设计系统**：自定义 CSS 设计语言（57KB），包括色彩体系、间距系统、组件样式（卡片/表格/按钮/Badge/Toast/Modal/Spinner）、响应式布局。
+
+**前端并行策略**：
+
+| 场景 | 策略 | 实现 |
+|------|------|------|
+| 仪表盘首屏 | 5 路并行 | `Promise.all`（health + 4 个统计查询） |
+| 文档详情页 | 3 路并行 | `Promise.all`（文档 + 知识块 + 元素） |
+| 多文件上传 | 8 并发上限 | `runWithConcurrencyLimit` |
+| 批量重试/恢复/删除 | 8 并发上限 | `runWithConcurrencyLimit` |
+| 搜索 | 单次调用 | 后端内部向量+BM25 双路并行 |
 
 ---
 
@@ -526,7 +628,7 @@ cd knowledge_base_system
 pytest tests/ -v
 
 # 运行单模块测试
-pytest tests/evaluation/test_evaluation.py -v
+pytest tests/evaluation/tests/test_gen_dataset.py -v
 
 # 运行 v1 API 测试
 pytest tests/test_v1_*.py -v
@@ -541,42 +643,46 @@ pytest tests/integration/ -v
 |------|------|------|
 | **数据模型** | `test_models.py` (38KB) | 核心 Pydantic 模型全覆盖测试 |
 | **数据库模型** | `test_db_models.py` (35KB) | SQLAlchemy ORM 模型 + 仓库测试 |
-| **解析器** | `test_*_parser.py` | 各格式解析器独立测试 |
+| **仓库层** | `test_db_repositories.py` | 文档/元素/知识块仓库单元测试 |
+| **解析器** | `test_*_parser.py` + `test_parser_*.py` | 各格式解析器 + 注册表 + 工具测试 |
 | **入库管道** | `test_ingestion_*.py` | 入库流程端到端测试 |
-| **检索** | `test_search_pipeline.py` | 检索管道单元与集成测试 |
+| **语义抽取** | `test_semantic_extractor_*.py` | 全文抽取 + 资产描述抽取测试 |
+| **检索** | `test_search_pipeline.py` + `test_search_with_milvus.py` | 检索管道测试 |
+| **索引** | `test_milvus_indexing.py` + `test_fusion.py` + `test_batch_indexing.py` | 索引与融合测试 |
+| **资产** | `test_asset_*.py` + `test_downloader.py` + `test_minio_storage.py` | 资产处理全链路测试 |
 | **v1 API** | `test_v1_*.py` | v1 接口契约/功能/端到端测试 |
-| **API 契约** | `test_api_contracts.py` | 旧版接口兼容性测试 |
+| **API 契约** | `test_api_contracts.py` | 接口兼容性测试 |
 | **集成测试** | `integration/` | 多模块协作测试 |
-| **评测系统** | `evaluation/test_*.py` | 评测框架自测试 |
+| **Mock 集成** | `integration_mock/` | Mock 外部服务的集成测试 |
+| **评测系统** | `evaluation/tests/` | 评测框架自测试 |
 
 ---
 
 ## 评测系统
 
-内置于 `tests/evaluation/` 的完整检索质量评测框架。
+内置于 `tests/evaluation/` 的检索质量评测框架。
 
 ### 核心能力
 
-- **数据集管理** — 支持多版本数据集，版本化存储与加载
-- **自动生成** — 基于文档自动生成评测查询（LLM 生成 + 规则增强）
-- **多维度筛选** — 按类别、知识类型、文档来源、难度等维度筛选评测子集
-- **多指标评估** — Recall@K、Precision@K、MRR、NDCG@K
-- **参数调优** — 自动化搜索最优检索参数组合
-- **结果持久化** — 评测结果版本化存储，支持历史对比
+- **自动生成** — 入库完成后后台异步调用 LLM 自动生成评测数据，查询风格多样化（疑问句/关键词/口语片段/陈述句）
+- **手动合并** — 分文档评测数据手动审核后合并到全局数据集，人工标注受保护
+- **多指标评估** — Recall@K（K 可配置）、MRR
+- **参数可控** — 命令行指定 rewrite/rerank/hybrid/top_k，同一数据集不同参数对比
+- **结果持久化** — 评测结果 JSONL 追加写入，含检索参数、指标和成功/失败计数
 
 ### 快速使用
 
 ```bash
 cd knowledge_base_system
 
-# 生成评测数据集
-python -m tests.evaluation.gen_dataset
+# 入库完成后，手动合并评测数据到全局集
+python tests/evaluation/merge_to_global.py <doc_id>
 
-# 运行评测
-python -m tests.evaluation.test_evaluation
+# 运行评测（默认 rewrite=true, rerank=true, top_k=5）
+python tests/evaluation/run_eval.py
 
-# 参数调优
-python -m tests.evaluation.tune_params
+# 自定义参数
+python tests/evaluation/run_eval.py --no-rewrite --no-rerank --top-k 10
 ```
 
 详细说明见 [tests/evaluation/README.md](knowledge_base_system/tests/evaluation/README.md)。
@@ -585,7 +691,21 @@ python -m tests.evaluation.tune_params
 
 ## CHANGELOG
 
-### v0.3.0 (当前)
+### v0.4.0 (当前)
+
+- ✅ MinerU PDF 精准解析器（布局分析、阅读顺序、公式识别，自动降级到 PyMuPDF）
+- ✅ PPTX/DOCX/XLSX 解析器重构（链接分类、嵌入媒体提取、超链接处理）
+- ✅ Milvus 2.5 原生 BM25（Tantivy 引擎 + chinese 分析器，替代 jieba + rank-bm25）
+- ✅ 检索链路完全去 PG 化（Milvus 存储全量标量字段，零数据库回查）
+- ✅ MinIO 内容寻址存储（SHA-256 哈希去重）
+- ✅ Asset 模型重构 + KnowledgeChunk 增加 doc_id 冗余字段
+- ✅ 解析器输出格式统一为 ParseResult（含 ParseElement + Asset 列表）
+- ✅ 运维脚本（setup_services.py / clear_services.py）
+- ✅ 语义抽取分批重叠滑窗策略
+- ✅ 检索全链路可独立开关（rewrite / hybrid / rerank）
+- ✅ 评测系统增强（指标扩展、参数可控）
+
+### v0.3.0
 
 - ✅ 完成 API v1 完整迁移（28 个活跃接口）
 - ✅ 评测数据集自动生成与多维度筛选系统
@@ -620,7 +740,7 @@ python -m tests.evaluation.tune_params
 
 ## 相关文档
 
-- [API 接口汇总](docs/API接口汇总.md) — 全部 36 个 API 详细说明
+- [API 接口汇总](docs/API接口汇总.md) — 全部 API 详细说明
 - [项目结构与调用关系分析](项目结构与调用关系分析.md)
 - [数据模型字段审计报告](数据模型字段审计报告.md)
 - [API 接口审计报告](API接口审计报告.md)

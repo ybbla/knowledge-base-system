@@ -23,7 +23,7 @@ class TestMilvusIndexing:
         vector[0] = 1.0
         vector_index.add(chunk_id, vector, metadata={"category": "测试", "content": "向量测试"})
 
-        results = vector_index.search(vector, top_k=5, category="测试")
+        results = vector_index.search(vector, top_k=5, categories=["测试"])
         assert any(cid == chunk_id for cid, _, _ in results)
 
         vector_index.delete(chunk_id)
@@ -37,7 +37,7 @@ class TestMilvusIndexing:
         chunk_id = "chunk_milvus_sparse_test"
         sparse_index.add(chunk_id, "Milvus 稀疏向量 检索 测试", metadata={"category": "测试"})
 
-        results = sparse_index.search("稀疏向量", top_k=5, category="测试")
+        results = sparse_index.search("稀疏向量", top_k=5, categories=["测试"])
         assert any(cid == chunk_id for cid, _, _ in results)
 
         sparse_index.delete(chunk_id)

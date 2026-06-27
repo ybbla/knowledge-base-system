@@ -811,7 +811,11 @@ const Chunks = (() => {
           const msg = e.message || '创建失败';
           // 新建文档模式下创建知识块失败 → 清理孤儿文档
           if (createdDocId) {
-            try { await API.deleteDocument(createdDocId); } catch (_) { /* 静默清理 */ }
+            try {
+              await API.deleteDocument(createdDocId);
+            } catch (_) {
+              UI.toast(`知识块创建失败，关联的空文档「${docTitle}」未能自动清理，请在文档列表中手动删除`, 'warning');
+            }
           }
           // 内容重复 → toast 提示，弹窗不关闭，保留已填内容
           if (msg.includes('重复')) {
@@ -865,6 +869,9 @@ const Chunks = (() => {
       return;
     }
     previousCreateDocCategory = select.value || '通用';
+    // 联动：文档分类变化时同步知识块分类
+    const chunkCat = document.getElementById('newChunkCategory');
+    if (chunkCat) chunkCat.value = select.value;
     updateCreateFormState();
   }
 

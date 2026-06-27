@@ -37,6 +37,7 @@ from app.core.errors import (
     DocumentNotFoundError,
     DuplicateDocumentError,
 )
+from app.core.config import settings
 from app.core.models import DocStatus, Document, compute_hash, new_id
 from app.utils.thread_pool import upload_executor
 
@@ -276,10 +277,15 @@ async def create_document(
 
         response_data = _doc_to_item(created)
 
-        # 创建后入库
+        # 创建后入库（在线程池中执行，避免阻塞事件循环）
         if ingest_after_create:
             try:
-                created = ingestion_pipeline.ingest(created)
+                loop = asyncio.get_running_loop()
+                created = await loop.run_in_executor(
+                    upload_executor,
+                    ingestion_pipeline.ingest,
+                    created,
+                )
                 response_data = _doc_to_item(created)
             except Exception as e:
                 logger.exception("入库触发失败")
@@ -316,10 +322,21 @@ async def upload_document(
     4-9) 预占位 → MinIO → 旧文档清理 → ingest（线程池，I/O 密集）
     """
     original_name = file.filename or "upload"
-    file.file.seek(0)
+
+    # 文件大小检查：防止大文件全量读入内存导致 OOM
+    file.file.seek(0, 2)  # 移动到文件末尾
+    size = file.file.tell()
+    file.file.seek(0)     # 回起始位置
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    if size > max_bytes:
+        return error_json(
+            ErrorCode.VALIDATION_ERROR,
+            f"文件大小 {size / 1024 / 1024:.1f} MB 超过上限 {settings.max_upload_size_mb} MB",
+            http_status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        )
+
     file_content = file.file.read()
     source_hash = compute_hash(file_content)
-    size = len(file_content)
     content_type = file.content_type or "application/octet-stream"
 
     # ── 参数解析：title/category 默认值 ──
@@ -740,12 +757,22 @@ async def restore_document(doc_id: str):
                     logger.exception("同步恢复状态失败: %s", c.chunk_id)
 
     elif previous_status == "failed":
-        # 失败删除恢复：重走入库（ingest 内部清理旧 chunks → 解析 → 抽取 → 索引）
-        doc = ingestion_pipeline.ingest(doc)
+        # 失败删除恢复：重走入库（在线程池中执行，避免阻塞事件循环）
+        loop = asyncio.get_running_loop()
+        doc = await loop.run_in_executor(
+            upload_executor,
+            ingestion_pipeline.ingest,
+            doc,
+        )
 
     elif previous_status == "processing":
         # 处理中删除恢复：同上，重走入库
-        doc = ingestion_pipeline.ingest(doc)
+        loop = asyncio.get_running_loop()
+        doc = await loop.run_in_executor(
+            upload_executor,
+            ingestion_pipeline.ingest,
+            doc,
+        )
 
     return APIResponse(data=_doc_to_item(doc)).model_dump(mode="json")
 
@@ -787,9 +814,14 @@ async def retry_document(doc_id: str):
                 details={"existing_doc_id": active_dup.doc_id},
             )
 
-    # 重新入库（ingest 内部清理旧 chunks：PG hard_delete + Milvus/BM25 delete）
+    # 重新入库（在线程池中执行，避免阻塞事件循环）
+    loop = asyncio.get_running_loop()
     try:
-        doc = ingestion_pipeline.ingest(doc)
+        doc = await loop.run_in_executor(
+            upload_executor,
+            ingestion_pipeline.ingest,
+            doc,
+        )
     except Exception:
         logger.exception("重试入库失败")
         return error_json(

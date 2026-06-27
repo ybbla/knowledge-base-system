@@ -48,9 +48,9 @@ class MemoryVectorIndex(VectorIndex):
         self,
         query_vector: list[float],
         top_k: int,
-        category: str | None = None,
+        categories: list[str] | None = None,
     ) -> list[tuple[str, float]]:
-        """余弦相似度检索，过滤 status=active 和 category，返回 top_k 结果。"""
+        """余弦相似度检索，过滤 status=active 和 categories，返回 top_k 结果。"""
         if not self._vectors:
             return []
 
@@ -73,8 +73,8 @@ class MemoryVectorIndex(VectorIndex):
             if (
                 self._metadata.get(chunk_id, {}).get("status", "active") == "active"
                 and (
-                    category is None
-                    or self._metadata.get(chunk_id, {}).get("category") == category
+                    categories is None
+                    or self._metadata.get(chunk_id, {}).get("category") in categories
                 )
             )
         ]

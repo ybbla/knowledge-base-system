@@ -16,7 +16,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.errors import DuplicateDocumentError
-from app.utils.thread_pool import asset_worker_pool, sub_ingest_pool
+from app.utils.thread_pool import asset_worker_pool, sub_ingest_pool, eval_gen_pool
 from app.core.models import (
     Asset,
     AssetStatus,
@@ -124,19 +124,42 @@ class IngestionPipeline:
         self._minio_store = asset_store if isinstance(asset_store, MinioAssetStore) else None
 
     def _cleanup_old_chunks(self, doc_id: str) -> None:
-        """重入库前清理旧知识块，从向量索引、BM25 索引和 PostgreSQL 中删除。"""
+        """重入库前批量清理旧知识块，从 Milvus 和 PostgreSQL 中删除。
+
+        vector 和 BM25 共享同一 Milvus collection，一次批量 delete 即可；
+        PG 侧用 bulk_hard_delete 一条 DELETE 完成。
+        """
         if not self._chunk_store or not hasattr(self._chunk_store, "list_by_doc_id"):
             return
         old_chunks = self._chunk_store.list_by_doc_id(doc_id)
         if not old_chunks:
             return
-        for c in old_chunks:
+
+        chunk_ids = [c.chunk_id for c in old_chunks]
+
+        # Milvus 批量删除（一条 expr + 一次 flush，替代逐条双删）
+        manager = getattr(self._vector_index, "manager", None)
+        if manager is not None and hasattr(manager, "delete_batch"):
             try:
-                self._vector_index.delete(c.chunk_id)
-                self._bm25_index.delete(c.chunk_id)
-                self._chunk_store.hard_delete(c.chunk_id)
+                manager.delete_batch(chunk_ids)
             except Exception as exc:
-                raise RuntimeError(f"清理旧知识块失败: {c.chunk_id}") from exc
+                raise RuntimeError(
+                    f"批量清理 Milvus 失败: {len(chunk_ids)} 个知识块"
+                ) from exc
+        else:
+            # 回退：逐条删除（不含测试/回退路径）
+            for chunk_id in chunk_ids:
+                try:
+                    self._vector_index.delete(chunk_id)
+                except Exception as exc:
+                    raise RuntimeError(f"清理旧知识块失败: {chunk_id}") from exc
+
+        # PG 批量硬删除
+        if hasattr(self._chunk_store, "bulk_hard_delete"):
+            self._chunk_store.bulk_hard_delete(chunk_ids)
+        else:
+            for chunk_id in chunk_ids:
+                self._chunk_store.hard_delete(chunk_id)
 
     def _cleanup_old_elements(self, doc_id: str) -> None:
         """删除重入库文档的旧解析元素，防止解析结果缩短后残留旧元素。"""
@@ -543,7 +566,13 @@ class IngestionPipeline:
 
                 # 转换 chunk 格式为 dict 列表，供 LLM 使用
                 chunk_dicts = [
-                    {"chunk_id": c.chunk_id, "title": c.title, "content": c.content}
+                    {
+                        "chunk_id": c.chunk_id,
+                        "title": c.title,
+                        "content": c.content,
+                        "category": c.category,
+                        "knowledge_type": c.knowledge_type.value,
+                    }
                     for c in chunks
                 ]
 
@@ -586,6 +615,10 @@ class IngestionPipeline:
                 # 捕获所有异常，确保不影响主流程
                 logger.exception("评测数据生成异常，已跳过")
 
-        # 启动后台线程执行
-        thread = threading.Thread(target=_generate, daemon=True)
-        thread.start()
+        # 提交到评测专用线程池执行（8 线程，控制 LLM 并发）
+        if eval_gen_pool is not None:
+            eval_gen_pool.submit(_generate)
+        else:
+            # 线程池未初始化时（如测试环境）回退裸线程
+            thread = threading.Thread(target=_generate, daemon=True)
+            thread.start()

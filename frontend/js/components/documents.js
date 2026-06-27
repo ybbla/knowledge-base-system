@@ -555,44 +555,54 @@ const Documents = (() => {
       el.className = 'processing-toast-item';
       el.innerHTML = `<div class="loading-spinner" style="width:14px;height:14px;border-width:2px"></div><span>${UI.escapeHtml(item.title || '未命名')}</span>`;
 
-      // 限制最多3条
+      // 限制最多3条，挤掉旧弹条时同步停止其轮询
       const all = container.querySelectorAll('.processing-toast-item');
-      while (all.length >= 3) { all[0].remove(); }
+      while (all.length >= 3) {
+        const old = all[0];
+        if (old._pollId) clearInterval(old._pollId);
+        old.remove();
+      }
 
       container.appendChild(el);
 
-      // 如果已有 docId，开始轮询
+      // 如果已有 docId，开始轮询；轮询结束时会自动移除弹条
       if (item.docId) {
         el.dataset.docId = item.docId;
         startPolling(el, item.docId);
       }
-
-      // 10 秒兜底关闭
-      const forceClose = setTimeout(() => {
-        el.classList.add('fading');
-        setTimeout(() => el.remove(), 400);
-      }, 10000);
-      el._forceClose = forceClose;
     });
   }
 
   function startPolling(el, docId) {
     let count = 0;
+    let errCount = 0;
+    const MAX_COUNT = 150;  // 150 × 2s = 5 分钟，覆盖大文档入库
     const poll = setInterval(async () => {
       count++;
       try {
         const res = await API.getDocument(docId);
         const status = res?.data?.status;
+        errCount = 0;  // 成功拿到响应则重置错误计数
         if (status === 'active' || status === 'failed') {
           clearInterval(poll);
-          if (el._forceClose) clearTimeout(el._forceClose);
           el.querySelector('.loading-spinner')?.remove();
           el.innerHTML += status === 'active' ? ' ✓' : ' ✗';
           setTimeout(() => { el.classList.add('fading'); setTimeout(() => el.remove(), 400); }, 2000);
         }
-      } catch (e) { /* ignore */ }
-      if (count >= 20) clearInterval(poll);
+      } catch (e) {
+        errCount++;
+        console.warn('轮询文档状态失败 (%d/%d): %s', errCount, docId, e.message || e);
+        // 连续 10 次网络错误 → 放弃轮询，避免通知条永久挂起
+        if (errCount >= 10) {
+          clearInterval(poll);
+          el.querySelector('.loading-spinner')?.remove();
+          el.innerHTML += ' ?';
+          setTimeout(() => { el.classList.add('fading'); setTimeout(() => el.remove(), 400); }, 2000);
+        }
+      }
+      if (count >= MAX_COUNT) clearInterval(poll);
     }, 2000);
+    el._pollId = poll;
   }
 
   /* -----------------------------------------------------------------------
@@ -642,28 +652,34 @@ const Documents = (() => {
     }
   }
 
-  /** 批量重试选中的失败文档 */
+  /** 批量重试选中的失败文档（并行，受并发上限控制） */
   async function batchRetry() {
     if (!selectedIds.size) return;
     const ok = await UI.showConfirm('批量重试确认', `确认重新入库 ${selectedIds.size} 篇失败文档？`, '确认重试');
     if (!ok) return;
+    const ids = [...selectedIds];
+    const tasks = ids.map(id => () => API.retryDocument(id));
+    const results = await runWithConcurrencyLimit(tasks, MAX_CONCURRENT_UPLOADS);
     let done = 0, fail = 0;
-    for (const id of selectedIds) {
-      try { await API.retryDocument(id); done++; } catch (e) { fail++; }
+    for (const r of results) {
+      if (r.status === 'fulfilled') done++; else fail++;
     }
     UI.toast(`重试完成: 成功 ${done}${fail ? `, 失败 ${fail}` : ''}`, fail ? 'error' : 'success');
     selectedIds.clear();
     loadPage(currentPage);
   }
 
-  /** 批量恢复选中的已删除文档 */
+  /** 批量恢复选中的已删除文档（并行，受并发上限控制） */
   async function batchRestore() {
     if (!selectedIds.size) return;
     const ok = await UI.showConfirm('批量恢复确认', `确认恢复 ${selectedIds.size} 篇已删除文档？`, '确认恢复');
     if (!ok) return;
+    const ids = [...selectedIds];
+    const tasks = ids.map(id => () => API.restoreDocument(id));
+    const results = await runWithConcurrencyLimit(tasks, MAX_CONCURRENT_UPLOADS);
     let done = 0, fail = 0;
-    for (const id of selectedIds) {
-      try { await API.restoreDocument(id); done++; } catch (e) { fail++; }
+    for (const r of results) {
+      if (r.status === 'fulfilled') done++; else fail++;
     }
     UI.toast(`恢复完成: 成功 ${done}${fail ? `, 失败 ${fail}` : ''}`, fail ? 'error' : 'success');
     selectedIds.clear();
@@ -716,16 +732,19 @@ const Documents = (() => {
     if (retryBtn) retryBtn.disabled = selectedIds.size === 0;
   }
 
-  /** 批量删除选中文档（含二次确认） */
+  /** 批量删除选中文档（并行，受并发上限控制，含二次确认） */
   async function batchDelete() {
     if (!selectedIds.size) return;
     const ok = await UI.showConfirm('批量删除确认', `确认批量删除 ${selectedIds.size} 篇文档？（注意：如果有关联的知识块，将同步删除。）`, '确认删除');
     if (!ok) return;
-    let done = 0;
-    for (const id of selectedIds) {
-      try { await API.deleteDocument(id); done++; } catch (e) { /* skip */ }
+    const ids = [...selectedIds];
+    const tasks = ids.map(id => () => API.deleteDocument(id));
+    const results = await runWithConcurrencyLimit(tasks, MAX_CONCURRENT_UPLOADS);
+    let done = 0, fail = 0;
+    for (const r of results) {
+      if (r.status === 'fulfilled') done++; else fail++;
     }
-    UI.toast(`批量删除完成: ${done}/${selectedIds.size}`, 'success');
+    UI.toast(`批量删除完成: ${done}/${selectedIds.size}${fail ? `, 失败 ${fail}` : ''}`, fail ? 'error' : 'success');
     selectedIds.clear();
     loadPage(currentPage);
   }
@@ -817,10 +836,9 @@ const Documents = (() => {
   }
 
   function cancelNewCategory(mode) {
-    if (mode === 'edit') {
-      const select = document.getElementById('editDocCategorySelect');
-      if (select && _editCatPrev) select.value = _editCatPrev;
-    }
+    const selectId = mode === 'upload' ? 'docCategorySelect' : 'editDocCategorySelect';
+    const select = document.getElementById(selectId);
+    if (select && _editCatPrev) select.value = _editCatPrev;
     document.querySelector('.modal-backdrop:last-child')?.remove();
   }
 
@@ -828,22 +846,22 @@ const Documents = (() => {
     const name = document.getElementById('newCategoryInput')?.value?.trim();
     if (!name) { UI.toast('请输入分类名称', 'error'); return; }
 
-    if (mode === 'edit') {
-      const select = document.getElementById('editDocCategorySelect');
-      if (select) {
-        // 在 __custom__ 之前插入新选项
-        const customOpt = select.querySelector('option[value="__custom__"]');
-        const opt = document.createElement('option');
-        opt.value = name;
-        opt.textContent = name;
-        opt.selected = true;
-        if (customOpt) {
-          select.insertBefore(opt, customOpt);
-        } else {
-          select.appendChild(opt);
-        }
+    const selectId = mode === 'upload' ? 'docCategorySelect' : 'editDocCategorySelect';
+    const select = document.getElementById(selectId);
+    if (select) {
+      // 在 __custom__ 之前插入新选项
+      const customOpt = select.querySelector('option[value="__custom__"]');
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      opt.selected = true;
+      if (customOpt) {
+        select.insertBefore(opt, customOpt);
+      } else {
+        select.appendChild(opt);
       }
     }
+
     // 关闭最顶层弹窗
     const backdrops = document.querySelectorAll('.modal-backdrop');
     if (backdrops.length) backdrops[backdrops.length - 1].remove();
@@ -937,12 +955,11 @@ const Documents = (() => {
             </div>
             <div>
               <label class="field-label">分类 <span>(选择已有或输入新分类)</span></label>
-              <select class="select" id="docCategorySelect" onchange="Documents.onCategorySelect()" style="width: 100%;">
+              <select class="select" id="docCategorySelect" onfocus="Documents.onUploadCategoryFocus()" onchange="Documents.onCategorySelect()" style="width: 100%;">
                 <option value="通用">通用</option>
-                ${existingCategories.map(c => `<option value="${UI.escapeHtml(c)}">${UI.escapeHtml(c)}</option>`).join('')}
+                ${existingCategories.filter(c => c !== '通用').map(c => `<option value="${UI.escapeHtml(c)}">${UI.escapeHtml(c)}</option>`).join('')}
                 <option value="__custom__">✚ 新增分类…</option>
               </select>
-              <input class="input" type="text" id="docCategoryInput" placeholder="输入新分类名称" style="width: 100%; margin-top: var(--space-2); display: none;">
             </div>
           </div>
 
@@ -964,16 +981,17 @@ const Documents = (() => {
     setTimeout(() => bindUploadEvents(), 50);
   }
 
+  function onUploadCategoryFocus() {
+    const select = document.getElementById('docCategorySelect');
+    if (select && select.value !== '__custom__') {
+      _editCatPrev = select.value;
+    }
+  }
+
   function onCategorySelect() {
     const select = document.getElementById('docCategorySelect');
-    const input = document.getElementById('docCategoryInput');
-    if (!select || !input) return;
-    if (select.value === '__custom__') {
-      input.style.display = 'block';
-      input.focus();
-    } else {
-      input.style.display = 'none';
-    }
+    if (!select || select.value !== '__custom__') return;
+    showNewCategoryDialog('upload');
   }
 
   function closeUploadModal() {
@@ -1093,15 +1111,7 @@ const Documents = (() => {
     if (!selectedFiles.length) { UI.toast('请先选择文件', 'error'); return; }
     const title = selectedFiles.length === 1 ? (document.getElementById('docTitle')?.value?.trim() || '') : '';
     const categorySelect = document.getElementById('docCategorySelect');
-    const categoryInput = document.getElementById('docCategoryInput');
-    let category = '通用';
-    if (categorySelect) {
-      if (categorySelect.value === '__custom__') {
-        category = categoryInput?.value?.trim() || '通用';
-      } else {
-        category = categorySelect.value;
-      }
-    }
+    const category = categorySelect?.value || '通用';
 
     // 立即关闭弹窗，显示处理中弹条
     const fileList = selectedFiles.slice();

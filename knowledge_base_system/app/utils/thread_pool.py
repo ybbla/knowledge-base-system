@@ -657,3 +657,48 @@ def shutdown_search_pool() -> None:
     if search_executor is not None:
         shutdown_thread_pool(search_executor, wait=True, cancel_futures=False)
         search_executor = None
+
+
+# ── 评测数据生成线程池（生命周期由 lifespan 管理） ──────────────────────
+
+eval_gen_pool: ThreadPoolExecutor | None = None
+"""评测数据生成专用线程池，8 线程。
+
+入库完成后异步调用 LLM 生成评测数据时使用此池。
+独立池 → 不与上传/检索/资源处理争抢 worker。
+"""
+
+
+def startup_eval_gen_pool(
+    max_workers: int = 8,
+    *,
+    thread_name_prefix: str = "kb-eval-gen",
+) -> ThreadPoolExecutor:
+    """创建评测数据生成专用线程池。
+
+    应在 FastAPI lifespan startup 阶段调用。
+
+    Args:
+        max_workers: 最大工作线程数，默认 8。
+        thread_name_prefix: 线程名前缀。
+
+    Returns:
+        配置好的 ThreadPoolExecutor 实例。
+    """
+    global eval_gen_pool
+    eval_gen_pool = create_thread_pool(
+        max_workers=max_workers,
+        thread_name_prefix=thread_name_prefix,
+    )
+    return eval_gen_pool
+
+
+def shutdown_eval_gen_pool() -> None:
+    """关闭评测数据生成线程池。
+
+    应在 FastAPI lifespan shutdown 阶段调用。
+    """
+    global eval_gen_pool
+    if eval_gen_pool is not None:
+        shutdown_thread_pool(eval_gen_pool, wait=True, cancel_futures=False)
+        eval_gen_pool = None

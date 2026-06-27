@@ -5,13 +5,14 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import mount_v1_sub_routers, register_v1_exception_handlers, router as v1_router
-from app.core.deps import shutdown_resources
+from app.core.deps import recover_stale_processing_docs, shutdown_resources
 from app.utils.thread_pool import (
     startup_health_pool, shutdown_health_pool,
     startup_search_pool, shutdown_search_pool,
     startup_upload_pool, shutdown_upload_pool,
     startup_sub_ingest_pool, shutdown_sub_ingest_pool,
     startup_asset_worker_pool, shutdown_asset_worker_pool,
+    startup_eval_gen_pool, shutdown_eval_gen_pool,
 )
 
 # 前端静态文件目录
@@ -25,6 +26,8 @@ async def lifespan(app: FastAPI):
     startup_upload_pool()
     startup_sub_ingest_pool()
     startup_asset_worker_pool()
+    startup_eval_gen_pool()
+    recover_stale_processing_docs()
     try:
         yield
     finally:
@@ -34,6 +37,7 @@ async def lifespan(app: FastAPI):
         shutdown_asset_worker_pool()
         shutdown_sub_ingest_pool()
         shutdown_upload_pool()
+        shutdown_eval_gen_pool()
 
 
 app = FastAPI(

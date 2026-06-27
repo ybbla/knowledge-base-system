@@ -1,8 +1,10 @@
 """应用级依赖注入与共享状态。"""
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
+from app.core.models import DocStatus
 from assets.minio_store import MinioAssetStore
 from ingestion.pipeline import IngestionPipeline, _strip_placeholders
 from llm.semantic_extractor import SemanticExtractor
@@ -112,7 +114,8 @@ retrieval_pipeline = RetrievalPipeline(
     bm25_index=bm25_index,
     chunk_store=chunk_store,
     asset_store=asset_store,
-    executor=search_executor,
+    # executor 不注入：pipeline 内部自建临时 2 线程池跑 Vector+BM25；
+    # 外层由 search_executor 管理并发搜索隔离。
 )
 
 
@@ -181,6 +184,54 @@ def recover_pending_chunk_indexes(limit: int | None = None) -> int:
 
     ingestion_pipeline.index_existing_chunks(chunks)
     return len(chunks)
+
+
+def recover_stale_processing_docs(
+    timeout_minutes: int = 30,
+) -> int:
+    """启动时恢复超时的 processing 文档，标记为 failed。
+
+    进程在 _run_create 中异常退出（OOM / kill -9）会导致
+    Document 永久停留在 processing。扫描所有 processing 文档，
+    将 updated_at 超过阈值的标记为 failed 并设置错误信息。
+
+    Args:
+        timeout_minutes: processing 超时阈值（分钟），默认 30。
+
+    Returns:
+        恢复的文档数量。
+    """
+    if document_repo is None:
+        return 0
+
+    processing_docs = document_repo.list(status="processing")
+    if not processing_docs:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    timeout = timedelta(minutes=timeout_minutes)
+    recovered = 0
+
+    for doc in processing_docs:
+        stale_at = doc.updated_at  # 保存原始 processing 开始时间，供日志使用
+        if now - stale_at <= timeout:
+            continue
+        doc.status = DocStatus.failed
+        doc.error_message = "入库超时：服务可能在入库过程中异常退出，请重试"
+        doc.updated_at = now
+        try:
+            document_repo.update(doc)
+            recovered += 1
+            logger.warning(
+                "恢复超时 processing 文档: %s（processing 开始于 %s）",
+                doc.doc_id, stale_at.isoformat(),
+            )
+        except Exception:
+            logger.exception("恢复 processing 文档失败: %s", doc.doc_id)
+
+    if recovered:
+        logger.info("已恢复 %d 个超时 processing 文档", recovered)
+    return recovered
 
 
 def shutdown_resources() -> None:

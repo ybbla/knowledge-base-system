@@ -857,6 +857,70 @@ input, textarea, select {
   box-shadow: 0 0 0 3px var(--celadon-glow);
 }
 
+/* 多选下拉 — 用于搜索页分类等多选过滤场景 */
+.multi-select {
+  position: relative;
+  display: inline-block;
+}
+
+.multi-select-trigger {
+  cursor: pointer;
+  text-align: left;
+  min-width: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  /* 复用 .select.select-sm 的外观，通过 class 继承 */
+}
+
+.multi-select-trigger::after {
+  content: '▾';
+  font-size: 0.7em;
+  opacity: 0.5;
+}
+
+.multi-select-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 200;
+  background: var(--silk);
+  border: 1px solid var(--mist);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  min-width: 200px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: var(--space-1) 0;
+}
+
+.multi-select-dropdown.is-hidden {
+  display: none;
+}
+
+.multi-select-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-3);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  transition: background 0.12s;
+}
+
+.multi-select-item:hover {
+  background: var(--celadon-glow);
+}
+
+.multi-select-item input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+  accent-color: var(--celadon);
+  flex-shrink: 0;
+}
+
 /* 表格 */
 .table-wrap {
   overflow-x: auto;

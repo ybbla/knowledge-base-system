@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     rrf_k: int = Field(default=60, validation_alias="RRF_K")
 
     # 入库处理限制
+    max_upload_size_mb: int = Field(default=100, validation_alias="MAX_UPLOAD_SIZE_MB")  # 上传文件大小上限（MB），超限拒绝，防止 OOM
     max_recursion_depth: int = 3
     max_elements_per_doc: int = 1000
     max_elements_per_llm_batch: int = Field(default=40, validation_alias="LLM_ELEMENTS_BATCH_SIZE")  # 单次 LLM 语义抽取的元素数量上限，超出则分批重叠滑窗
@@ -60,9 +61,9 @@ class Settings(BaseSettings):
     # HNSW 索引参数
     milvus_hnsw_M: int = Field(default=16, validation_alias="MILVUS_HNSW_M")
     milvus_hnsw_ef_construction: int = Field(default=200, validation_alias="MILVUS_HNSW_EF_CONSTRUCTION")
-    milvus_hnsw_ef: int = Field(default=64, validation_alias="MILVUS_HNSW_EF")
+    milvus_hnsw_ef: int = Field(default=200, validation_alias="MILVUS_HNSW_EF")  # HNSW 搜索候选集大小，ef ≥ top_k×4 保证召回率（top_k=30 → 建议 ≥120）
     # BM25 检索参数
-    milvus_sparse_ef: int = Field(default=16, validation_alias="MILVUS_SPARSE_EF")
+    milvus_sparse_ef: int = Field(default=100, validation_alias="MILVUS_SPARSE_EF")  # 稀疏向量搜索候选集大小，ef ≥ top_k×2 保证召回率（top_k=30 → 建议 ≥60）
 
     # MinIO：必须启用并可连接。
     minio_enabled: bool = Field(default=True, validation_alias="MINIO_ENABLED")

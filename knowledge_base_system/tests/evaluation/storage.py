@@ -83,16 +83,20 @@ def append_eval_result(
     search_params: dict[str, Any],
     metrics: dict[str, float | None],
     query_count: int,
+    success_count: int = 0,
+    failure_count: int = 0,
 ) -> Path:
     """将本次评测结果以一行 JSON 追加写入 results/history.jsonl。
 
-    每条记录包含时间戳、检索参数、评测指标和查询总数，便于时间序列分析。
+    每条记录包含时间戳、检索参数、评测指标、查询总数及成功/失败计数。
 
     Args:
         search_params: 检索参数字典，包含 rewrite、vector_top_k、bm25_top_k、
                        rrf_k、rerank、top_k 等字段。
         metrics: 评测指标字典，包含 recall_at_5 和 mrr。
         query_count: 参与评测的查询总数。
+        success_count: 成功查询数。
+        failure_count: 失败查询数。
 
     Returns:
         history.jsonl 的文件路径。
@@ -104,6 +108,8 @@ def append_eval_result(
         "search_params": search_params,
         "metrics": metrics,
         "query_count": query_count,
+        "success_count": success_count,
+        "failure_count": failure_count,
     }
 
     history_path = RESULTS_DIR / "history.jsonl"

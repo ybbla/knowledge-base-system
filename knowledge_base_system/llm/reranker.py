@@ -19,10 +19,6 @@ from llm.volcengine_client import llm_client
 
 logger = logging.getLogger(__name__)
 
-# 批量打分阈值：候选数 ≤ 此值时使用批量调用，超过时分批
-_BATCH_THRESHOLD = 20
-
-
 def _score_batch(
     query: str, chunks: list[KnowledgeChunk]
 ) -> list[dict[str, Any]]:

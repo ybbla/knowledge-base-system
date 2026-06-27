@@ -1,30 +1,38 @@
-"""评测触发脚本（无参数）。
+"""评测触发脚本。
 
-加载全局评测数据集，重建检索索引，逐条查询并计算标准 Recall@5
-和 MRR，最后将结果追加写入 results/history.jsonl。
+加载全局评测数据集，逐条查询并计算 Recall@K 和 MRR，
+最后将结果追加写入 results/history.jsonl。
 
 使用方式：
     cd knowledge_base_system
     python tests/evaluation/run_eval.py
+    python tests/evaluation/run_eval.py --no-rewrite --no-rerank --top-k 10
 """
 
 from __future__ import annotations
 
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # 确保 knowledge_base_system 在 sys.path 中
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tests.evaluation.dataset import load_dataset
-from tests.evaluation.metrics import mrr, recall_at_k, safe_mean
+from tests.evaluation.metrics import hit_at_k, mrr, precision_at_k, recall_at_k, safe_mean
 from tests.evaluation.storage import append_eval_result
 from tests.evaluation.dataset import EvalItem
 
 
-def _run() -> int:
-    """执行评测主流程。"""
+def _run(rewrite: bool = True, rerank: bool = True, top_k: int = 5) -> int:
+    """执行评测主流程。
+
+    Args:
+        rewrite: 是否启用查询改写。
+        rerank: 是否启用 LLM 重排序。
+        top_k: 检索返回数量，也是 Recall@K 的 K 值。
+    """
     # ── 1. 加载全局评测数据集 ──
     try:
         dataset = load_dataset()
@@ -37,7 +45,7 @@ def _run() -> int:
         print("⚠️  评测数据集为空，请先添加评测数据。")
         return 1
 
-    # ── 2. 过滤过期标注（预期 chunk 已不存在的条目） ──
+    # ── 2. 过滤过期标注（剔除已不存在的 chunk_id，不拖累 Recall 分母）──
     from app.core.deps import chunk_store
 
     all_expected_ids = set()
@@ -50,6 +58,7 @@ def _run() -> int:
         existing_ids = {c.chunk_id for c in existing_chunks}
 
     stale_count = 0
+    filtered_count = 0
     active_dataset: list[EvalItem] = []
     for item in dataset:
         if item.expected_chunk_ids and not any(
@@ -57,85 +66,129 @@ def _run() -> int:
         ):
             stale_count += 1
             continue
+        # 剔除已不存在的 chunk_id，让 Recall 分母反映真实可达上限
+        if item.expected_chunk_ids:
+            original_count = len(item.expected_chunk_ids)
+            item.expected_chunk_ids = [
+                cid for cid in item.expected_chunk_ids if cid in existing_ids
+            ]
+            if len(item.expected_chunk_ids) < original_count:
+                filtered_count += 1
         active_dataset.append(item)
 
     if stale_count:
-        print(f"🗑️  过滤 {stale_count} 条过期标注（chunk 已被删除）")
+        print(f"🗑️  丢弃 {stale_count} 条过期标注（chunk 全部已被删除）")
+    if filtered_count:
+        print(f"🧹  清理 {filtered_count} 条标注中的已删除 chunk（共 {len(active_dataset)} 条有效）")
 
     if not active_dataset:
         print("⚠️  过滤后无有效评测条目，请先入库文档生成新的评测数据。")
         return 1
 
-    # ── 3. 初始化检索索引 ──
-    from app.core.deps import rebuild_retrieval_indexes_from_chunks, retrieval_pipeline
+    # ── 3. 确认检索索引可用（直接复用现有索引，不重建）──
+    from app.core.deps import retrieval_pipeline
 
-    rebuilt = rebuild_retrieval_indexes_from_chunks()
-    if rebuilt == 0:
-        print("⚠️  没有可评测的持久化知识块，请先完成文档入库。")
+    active_chunk_count = len(existing_ids)
+    if active_chunk_count == 0:
+        print("⚠️  检索索引中无知识块，请先完成文档入库。")
         return 1
 
-    # ── 4. 逐条查询并计算指标 ──
-    recall_scores: list[float | None] = []
-    mrr_scores: list[float | None] = []
+    # ── 4. 并发查询 ──
+    total = len(active_dataset)
 
-    print(f"\n🔍 检索索引已重建: {rebuilt} 个 chunks")
-    print(f"📊 评测中，共 {len(active_dataset)} 条查询（已过滤 {stale_count} 条过期）...\n")
+    print(f"\n🔍 复用现有检索索引: {active_chunk_count} 个活跃 chunk")
+    print(f"📊 评测中，共 {total} 条查询（已过滤 {stale_count} 条过期）...\n")
 
     start_time = time.time()
 
-    for i, item in enumerate(active_dataset, 1):
-        try:
-            result = retrieval_pipeline.search(query=item.query, top_k=5)
-            chunk_ids = [r.chunk_id for r in result.results]
-        except Exception as exc:
-            print(f"  [{i}/{len(active_dataset)}] 检索异常: {item.query[:40]}... ({exc})")
+    # 并发提交所有检索，按序收集结果
+    chunk_ids_map: dict[int, list[str]] = {}
+    error_map: dict[int, str] = {}
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {
+            executor.submit(retrieval_pipeline.search, item.query, top_k): i
+            for i, item in enumerate(active_dataset)
+        }
+        for future in as_completed(futures):
+            i = futures[future]
+            try:
+                result = future.result(timeout=30)
+                chunk_ids_map[i] = [r.chunk_id for r in result.results]
+            except Exception as exc:
+                error_map[i] = str(exc)
+
+    # ── 5. 按原始顺序计算指标 ──
+    recall_scores: list[float | None] = []
+    precision_scores: list[float | None] = []
+    hit_scores: list[float | None] = []
+    mrr_scores: list[float | None] = []
+    failure_count = 0
+
+    for i, item in enumerate(active_dataset):
+        if i in error_map:
+            print(f"  [{i+1}/{total}] 检索异常: {item.query[:40]}... ({error_map[i]})")
+            failure_count += 1
             recall_scores.append(None)
+            precision_scores.append(None)
+            hit_scores.append(None)
             mrr_scores.append(None)
             continue
 
-        r5 = recall_at_k(chunk_ids, item.expected_chunk_ids, k=5)
+        chunk_ids = chunk_ids_map[i]
+        r5 = recall_at_k(chunk_ids, item.expected_chunk_ids, k=top_k)
+        p5 = precision_at_k(chunk_ids, item.expected_chunk_ids, k=top_k)
+        h5 = hit_at_k(chunk_ids, item.expected_chunk_ids, k=top_k)
         m = mrr(chunk_ids, item.expected_chunk_ids)
         recall_scores.append(r5)
+        precision_scores.append(p5)
+        hit_scores.append(h5)
         mrr_scores.append(m)
 
         # 每 10 条输出一次进度
-        if i % 10 == 0 or i == len(active_dataset):
-            print(f"  [{i}/{len(active_dataset)}] 已完成...")
+        if (i + 1) % 10 == 0 or (i + 1) == total:
+            print(f"  [{i+1}/{total}] 已完成...")
 
     elapsed = time.time() - start_time
 
-    # ── 4. 汇总指标 ──
+    # ── 6. 汇总指标 ──
     avg_recall = safe_mean(recall_scores)
+    avg_precision = safe_mean(precision_scores)
+    avg_hit = safe_mean(hit_scores)
     avg_mrr = safe_mean(mrr_scores)
-    annotated_count = sum(1 for v in recall_scores if v is not None)
+    success_count = len(active_dataset) - failure_count
 
-    # ── 5. 控制台输出 ──
+    # ── 7. 控制台输出 ──
     print()
     print("=" * 50)
     print("📊 评测完成")
     print("=" * 50)
-    print(f"  查询总数:       {len(active_dataset)}（已过滤 {stale_count} 条过期）")
-    print(f"  已标注查询数:    {annotated_count}")
+    print(f"  查询总数:       {len(active_dataset)}（成功 {success_count} / 失败 {failure_count}）")
+    print(f"  已过滤过期:      {stale_count} 条")
     print(f"  耗时:           {elapsed:.1f}s")
-    print(f"  Recall@5:       {avg_recall:.4f}" if avg_recall is not None else "  Recall@5:       N/A")
+    print(f"  Hit@{top_k}:          {avg_hit:.4f}" if avg_hit is not None else f"  Hit@{top_k}:          N/A")
+    print(f"  Recall@{top_k}:       {avg_recall:.4f}" if avg_recall is not None else f"  Recall@{top_k}:       N/A")
+    print(f"  Precision@{top_k}:    {avg_precision:.4f}" if avg_precision is not None else f"  Precision@{top_k}:    N/A")
     print(f"  MRR:            {avg_mrr:.4f}" if avg_mrr is not None else "  MRR:            N/A")
     print()
 
-    # ── 6. 追加评测历史 ──
+    # ── 8. 追加评测历史 ──
     from app.core.config import get_settings
     cfg = get_settings(reload_env=True)
 
     search_params = {
-        "rewrite": True,           # 当前管线始终启用查询改写
+        "rewrite": rewrite,
+        "rerank": rerank,
+        "top_k": top_k,
         "vector_top_k": cfg.vector_top_k,
         "bm25_top_k": cfg.bm25_top_k,
-        "rrf_k": cfg.fusion_top_k,
-        "rerank": True,            # 当前管线始终启用重排序
-        "top_k": 5,
+        "rrf_top_k": cfg.fusion_top_k,
     }
 
     metrics = {
-        "recall_at_5": avg_recall,
+        f"hit_at_{top_k}": avg_hit,
+        f"recall_at_{top_k}": avg_recall,
+        f"precision_at_{top_k}": avg_precision,
         "mrr": avg_mrr,
     }
 
@@ -143,6 +196,8 @@ def _run() -> int:
         search_params=search_params,
         metrics=metrics,
         query_count=len(active_dataset),
+        success_count=success_count,
+        failure_count=failure_count,
     )
     print(f"📄 结果已追加: {history_path}")
 
@@ -150,4 +205,11 @@ def _run() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(_run())
+    args = sys.argv[1:]
+    rewrite = "--no-rewrite" not in args
+    rerank = "--no-rerank" not in args
+    top_k = 5
+    for i, arg in enumerate(args):
+        if arg == "--top-k" and i + 1 < len(args):
+            top_k = int(args[i + 1])
+    raise SystemExit(_run(rewrite=rewrite, rerank=rerank, top_k=top_k))

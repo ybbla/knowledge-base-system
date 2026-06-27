@@ -355,6 +355,19 @@ class PgChunkStore(BaseRepository):
                 session.delete(db_chunk)
                 session.commit()
 
+    def bulk_hard_delete(self, chunk_ids: list[str]) -> None:
+        """批量硬删除知识块，一条 DELETE 完成。
+
+        用于重入库前清理旧块，避免逐条 session + commit 的开销。
+        """
+        if not chunk_ids:
+            return
+        with self._session() as session:
+            session.query(DbKnowledgeChunk).filter(
+                DbKnowledgeChunk.chunk_id.in_(chunk_ids)
+            ).delete(synchronize_session=False)
+            session.commit()
+
     def restore(self, chunk_id: str) -> KnowledgeChunk:
         """恢复软删除的知识块。"""
         with self._session() as session:

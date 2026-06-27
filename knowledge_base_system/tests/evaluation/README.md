@@ -7,14 +7,15 @@
 ```
 入库自动生成 → datasets/doc_{id}_{date}.json
                       │
-          merge_to_global.py (手动合并)
+          merge_to_global.py <doc_id> (手动合并)
                       │        去重键: (doc_id, query)
-                      │        过期标注: 自动过滤
+                      │        auto 标注直接覆盖，manual 永远保护
                       ▼
                eval_dataset.json (全局数据集)
                       │
-              run_eval.py (无参数)
-                      │        步骤 2: chunk_store.get_batch 过滤过期
+              run_eval.py [--no-rewrite] [--no-rerank] [--top-k N]
+                      │        直接复用现有检索索引，不重建
+                      │        过滤过期 chunk_id，剔除而非丢弃整条
                       ▼
           results/history.jsonl (JSONL 追加)
 ```
@@ -23,7 +24,9 @@
 
 ### 1. 入库文档 → 自动生成评测数据
 
-文档入库成功后，系统自动在 `datasets/` 目录下为该文档生成评测数据。超过 40 个知识块的大文档会自动分片生成，避免遗漏尾部内容。
+文档入库成功后，系统后台异步调用 LLM 生成评测数据，存入 `datasets/` 目录。超过 40 个知识块的大文档自动分片生成，每片独立生成 `AUTO_EVAL_QUERIES_PER_DOC` 条查询，总量上限为 `AUTO_EVAL_QUERIES_PER_DOC * 2`。
+
+LLM 生成的查询涵盖多种真实检索风格：完整疑问句、关键词组合、口语片段、祈使/陈述句。
 
 ```env
 # 是否启用入库自动生成（默认 true）
@@ -44,21 +47,27 @@ python tests/evaluation/merge_to_global.py <doc_id>
 ```
 
 - 去重键为 `(doc_id, query)`，不同文档的同名 query 不会互相覆盖
-- `"source": "manual"` 的条目不会被自动生成数据覆盖
-- 合并时自动携带 `doc_version` 字段
+- `"source": "manual"` 的条目永远不会被覆盖
+- `"source": "auto"` 的条目直接覆盖更新，过期的 chunk_id 由评测脚本过滤
 
 ### 3. 运行评测
 
 ```bash
 cd knowledge_base_system
+
+# 默认参数：rewrite=true, rerank=true, top_k=5
 python tests/evaluation/run_eval.py
+
+# 自定义参数
+python tests/evaluation/run_eval.py --no-rewrite --no-rerank --top-k 10
 ```
 
-评测分四步：
+评测步骤：
 1. 加载全局数据集
-2. **过滤过期标注** — 通过 `chunk_store.get_batch()` 查询预期 chunk 是否仍存在，全部失效的条目自动跳过
-3. 重建检索索引
-4. 逐条查询并计算 Recall@5 + MRR
+2. **过滤过期标注** — 通过 `chunk_store.get_batch()` 查询预期 chunk 是否仍存在：全部失效的条目丢弃，部分失效的剔除过期 chunk_id
+3. 直接复用现有检索索引（不重建）
+4. **并发检索** — 8 路 `ThreadPoolExecutor` 并发调用检索管线
+5. 按序计算四个指标：Hit@K、Recall@K、Precision@K、MRR
 
 ### 4. 查看评测历史
 
@@ -76,22 +85,25 @@ tests/evaluation/
 ├── gen_dataset.py        # LLM 自动生成评测数据（入库调用的纯 API）
 ├── storage.py            # 分文档存储（写入前删旧文件）+ JSONL 结果追加
 ├── metrics.py            # 标准 Recall@K + MRR + safe_mean
-├── run_eval.py            # ★ 评测入口脚本（无参数）
+├── run_eval.py            # ★ 评测入口脚本（支持 --no-rewrite/--no-rerank/--top-k）
 ├── merge_to_global.py     # ★ 手动合并分文档数据到全局数据集
 ├── __init__.py
 ├── README.md
 ├── eval_dataset.json      # 全局评测数据集（人工标注 + 合并后的自动生成）
 ├── datasets/              # 分文档自动生成数据
 │   └── doc_{id}_{date}.json
-└── results/
-    └── history.jsonl      # 评测历史（JSONL 每行一条记录）
+├── results/
+│   └── history.jsonl      # 评测历史（JSONL 每行一条记录）
+└── tests/                 # 评测系统自测试
 ```
 
 ## 评测指标
 
 | 指标 | 说明 |
 |------|------|
-| **Recall@5** | 每条查询 top-5 命中数 / 期望总数，取所有查询的平均值 |
+| **Hit@K** | top-K 至少命中一个期望 chunk 的查询比例（0/1 均值，K 可配置，默认 5） |
+| **Recall@K** | 每条查询 top-K 命中数 / 期望总数，取所有查询的平均值 |
+| **Precision@K** | 每条查询 top-K 命中数 / K，取所有查询的平均值 |
 | **MRR** | 首个命中 chunk 排名倒数的均值（第1→1.0, 第3→0.333, 未命中→0） |
 
 ## JSONL 历史记录格式
@@ -100,20 +112,24 @@ tests/evaluation/
 
 ```json
 {
-  "timestamp": "2026-06-23T10:30:00",
+  "timestamp": "2026-06-27T10:30:00",
   "search_params": {
     "rewrite": true,
+    "rerank": true,
+    "top_k": 5,
     "vector_top_k": 30,
     "bm25_top_k": 30,
-    "rrf_k": 60,
-    "rerank": true,
-    "top_k": 5
+    "rrf_top_k": 15
   },
   "metrics": {
+    "hit_at_5": 0.870,
     "recall_at_5": 0.667,
+    "precision_at_5": 0.420,
     "mrr": 0.583
   },
-  "query_count": 50
+  "query_count": 100,
+  "success_count": 99,
+  "failure_count": 1
 }
 ```
 
@@ -127,7 +143,7 @@ tests/evaluation/
     "doc_id": "doc_abc123456789",
     "doc_title": "Python入门指南",
     "doc_version": 1,
-    "generated_at": "2026-06-25T10:30:00",
+    "generated_at": "2026-06-27T10:30:00",
     "generated_by": "auto-ingest",
     "chunk_count": 5,
     "query_count": 3
@@ -146,6 +162,8 @@ tests/evaluation/
 ```
 
 ### 全局数据集 (eval_dataset.json)
+
+扁平数组，每个分文档的 items 直接合并：
 
 ```json
 [
@@ -177,7 +195,7 @@ tests/evaluation/
 ]
 ```
 
-`"source": "manual"` 是关键 — 合并时人工标注条目不会被自动生成数据覆盖。
+`"source": "manual"` 是关键 — 合并时人工标注条目永远不会被自动生成数据覆盖。
 
 ## 运行测试
 
@@ -200,6 +218,6 @@ AUTO_EVAL_QUERIES_PER_DOC=3
 ```
 文档初次入库 → datasets/doc_{id}_v1.json 生成
 文档重入库   → 旧文件自动删除 → datasets/doc_{id}_v2.json 生成（doc_version=2）
-merge_to_global → 按 (doc_id, query) 去重合并到 eval_dataset.json
-run_eval    → 步骤 2 过滤 chunk 不存在的过期标注 → 评测 → history.jsonl
+merge_to_global → 按 (doc_id, query) 去重，auto 覆盖、manual 保护
+run_eval    → 过滤过期 chunk_id → 复用现有索引 → 评测 → history.jsonl
 ```

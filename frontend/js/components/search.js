@@ -20,6 +20,7 @@ const SearchPage = (() => {
       const res = await API.searchFilters();
       filterOptions = res?.data || {};
     } catch (e) { /* ignore */ }
+    categoryOptions = (filterOptions.categories || []).map(c => c.value);
 
     UI.render(`
       <div class="page-header">
@@ -45,14 +46,32 @@ const SearchPage = (() => {
           </select>
         </div>
         <button class="btn btn-primary" onclick="SearchPage.doSearch()">搜索</button>
-        <select id="searchCategory" class="select select-sm" onchange="SearchPage.doSearch()">
-          <option value="">全部文档分类</option>
-          ${(filterOptions.categories || []).map(c => `<option value="${UI.escapeHtml(c.value)}">${UI.escapeHtml(c.value)}</option>`).join('')}
-        </select>
-        <select id="searchKnowledgeType" class="select select-sm" onchange="SearchPage.doSearch()">
-          <option value="">全部类型</option>
-          ${(filterOptions.knowledge_types || []).map(k => `<option value="${UI.escapeHtml(k.value)}">${UI.escapeHtml(UI.ktypeLabel(k.value))}</option>`).join('')}
-        </select>
+        <div class="multi-select" id="searchCategoryWrap">
+          <button type="button" class="select select-sm multi-select-trigger" id="searchCategoryTrigger" onclick="SearchPage.toggleCategoryDropdown(event)">
+            <span>全部文档分类</span>
+          </button>
+          <div class="multi-select-dropdown is-hidden" id="searchCategoryDropdown">
+            ${(filterOptions.categories || []).map(c => `
+              <label class="multi-select-item">
+                <input type="checkbox" value="${UI.escapeHtml(c.value)}" onchange="SearchPage.onCategoryCheckboxChange()">
+                <span>${UI.escapeHtml(c.value)}</span>
+              </label>
+            `).join('')}
+          </div>
+        </div>
+        <div class="multi-select" id="searchKtypeWrap">
+          <button type="button" class="select select-sm multi-select-trigger" id="searchKtypeTrigger" onclick="SearchPage.toggleKtypeDropdown(event)">
+            <span>全部类型</span>
+          </button>
+          <div class="multi-select-dropdown is-hidden" id="searchKtypeDropdown">
+            ${(filterOptions.knowledge_types || []).map(k => `
+              <label class="multi-select-item">
+                <input type="checkbox" value="${UI.escapeHtml(k.value)}" onchange="SearchPage.onKtypeCheckboxChange()">
+                <span>${UI.escapeHtml(UI.ktypeLabel(k.value))}</span>
+              </label>
+            `).join('')}
+          </div>
+        </div>
         <button class="btn btn-ghost btn-sm" onclick="SearchPage.resetFilters()">清除筛选</button>
         <span class="doc-count" id="searchCountText"></span>
       </div>
@@ -76,17 +95,21 @@ const SearchPage = (() => {
     if (!query) return;
 
     const topK = readTopK('searchTopK', 3);
-    const category = document.getElementById('searchCategory')?.value;
-    const knowledgeType = document.getElementById('searchKnowledgeType')?.value;
 
     lastQuery = query;
     document.getElementById('searchResults').innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><span>搜索中…</span></div>`;
 
     try {
       const filters = {};
-      if (category) filters.categories = [category];
-      if (knowledgeType) filters.knowledge_types = [knowledgeType];
-      filters.chunk_status = ['active'];
+      // 收集多选分类
+      const checkedCats = document.querySelectorAll('#searchCategoryDropdown input[type="checkbox"]:checked');
+      const selectedCategories = Array.from(checkedCats).map(cb => cb.value);
+      if (selectedCategories.length > 0) filters.categories = selectedCategories;
+      // 收集多选知识类型
+      const checkedKtypes = document.querySelectorAll('#searchKtypeDropdown input[type="checkbox"]:checked');
+      const selectedKtypes = Array.from(checkedKtypes).map(cb => cb.value);
+      if (selectedKtypes.length > 0) filters.knowledge_types = selectedKtypes;
+      // Milvus 层已强制 status == "active"，无需前端重复过滤
 
       const res = await API.search(query, topK, filters, {
         hybrid: true,
@@ -109,10 +132,14 @@ const SearchPage = (() => {
      清除筛选 — 清空分类、类型，保留搜索词和 TopK
      ----------------------------------------------------------------------- */
   function resetFilters() {
-    const category = document.getElementById('searchCategory');
-    const type = document.getElementById('searchKnowledgeType');
-    if (category) category.value = '';
-    if (type) type.value = '';
+    // 清空分类多选
+    const catCbs = document.querySelectorAll('#searchCategoryDropdown input[type="checkbox"]');
+    catCbs.forEach(cb => { cb.checked = false; });
+    updateCategoryTrigger();
+    // 清空知识类型多选
+    const ktypeCbs = document.querySelectorAll('#searchKtypeDropdown input[type="checkbox"]');
+    ktypeCbs.forEach(cb => { cb.checked = false; });
+    updateKtypeTrigger();
     // 不修改搜索词和 TopK
     // 如果搜索框中有内容则重新搜索
     const query = document.getElementById('searchInput')?.value?.trim();
@@ -327,8 +354,91 @@ const SearchPage = (() => {
     select.insertBefore(option, select.querySelector('option[value="__custom__"]'));
   }
 
+  /**
+   * 切换分类多选下拉的显示/隐藏
+   */
+  function toggleCategoryDropdown(event) {
+    event.stopPropagation();
+    const dropdown = document.getElementById('searchCategoryDropdown');
+    if (!dropdown) return;
+    dropdown.classList.toggle('is-hidden');
+  }
+
+  /**
+   * 分类 checkbox 变化时更新触发按钮文案，自动触发搜索
+   */
+  function onCategoryCheckboxChange() {
+    updateCategoryTrigger();
+    doSearch();
+  }
+
+  /**
+   * 更新分类触发按钮的显示文案（"全部文档分类" / 单个分类名 / "已选 N 个分类"）
+   */
+  function updateCategoryTrigger() {
+    const checkboxes = document.querySelectorAll('#searchCategoryDropdown input[type="checkbox"]:checked');
+    const count = checkboxes.length;
+    const trigger = document.getElementById('searchCategoryTrigger');
+    if (!trigger) return;
+    const span = trigger.querySelector('span');
+    if (!span) return;
+    if (count === 0) {
+      span.textContent = '全部文档分类';
+    } else if (count === 1) {
+      span.textContent = checkboxes[0].value;
+    } else {
+      span.textContent = `已选 ${count} 个分类`;
+    }
+  }
+
+  // ── 知识类型多选下拉 ──────────────────────────────────────────────
+
+  function toggleKtypeDropdown(event) {
+    event.stopPropagation();
+    const dropdown = document.getElementById('searchKtypeDropdown');
+    if (!dropdown) return;
+    dropdown.classList.toggle('is-hidden');
+  }
+
+  function onKtypeCheckboxChange() {
+    updateKtypeTrigger();
+    doSearch();
+  }
+
+  function updateKtypeTrigger() {
+    const checkboxes = document.querySelectorAll('#searchKtypeDropdown input[type="checkbox"]:checked');
+    const count = checkboxes.length;
+    const trigger = document.getElementById('searchKtypeTrigger');
+    if (!trigger) return;
+    const span = trigger.querySelector('span');
+    if (!span) return;
+    if (count === 0) {
+      span.textContent = '全部类型';
+    } else if (count === 1) {
+      span.textContent = UI.ktypeLabel(checkboxes[0].value);
+    } else {
+      span.textContent = `已选 ${count} 个类型`;
+    }
+  }
+
+  // 点击下拉外部区域关闭下拉（统一处理分类和知识类型）
+  document.addEventListener('click', function (e) {
+    [
+      { trigger: 'searchCategoryTrigger', dropdown: 'searchCategoryDropdown' },
+      { trigger: 'searchKtypeTrigger', dropdown: 'searchKtypeDropdown' },
+    ].forEach(({ trigger: tid, dropdown: did }) => {
+      const trigger = document.getElementById(tid);
+      const dropdown = document.getElementById(did);
+      if (dropdown && trigger && !trigger.contains(e.target) && !dropdown.contains(e.target)) {
+        dropdown.classList.add('is-hidden');
+      }
+    });
+  });
+
   return {
     render, doSearch, showResultDetail,
     handleTopKChange, cancelCustomTopK, confirmCustomTopK, resetFilters,
+    toggleCategoryDropdown, onCategoryCheckboxChange,
+    toggleKtypeDropdown, onKtypeCheckboxChange,
   };
 })();
