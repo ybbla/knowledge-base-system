@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     image_vision_enabled: bool = Field(default=True, validation_alias="IMAGE_VISION_ENABLED")
     video_vision_enabled: bool = Field(default=True, validation_alias="VIDEO_VISION_ENABLED")
 
+    # MinerU PDF 精准解析
+    mineru_api_token: str = Field(default="", validation_alias="MINERU_API_TOKEN")
+    mineru_api_base: str = Field(default="https://mineru.net", validation_alias="MINERU_API_BASE")
+    mineru_use_vlm: bool = Field(default=False, validation_alias="MINERU_USE_VLM")
+
     # 评测数据自动生成
     auto_eval_enabled: bool = Field(default=True, validation_alias="AUTO_EVAL_ENABLED")
     auto_eval_queries_per_doc: int = Field(default=3, validation_alias="AUTO_EVAL_QUERIES_PER_DOC")

@@ -55,7 +55,6 @@ VIDEO_URL_RE = re.compile(
     r"https?://[^\s\])<\"']*(?:youtube\.com|youtu\.be|vimeo\.com|\.mp4|\.webm|\.mov|\.m4v)[^\s\])<\"']*",
     re.IGNORECASE,
 )
-HTTP_URL_RE = re.compile(r"https?://[^\s\])<\"']+", re.IGNORECASE)
 
 # 附件扩展名
 ATTACHMENT_EXTENSIONS = {
@@ -540,9 +539,11 @@ class PdfParser(DocumentParser):
                 # 资源链接创建 Asset，与段落规则一致
                 asset_type = self._asset_type_for_url(uri)
                 if asset_type is not None:
-                    asset = self._asset_for_url(uri, asset_type, state, doc, {})
+                    display_text = anchor_text if anchor_text and anchor_text != uri else ""
+                    asset = self._asset_for_url(uri, asset_type, state, doc, {}, display_text=display_text)
                     if not any(ad.asset_id == asset.asset_id for ad in element.asset_data):
-                        element.asset_data.append(AssetData(placeholder="", asset_id=asset.asset_id))
+                        ph = state.next_ph(asset_type.value)
+                        element.asset_data.append(AssetData(placeholder=ph, asset_id=asset.asset_id))
                     if not asset.element_id:
                         asset.element_id = element.element_id
                 matched_uris.add(uri)
@@ -624,16 +625,12 @@ class PdfParser(DocumentParser):
             element_type = ElementType.paragraph
             metadata: dict[str, Any] = {}
 
-        # 提取 URL Asset
-        asset_ids = self._asset_ids_for_text(text, state, doc, page_number)
-
         self._append_element(state, ParsedElement(
             doc_id=state.doc_id,
             doc_version=state.doc_version,
             sequence_order=state.next_seq(),
             element_type=element_type,
             text=text,
-            asset_data=[AssetData(placeholder="", asset_id=a.asset_id) for a in asset_ids],
             source_location=SourceLocation(
                 page=page_number,
                 section_path=list(state.section_path),
@@ -667,7 +664,7 @@ class PdfParser(DocumentParser):
                     continue
                 ncols = len(extracted[0]) if extracted else 0
                 result.append({
-                    "headers": [str(cell or "") for cell in extracted[0]],
+                    "headers": [{"text": str(cell or "")} for cell in extracted[0]],
                     "rows": extracted[1:],
                     "bbox": getattr(table, "bbox", None),
                     "cells_bbox": getattr(table, "cells", None),
@@ -731,11 +728,14 @@ class PdfParser(DocumentParser):
 
         text_parts: list[str] = []
         if headers:
-            text_parts.append(" | ".join(headers))
+            text_parts.append(" | ".join(h["text"] for h in headers))
         for row in rows:
             text_parts.append(" | ".join(cell["text"] for cell in row["cells"]))
 
-        all_asset_ids = list({a.asset_id: a for a in table_asset_ids}.values())
+        table_asset_data: list[AssetData] = []
+        for a in {a.asset_id: a for a in table_asset_ids}.values():
+            ph = state.next_ph(a.asset_type.value)
+            table_asset_data.append(AssetData(placeholder=ph, asset_id=a.asset_id))
 
         self._append_element(state, ParsedElement(
             doc_id=state.doc_id,
@@ -744,7 +744,7 @@ class PdfParser(DocumentParser):
             element_type=ElementType.table,
             text="\n".join(part for part in text_parts if part.strip()),
             structured_data=structured,
-            asset_data=[AssetData(placeholder="", asset_id=a.asset_id) for a in all_asset_ids],
+            asset_data=table_asset_data,
             source_location=SourceLocation(
                 page=page_number,
                 section_path=list(state.section_path),
@@ -884,25 +884,6 @@ class PdfParser(DocumentParser):
 
     # ── 超链/ URL 资源 ─────────────────────────────────────────
 
-    def _asset_ids_for_text(
-        self,
-        text: str,
-        state: _PdfParseState,
-        doc: Document,
-        page_number: int,
-    ) -> list[Asset]:
-        """从文本中提取 URL 并创建对应的 Asset
-        仅对视频、图片、附件链接创Asset；普通网页链接跳过        """
-        urls = [match.group(0) for match in HTTP_URL_RE.finditer(text or "")]
-        asset_ids: list[Asset] = []
-        for url in dict.fromkeys(urls):
-            asset_type = self._asset_type_for_url(url)
-            if asset_type is None:
-                continue  # 普通网页链接，不创Asset
-            asset = self._asset_for_url(url, asset_type, state, doc, {})
-            asset_ids.append(asset)
-        return asset_ids
-
     def _asset_ids_for_page_links(
         self,
         page: fitz.Page,
@@ -945,7 +926,8 @@ class PdfParser(DocumentParser):
                 # 兜底关联到当前页最后一个元素
                 for el in reversed(state.elements):
                     if not any(ad.asset_id == asset.asset_id for ad in el.asset_data):
-                        el.asset_data.append(AssetData(placeholder="", asset_id=asset.asset_id))
+                        ph = state.next_ph(asset_type.value)
+                        el.asset_data.append(AssetData(placeholder=ph, asset_id=asset.asset_id))
                     if not asset.element_id:
                         asset.element_id = el.element_id
                     break
@@ -957,6 +939,7 @@ class PdfParser(DocumentParser):
         state: _PdfParseState,
         doc: Document,
         metadata: dict[str, Any],
+        display_text: str = "",
     ) -> Asset:
         """创建或复用 Asset，按 URL 和资源类型去重。"""
         key = (asset_type.value, url)
@@ -968,6 +951,7 @@ class PdfParser(DocumentParser):
             doc_id=doc.doc_id,
             asset_type=asset_type,
             original_uri=url,
+            display_text=display_text,
             storage_uri=None,
             status=AssetStatus.ready,
             extracted_text=None,

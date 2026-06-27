@@ -25,6 +25,7 @@ from app.core.models import (
 from parsers.base import DocumentParser, ParseResult
 from parsers.utils import (
     classify_link_text,
+    guess_mime,
     is_attachment_url,
     is_video_url,
 )
@@ -106,6 +107,9 @@ class MarkdownParser(DocumentParser):
                                         {"placeholder": ph, "asset_id": asset.asset_id}
                                     )
                     del self._preplaced_assets[ph]
+
+        # 回填 Asset.element_id 关联
+        self._link_assets_to_elements()
 
         doc.source_hash = compute_hash(content)
 
@@ -257,7 +261,7 @@ class MarkdownParser(DocumentParser):
             )
             if merged.strip():
                 self._elements.append(self._make_element(
-                    ElementType.paragraph, merged,
+                    ElementType.list, merged,
                 ))
             self._list_items = []
 
@@ -414,7 +418,7 @@ class MarkdownParser(DocumentParser):
             structured_data={
                 "table": {
                     "caption": "",
-                    "headers": [h[0] for h in self._table_headers] if self._table_headers else [],
+                    "headers": [{"text": h[0]} for h in self._table_headers] if self._table_headers else [],
                     "rows": cells_data,
                 }
             },
@@ -443,3 +447,11 @@ class MarkdownParser(DocumentParser):
         self._link_href = ""
         self._link_text_parts: list[str] = []
         self._preplaced_assets: dict[str, tuple[str, str, str]] = {}
+
+    def _link_assets_to_elements(self) -> None:
+        """通过 element.asset_data 回填 Asset.element_id。"""
+        for el in self._elements:
+            for ad in el.asset_data:
+                for asset in self._assets:
+                    if asset.asset_id == ad.asset_id and not asset.element_id:
+                        asset.element_id = el.element_id

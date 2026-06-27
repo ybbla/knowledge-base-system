@@ -9,7 +9,7 @@ from llm.semantic_extractor import SemanticExtractor
 from llm.volcengine_client import embedding_client
 from parsers.docx_parser import DocxParser
 from parsers.markdown_parser import MarkdownParser
-from parsers.pdf_parser import PdfParser
+from parsers.pdf_mineru_parser import PdfByMinerUParser
 from parsers.pptx_parser import PptxParser
 from parsers.registry import ParserRegistry
 from parsers.xlsx_parser import XlsxParser
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # ── Parser registry ──────────────────────────────────────────────────
 
 parser_registry = ParserRegistry()
-parser_registry.register(MarkdownParser(), DocxParser(), XlsxParser(), PptxParser(), PdfParser())
+parser_registry.register(MarkdownParser(), DocxParser(), XlsxParser(), PptxParser(), PdfByMinerUParser())
 
 # ── 外部服务后端 ─────────────────────────────────────────────────────
 

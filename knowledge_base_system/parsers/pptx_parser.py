@@ -51,7 +51,6 @@ class _PptxParseState:
     assets_by_key: dict[tuple[str, str], _AssetRecord] = field(default_factory=dict)
     seq: int = 0
     section_path: list[str] = field(default_factory=list)
-    link_urls: list[str] = field(default_factory=list)  # 普通网页链接（与其他解析器一致）
     _counters: dict[str, int] = field(default_factory=dict)
 
     def next_seq(self) -> int:
@@ -68,12 +67,6 @@ class _PptxParseState:
         self._counters[prefix] = self._counters.get(prefix, 0) + 1
         return f"{{{{{prefix}:{self._counters[prefix]}}}}}"
 
-    def consume_link_urls(self) -> list[str]:
-        """消费并清空普通网页链接列表。"""
-        result = list(self.link_urls)
-        self.link_urls = []
-        return result
-
 
 class PptxParser(DocumentParser):
     """将 PPTX 演示文稿解析为统一的 ParsedElement 和 Asset。
@@ -82,15 +75,12 @@ class PptxParser(DocumentParser):
     """
 
     SUPPORTED_TYPES = {"pptx"}
-    HTTP_URL_RE = re.compile(r"https?://[^\s\])<\"']+", re.IGNORECASE)
     TITLE_PLACEHOLDER_TYPES = {"TITLE", "CENTER_TITLE"}
     BODY_PLACEHOLDER_TYPES = {"BODY", "OBJECT", "CONTENT"}
     UNSUPPORTED_SHAPE_TYPES = {
-        "CHART",
         "EMBEDDED_OLE_OBJECT",
         "GROUP",
         "LINKED_OLE_OBJECT",
-        "MEDIA",
     }
 
     def supports(self, source_type: str) -> bool:
@@ -171,11 +161,15 @@ class PptxParser(DocumentParser):
             if title_record is not None and record.shape is title_record.shape:
                 continue
             if self._shape_has_table(record.shape):
-                self._add_table(record, slide_index, state, doc)
+                self._add_table(record, slide_index, state, doc, slide)
             elif self._is_picture(record.shape):
                 self._add_image(record, slide_index, state, doc)
             elif self._shape_has_text(record.shape):
                 self._add_text_shape(record, slide_index, state, doc)
+            elif self._is_chart_shape(record.shape):
+                self._add_chart(record, slide_index, state, doc)
+            elif self._is_video_shape(record.shape):
+                self._add_video(record, slide_index, state, doc, slide)
             elif self._is_unsupported_shape(record.shape):
                 self._add_unknown(record, slide_index, state)
 
@@ -217,86 +211,200 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
     ) -> None:
-        """处理文本形状，并区分列表和普通段落。"""
-        paragraphs = self._paragraphs(record.shape)
-        if not paragraphs:
+        """处理文本形状：遍历 run 级别，仅处理超链接，锚定文字用占位符替换。"""
+        if not self._shape_has_text(record.shape):
             return
 
-        if self._is_list_shape(record.shape, paragraphs):
-            # 收集整个形状的超链接（形状级 + 运行级），关联到列表容器
-            shape_links = self._collect_shape_links(record, slide_index, state, doc)
-            container = ParsedElement(
-                doc_id=state.doc_id,
-                doc_version=state.doc_version,
-                sequence_order=state.next_seq(),
-                element_type=ElementType.list,
-                text="",
-                source_location=SourceLocation(section_path=list(state.section_path)),
-                metadata={
-                    **self._slide_metadata(slide_index),
-                    **self._shape_metadata(record),
-                    "ordered": False,
-                },
-            )
-            self._append_element(state, container)
-            for paragraph in paragraphs:
-                asset_ids = list(
-                    dict.fromkeys(
-                        self._asset_ids_for_text(
-                            paragraph["text"], record, slide_index, state, doc,
-                        )
-                        + self._asset_ids_for_shape_hyperlinks(
-                            record, slide_index, state, doc,
-                        )
-                    )
-                )
-                state.consume_link_urls()  # 列表项中的普通网页链接丢弃（DOCX 一致）
-                self._append_element(
-                    state,
-                    ParsedElement(
-                        doc_id=state.doc_id,
-                        doc_version=state.doc_version,
-                        parent_element_id=container.element_id,
-                        sequence_order=state.next_seq(),
-                        element_type=ElementType.paragraph,
-                        text=paragraph["text"],
-                        asset_data=self._asset_data_from_ids(asset_ids, state),
-                        source_location=SourceLocation(section_path=list(state.section_path)),
-                        metadata={
-                            **self._slide_metadata(slide_index),
-                            **self._shape_metadata(record),
-                            "level": paragraph["level"],
-                        },
-                    ),
-                )
+        # 按段落处理：遍历 run，run 超链接 → 占位符
+        paragraphs_data: list[dict[str, Any]] = []
+        for paragraph in record.shape.text_frame.paragraphs:
+            text, ads = self._render_paragraph_runs(paragraph, record, slide_index, state, doc)
+            if text:
+                paragraphs_data.append({
+                    "text": text,
+                    "level": getattr(paragraph, "level", 0),
+                    "asset_data": ads,
+                })
+
+        if not paragraphs_data:
             return
 
-        text = "\n".join(item["text"] for item in paragraphs)
-        asset_ids = list(
-            dict.fromkeys(
-                self._asset_ids_for_text(text, record, slide_index, state, doc)
-                + self._asset_ids_for_shape_hyperlinks(record, slide_index, state, doc)
+        # 形状级超链接 → 挂到第一个段落
+        try:
+            shape_url = record.shape.click_action.hyperlink.address
+        except Exception:
+            shape_url = None
+        if shape_url:
+            asset = self._asset_for_url(
+                shape_url, self._asset_type_for_url(shape_url), state, doc,
+                {**self._slide_metadata(slide_index), **self._shape_metadata(record),
+                 "source": "pptx_hyperlink"},
+                display_text="",
             )
+            ph = state.next_ph(asset.asset_type.value)
+            paragraphs_data[0]["asset_data"].append(
+                AssetData(placeholder=ph, asset_id=asset.asset_id))
+            paragraphs_data[0]["text"] += " " + ph
+
+        text = "\n".join(pd["text"] for pd in paragraphs_data)
+        all_ads: list[AssetData] = []
+        for pd in paragraphs_data:
+            all_ads.extend(pd["asset_data"])
+        element_type = (
+            ElementType.list if self._is_list_shape(record.shape, paragraphs_data)
+            else ElementType.paragraph
         )
-        link_urls = state.consume_link_urls()  # 不再写入 metadata，链接信息已在 structured_data.links 中
-        links = self._collect_shape_links(record, slide_index, state, doc)
-        metadata = {
-            **self._slide_metadata(slide_index),
-            **self._shape_metadata(record),
-        }
-        self._append_element(
-            state,
-            ParsedElement(
-                doc_id=state.doc_id,
-                doc_version=state.doc_version,
-                sequence_order=state.next_seq(),
-                element_type=ElementType.paragraph,
-                text=text,
-                asset_data=self._asset_data_from_ids(asset_ids, state),
-                source_location=SourceLocation(section_path=list(state.section_path)),
-                metadata=metadata,
-            ),
-        )
+        self._append_element(state, ParsedElement(
+            doc_id=state.doc_id,
+            doc_version=state.doc_version,
+            sequence_order=state.next_seq(),
+            element_type=element_type,
+            text=text,
+            asset_data=all_ads,
+            source_location=SourceLocation(section_path=list(state.section_path)),
+            metadata={
+                **self._slide_metadata(slide_index),
+                **self._shape_metadata(record),
+            },
+        ))
+
+    def _render_paragraph_runs(
+        self,
+        paragraph: Any,
+        record: _ShapeRecord,
+        slide_index: int,
+        state: _PptxParseState,
+        doc: Document,
+    ) -> tuple[str, list[AssetData]]:
+        """处理单段落的 run 序列：仅处理 run 级超链接，不提取纯文本 URL。
+
+        与 DOCX 对齐：仅真正的超链接对象创建 Asset，锚定文字被占位符替换。
+        """
+        text_parts: list[str] = []
+        asset_data_list: list[AssetData] = []
+
+        for run in paragraph.runs:
+            run_text = self._normalize_text(run.text)
+            if not run_text:
+                continue
+
+            try:
+                address = run.hyperlink.address
+            except Exception:
+                address = None
+
+            if address:
+                asset = self._asset_for_url(
+                    address, self._asset_type_for_url(address), state, doc,
+                    {**self._slide_metadata(slide_index), **self._shape_metadata(record),
+                     "source": "pptx_hyperlink"},
+                    display_text=run_text,
+                )
+                ph = state.next_ph(asset.asset_type.value)
+                asset_data_list.append(AssetData(placeholder=ph, asset_id=asset.asset_id))
+                text_parts.append(ph)
+            else:
+                text_parts.append(run_text)
+
+        return "".join(text_parts), asset_data_list
+
+    def _render_cell_text(
+        self,
+        cell: Any,
+        record: _ShapeRecord,
+        slide_index: int,
+        state: _PptxParseState,
+        doc: Document,
+        slide: Any = None,
+    ) -> tuple[str, list[AssetData]]:
+        """处理表格单元格文本：仅处理 run 级超链接，不提取纯文本 URL。
+
+        text_frame 异常时 fallback 到 raw XML，确保超链接不丢失。
+        """
+        text_parts: list[str] = []
+        asset_data_list: list[AssetData] = []
+
+        try:
+            for para in cell.text_frame.paragraphs:
+                for run in para.runs:
+                    run_text = self._normalize_text(run.text)
+                    if not run_text:
+                        continue
+                    try:
+                        addr = run.hyperlink.address
+                    except Exception:
+                        addr = None
+                    if addr:
+                        asset = self._asset_for_url(
+                            addr, self._asset_type_for_url(addr), state, doc,
+                            {**self._slide_metadata(slide_index), **self._shape_metadata(record),
+                             "source": "pptx_table_cell"},
+                            display_text=run_text,
+                        )
+                        ph = state.next_ph(asset.asset_type.value)
+                        asset_data_list.append(AssetData(placeholder=ph, asset_id=asset.asset_id))
+                        text_parts.append(ph)
+                    else:
+                        text_parts.append(run_text)
+        except Exception:
+            if slide is not None:
+                return self._render_cell_xml_fallback(cell, slide, record, slide_index, state, doc)
+            return self._normalize_text(cell.text), []
+
+        return "".join(p for p in text_parts if p), asset_data_list
+
+    def _render_cell_xml_fallback(
+        self,
+        cell: Any,
+        slide: Any,
+        record: _ShapeRecord,
+        slide_index: int,
+        state: _PptxParseState,
+        doc: Document,
+    ) -> tuple[str, list[AssetData]]:
+        """text_frame 不可用时从 raw XML 解析单元格 run 级超链接。"""
+        A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+        R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+        text_parts: list[str] = []
+        asset_data_list: list[AssetData] = []
+        rels = slide.part.rels
+
+        for p_el in cell._tc.iter(f"{{{A_NS}}}p"):
+            for r_el in p_el.iter(f"{{{A_NS}}}r"):
+                t_el = r_el.find(f"{{{A_NS}}}t")
+                if t_el is None or not t_el.text:
+                    continue
+                run_text = self._normalize_text(t_el.text)
+                if not run_text:
+                    continue
+
+                rPr = r_el.find(f"{{{A_NS}}}rPr")
+                hlink = rPr.find(f"{{{A_NS}}}hlinkClick") if rPr is not None else None
+                if hlink is not None:
+                    rId = hlink.get(f"{{{R_NS}}}id")
+                    if rId:
+                        try:
+                            url = rels[rId].target_ref
+                        except (KeyError, AttributeError):
+                            url = None
+                        if url:
+                            asset = self._asset_for_url(
+                                url, self._asset_type_for_url(url), state, doc,
+                                {**self._slide_metadata(slide_index),
+                                 **self._shape_metadata(record),
+                                 "source": "pptx_table_cell"},
+                                display_text=run_text,
+                            )
+                            ph = state.next_ph(asset.asset_type.value)
+                            asset_data_list.append(
+                                AssetData(placeholder=ph, asset_id=asset.asset_id))
+                            text_parts.append(ph)
+                            continue
+
+                text_parts.append(run_text)
+
+        return "".join(text_parts), asset_data_list
 
     def _add_table(
         self,
@@ -304,72 +412,31 @@ class PptxParser(DocumentParser):
         slide_index: int,
         state: _PptxParseState,
         doc: Document,
+        slide: Any = None,
     ) -> None:
-        """处理表格形状，生成结构化表格元素。
-        资源链接创建 Asset，规则与段落元素一致。"""
+        """处理表格形状：仅处理 run 超链接，锚定文字用占位符替换，与 DOCX 对齐。"""
         table = record.shape.table
         rows: list[list[dict[str, Any]]] = []
-        asset_ids: list[str] = []
+        all_asset_data: list[AssetData] = []
 
         for row_index, row in enumerate(table.rows, start=1):
             cells = []
             for col_index, cell in enumerate(row.cells, start=1):
-                text = self._normalize_text(cell.text)
-                cell_asset_ids = self._asset_ids_for_text(
-                    text,
-                    record,
-                    slide_index,
-                    state,
-                    doc,
-                )
-                # 收集本单元格产生的资源链接
-                state.consume_link_urls()  # 清空，不再写入 metadata
-                asset_ids.extend(cell_asset_ids)
-                cells.append(
-                    {
-                        "text": text,
-                        "metadata": {
-                            "row": row_index,
-                            "column": col_index,
-                            "slide_index": slide_index,
-                            "slide_number": slide_index,
-                        },
-                    }
-                )
+                text, cell_ads = self._render_cell_text(cell, record, slide_index, state, doc, slide)
+                all_asset_data.extend(cell_ads)
+                cells.append({
+                    "text": text,
+                    "metadata": {
+                        "row": row_index,
+                        "column": col_index,
+                        "slide_index": slide_index,
+                        "slide_number": slide_index,
+                    },
+                })
             rows.append(cells)
 
         if not rows:
             return
-
-        # ── 收集表格内运行级超链──
-        table_hyperlink_urls: list[str] = []
-        for row in table.rows:
-            for cell in row.cells:
-                try:
-                    tf = cell.text_frame
-                except Exception:
-                    continue
-                for para in tf.paragraphs:
-                    for run in para.runs:
-                        try:
-                            addr = run.hyperlink.address
-                        except Exception:
-                            addr = None
-                        if addr:
-                            table_hyperlink_urls.append(addr)
-
-        # ── 单元格文本中内嵌URL（正则匹配，非超链接──
-        seen_hyperlink_urls = set(table_hyperlink_urls)
-        for row in table.rows:
-            for cell in row.cells:
-                text = self._normalize_text(cell.text)
-                for match in self.HTTP_URL_RE.finditer(text):
-                    url = match.group(0)
-                    if url not in seen_hyperlink_urls:
-                        seen_hyperlink_urls.add(url)
-                        kind = classify_link(url)
-                        if kind != "url":
-                            table_hyperlink_urls.append(url)
 
         # ── 形状级超链接 ──
         try:
@@ -377,20 +444,18 @@ class PptxParser(DocumentParser):
         except Exception:
             addr = None
         if addr:
-            table_hyperlink_urls.append(addr)
+            asset = self._asset_for_url(
+                addr, self._asset_type_for_url(addr), state, doc,
+                {**self._slide_metadata(slide_index), **self._shape_metadata(record),
+                 "source": "pptx_table_hyperlink"},
+                display_text="",
+            )
+            ph = state.next_ph(asset.asset_type.value)
+            all_asset_data.append(AssetData(placeholder=ph, asset_id=asset.asset_id))
+            # 占位符追加到第一个单元格文本
+            rows[0][0]["text"] += " " + ph
 
-        # 创建超链Asset，同时普通网页链接进state.link_urls
-        table_asset_ids = self._asset_ids_for_urls(
-            table_hyperlink_urls,
-            record, slide_index, state, doc,
-            "pptx_table_hyperlink",
-        )
-        asset_ids.extend(table_asset_ids)
-
-        # 清空累积的普通网页链接（不再写入 metadata）
-        state.consume_link_urls()
-
-        headers = [cell["text"] for cell in rows[0]]
+        headers = [{"text": cell["text"]} for cell in rows[0]]
         data_rows = [{"cells": row} for row in rows[1:]]
         structured: dict[str, Any] = {
             "table": {
@@ -408,7 +473,7 @@ class PptxParser(DocumentParser):
 
         text_parts = []
         if headers:
-            text_parts.append(" | ".join(headers))
+            text_parts.append(" | ".join(h["text"] for h in headers))
         for row in data_rows:
             text_parts.append(" | ".join(cell["text"] for cell in row["cells"]))
 
@@ -426,7 +491,7 @@ class PptxParser(DocumentParser):
                 element_type=ElementType.table,
                 text="\n".join(part for part in text_parts if part.strip()),
                 structured_data=structured,
-                asset_data=self._asset_data_from_ids(list(dict.fromkeys(asset_ids)), state),
+                asset_data=all_asset_data,
                 source_location=SourceLocation(section_path=list(state.section_path)),
                 metadata=metadata,
             ),
@@ -469,16 +534,49 @@ class PptxParser(DocumentParser):
         else:
             asset = record_asset.asset
 
-        element_asset_ids = list(
-            dict.fromkeys(
-                [asset.asset_id]
-                + self._asset_ids_for_shape_hyperlinks(record, slide_index, state, doc)
+        # 图片自身的 AssetData
+        img_ph = state.next_ph("image")
+        text = img_ph
+        all_ads: list[AssetData] = [
+            AssetData(placeholder=img_ph, asset_id=asset.asset_id)
+        ]
+
+        # 形状级超链接：Asset → 占位符追加到文本
+        try:
+            shape_url = record.shape.click_action.hyperlink.address
+        except Exception:
+            shape_url = None
+        if shape_url:
+            link_asset = self._asset_for_url(
+                shape_url, self._asset_type_for_url(shape_url), state, doc,
+                {**self._slide_metadata(slide_index), **self._shape_metadata(record),
+                 "source": "pptx_hyperlink"},
+                display_text="",
             )
-        )
-        links = self._collect_shape_links(
-            record, slide_index, state, doc, image_filename=filename,
-        )
-        state.consume_link_urls()  # 图片属于附属资源，不记录 link_urls
+            link_ph = state.next_ph(link_asset.asset_type.value)
+            all_ads.append(AssetData(placeholder=link_ph, asset_id=link_asset.asset_id))
+            text += " " + link_ph
+
+        # 运行级超链接
+        if self._shape_has_text(record.shape):
+            for paragraph in record.shape.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    try:
+                        addr = run.hyperlink.address
+                    except Exception:
+                        addr = None
+                    if addr:
+                        run_text = self._normalize_text(run.text)
+                        run_asset = self._asset_for_url(
+                            addr, self._asset_type_for_url(addr), state, doc,
+                            {**self._slide_metadata(slide_index), **self._shape_metadata(record),
+                             "source": "pptx_hyperlink"},
+                            display_text=run_text,
+                        )
+                        run_ph = state.next_ph(run_asset.asset_type.value)
+                        all_ads.append(AssetData(placeholder=run_ph, asset_id=run_asset.asset_id))
+                        text += " " + run_ph
+
         self._append_element(
             state,
             ParsedElement(
@@ -486,8 +584,8 @@ class PptxParser(DocumentParser):
                 doc_version=state.doc_version,
                 sequence_order=state.next_seq(),
                 element_type=ElementType.paragraph,
-                text=(ph := state.next_ph("image")),
-                asset_data=self._asset_data_from_ids(element_asset_ids, state, placeholder=ph),
+                text=text,
+                asset_data=all_ads,
                 source_location=SourceLocation(section_path=list(state.section_path)),
                 metadata={
                     **self._slide_metadata(slide_index),
@@ -496,6 +594,183 @@ class PptxParser(DocumentParser):
                 },
             ),
         )
+
+    def _add_video(
+        self,
+        record: _ShapeRecord,
+        slide_index: int,
+        state: _PptxParseState,
+        doc: Document,
+        slide: Any,
+    ) -> None:
+        """处理视频形状：从 raw XML 提取外部视频链接，创建 video_link Asset。"""
+        A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+        R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+        url = None
+        el = record.shape._element
+        video_file = el.find(f".//{{{A_NS}}}videoFile")
+        if video_file is not None:
+            rId = video_file.get(f"{{{R_NS}}}link")
+            if rId:
+                try:
+                    url = slide.part.rels[rId].target_ref
+                except (KeyError, AttributeError):
+                    pass
+
+        if not url:
+            self._add_unknown(record, slide_index, state)
+            return
+
+        asset = self._asset_for_url(
+            url, AssetType.video_link, state, doc,
+            {**self._slide_metadata(slide_index), **self._shape_metadata(record),
+             "source": "pptx_video"},
+        )
+        ph = state.next_ph(asset.asset_type.value)
+        text = ph
+        all_ads = [AssetData(placeholder=ph, asset_id=asset.asset_id)]
+
+        # 形状级超链接
+        try:
+            shape_url = record.shape.click_action.hyperlink.address
+        except Exception:
+            shape_url = None
+        if shape_url:
+            link_asset = self._asset_for_url(
+                shape_url, self._asset_type_for_url(shape_url), state, doc,
+                {**self._slide_metadata(slide_index), **self._shape_metadata(record),
+                 "source": "pptx_hyperlink"},
+                display_text="",
+            )
+            link_ph = state.next_ph(link_asset.asset_type.value)
+            all_ads.append(AssetData(placeholder=link_ph, asset_id=link_asset.asset_id))
+            text += " " + link_ph
+
+        self._append_element(state, ParsedElement(
+            doc_id=state.doc_id,
+            doc_version=state.doc_version,
+            sequence_order=state.next_seq(),
+            element_type=ElementType.paragraph,
+            text=text,
+            asset_data=all_ads,
+            source_location=SourceLocation(section_path=list(state.section_path)),
+            metadata={
+                **self._slide_metadata(slide_index),
+                **self._shape_metadata(record),
+            },
+        ))
+
+    @staticmethod
+    def _is_video_shape(shape: Any) -> bool:
+        """判断形状是否为视频（MEDIA 类型）。"""
+        shape_type = getattr(shape, "shape_type", "")
+        type_name = getattr(shape_type, "name", str(shape_type)).upper()
+        return type_name == "MEDIA"
+
+    def _add_chart(
+        self,
+        record: _ShapeRecord,
+        slide_index: int,
+        state: _PptxParseState,
+        doc: Document,
+    ) -> None:
+        """处理图表形状：提取标题和表格数据，生成为 title + table 元素。"""
+        chart = record.shape.chart
+
+        # ── 图表标题 ──
+        chart_title = ""
+        try:
+            if chart.chart_title is not None and chart.chart_title.has_text_frame:
+                chart_title = self._normalize_text(chart.chart_title.text_frame.text)
+        except Exception:
+            pass
+
+        # ── 提取分类和数据系列 ──
+        categories: list[str] = []
+        try:
+            cats = chart.plots[0].categories
+            if cats is not None:
+                categories = [str(c) for c in cats]
+        except Exception:
+            try:
+                cats = getattr(chart.category_axis, "categories", None)
+                if cats is not None:
+                    categories = [str(c) for c in cats]
+            except Exception:
+                pass
+
+        series_names: list[str] = []
+        series_values: list[list] = []
+        try:
+            for s in chart.series:
+                name = ""
+                try:
+                    if s.name is not None:
+                        name = str(s.name)
+                except Exception:
+                    pass
+                series_names.append(name)
+                try:
+                    series_values.append(list(s.values))
+                except Exception:
+                    series_values.append([])
+        except Exception:
+            pass
+
+        if not categories and not series_names:
+            self._add_unknown(record, slide_index, state)
+            return
+
+        # ── 构建表格 ──
+        # headers: [类别, 系列1, 系列2, ...]
+        headers_data = [{"text": chart_title or "类别"}]
+        for name in series_names:
+            headers_data.append({"text": name})
+
+        rows_data = []
+        for i, cat in enumerate(categories):
+            cells = [{"text": cat}]
+            for vals in series_values:
+                cells.append({"text": str(vals[i]) if i < len(vals) else ""})
+            rows_data.append({"cells": cells})
+
+        all_asset_data: list[AssetData] = []
+
+        text_parts = [" | ".join(h["text"] for h in headers_data)]
+        for row in rows_data:
+            text_parts.append(" | ".join(c["text"] for c in row["cells"]))
+
+        self._append_element(state, ParsedElement(
+            doc_id=state.doc_id,
+            doc_version=state.doc_version,
+            sequence_order=state.next_seq(),
+            element_type=ElementType.table,
+            text="\n".join(text_parts),
+            structured_data={
+                "table": {
+                    "caption": "",
+                    "headers": headers_data,
+                    "rows": rows_data,
+                    "metadata": {
+                        **self._slide_metadata(slide_index),
+                        **self._shape_metadata(record),
+                        "source": "pptx_chart",
+                    },
+                }
+            },
+            asset_data=all_asset_data,
+            source_location=SourceLocation(section_path=list(state.section_path)),
+            metadata={
+                **self._slide_metadata(slide_index),
+                **self._shape_metadata(record),
+            },
+        ))
+
+    @staticmethod
+    def _is_chart_shape(shape: Any) -> bool:
+        """判断形状是否为图表。"""
+        return bool(getattr(shape, "has_chart", False))
 
     def _add_unknown(
         self,
@@ -520,131 +795,6 @@ class PptxParser(DocumentParser):
             ),
         )
 
-    def _asset_ids_for_text(
-        self,
-        text: str,
-        record: _ShapeRecord,
-        slide_index: int,
-        state: _PptxParseState,
-        doc: Document,
-    ) -> list[str]:
-        """从文本中识别 URL 并创建对应资源。"""
-        urls = [match.group(0) for match in self.HTTP_URL_RE.finditer(text or "")]
-        return self._asset_ids_for_urls(urls, record, slide_index, state, doc, "pptx_text")
-
-    def _asset_ids_for_shape_hyperlinks(
-        self,
-        record: _ShapeRecord,
-        slide_index: int,
-        state: _PptxParseState,
-        doc: Document,
-    ) -> list[str]:
-        """从形状和文本运行中的超链接创建资源。"""
-        urls: list[str] = []
-        try:
-            address = record.shape.click_action.hyperlink.address
-            if address:
-                urls.append(address)
-        except Exception:
-            pass
-
-        if self._shape_has_text(record.shape):
-            for paragraph in record.shape.text_frame.paragraphs:
-                for run in paragraph.runs:
-                    try:
-                        address = run.hyperlink.address
-                    except Exception:
-                        address = None
-                    if address:
-                        urls.append(address)
-
-        return self._asset_ids_for_urls(
-            urls,
-            record,
-            slide_index,
-            state,
-            doc,
-            "pptx_hyperlink",
-        )
-
-    def _collect_shape_links(
-        self,
-        record: _ShapeRecord,
-        slide_index: int,
-        state: _PptxParseState,
-        doc: Document,
-        image_filename: str = "",
-    ) -> list[dict[str, str]]:
-        """收集形状中所有超链接{text, url, link_type} 信息
-        参数            record: 形状记录            slide_index: 幻灯片索引            state: 解析状态            doc: 文档对象            image_filename: 图片形状的文件名，用_shape_text() 返回空时
-                           作为链接文字 fallback
-        返回            链接信息列表，每项包text、url、link_type 三个字段        """
-        links: list[dict[str, str]] = []
-
-        # ── 形状级超链接（click_action.hyperlink──
-        try:
-            address = record.shape.click_action.hyperlink.address
-        except Exception:
-            address = None
-        if address:
-            text = self._shape_text(record.shape) or image_filename
-            if text:
-                links.append({
-                    "text": text,
-                    "url": address,
-                    "link_type": classify_link(address),
-                })
-
-        # ── 运行级超链接（run.hyperlink──
-        if self._shape_has_text(record.shape):
-            for paragraph in record.shape.text_frame.paragraphs:
-                for run in paragraph.runs:
-                    try:
-                        address = run.hyperlink.address
-                    except Exception:
-                        address = None
-                    if address:
-                        run_text = self._normalize_text(run.text)
-                        if run_text:
-                            links.append({
-                                "text": run_text,
-                                "url": address,
-                                "link_type": classify_link(address),
-                            })
-
-        return links
-
-    def _asset_ids_for_urls(
-        self,
-        urls: list[str],
-        record: _ShapeRecord,
-        slide_index: int,
-        state: _PptxParseState,
-        doc: Document,
-        source: str,
-    ) -> list[str]:
-        """为一URL 创建 Asset 并返ID 列表
-        普通网页链接（classify_link 返回 "url"）不创建 Asset        但记录到 state.link_urls，与其他解析器行为一致        """
-        asset_ids: list[str] = []
-        for url in dict.fromkeys(urls):
-            asset_type = self._asset_type_for_url(url)
-            if asset_type is None:
-                state.link_urls.append(url)
-                continue
-            asset = self._asset_for_url(
-                url,
-                asset_type,
-                state,
-                doc,
-                {
-                    **self._slide_metadata(slide_index),
-                    **self._shape_metadata(record),
-                    "source": source,
-                },
-            )
-            asset_ids.append(asset.asset_id)
-        return asset_ids
-
     def _asset_for_url(
         self,
         url: str,
@@ -652,8 +802,12 @@ class PptxParser(DocumentParser):
         state: _PptxParseState,
         doc: Document,
         metadata: dict[str, Any],
+        display_text: str = "",
     ) -> Asset:
-        """创建或复用 Asset，按 URL 和资源类型去重。"""
+        """创建或复用 Asset，按 URL 和资源类型去重。
+
+        首次创建时设置 display_text（超链接锚定文字），后续复用不覆盖。
+        """
         key = (asset_type.value, url)
         existing = state.assets_by_key.get(key)
         if existing is not None:
@@ -663,6 +817,7 @@ class PptxParser(DocumentParser):
             doc_id=doc.doc_id,
             asset_type=asset_type,
             original_uri=url,
+            display_text=display_text,
             storage_uri=None,
             status=AssetStatus.ready,
             extracted_text=None,
@@ -672,15 +827,6 @@ class PptxParser(DocumentParser):
         state.assets_by_key[key] = _AssetRecord(asset=asset, key=key)
         return asset
 
-    def _asset_data_from_ids(
-        self,
-        asset_ids: list[str],
-        state: _PptxParseState,
-        placeholder: str = "",
-    ) -> list[AssetData]:
-        """将 asset_id 列表转换为 AssetData 列表。"""
-        return [AssetData(placeholder=placeholder, asset_id=aid) for aid in asset_ids]
-
     @staticmethod
     def _append_element(state: _PptxParseState, element: ParsedElement) -> None:
         """添加元素，并通过 asset_id 回填 Asset.element_id。"""
@@ -689,15 +835,6 @@ class PptxParser(DocumentParser):
             if record.asset.asset_id in linked and not record.asset.element_id:
                 record.asset.element_id = element.element_id
         state.elements.append(element)
-
-    def _paragraphs(self, shape: Any) -> list[dict[str, Any]]:
-        """提取形状中的段落文本及缩进级别。"""
-        items: list[dict[str, Any]] = []
-        for paragraph in shape.text_frame.paragraphs:
-            text = self._normalize_text(paragraph.text)
-            if text:
-                items.append({"text": text, "level": getattr(paragraph, "level", 0)})
-        return items
 
     def _is_list_shape(self, shape: Any, paragraphs: list[dict[str, Any]]) -> bool:
         """判断形状内容是否为列表格式
@@ -786,13 +923,16 @@ class PptxParser(DocumentParser):
         }
 
     def _asset_type_for_url(self, url: str) -> AssetType | None:
-        """根据 URL 模式判断资源类型（使用公classify_link 分类）
-        返回 AssetType 用于创建 Asset；普通网页链接返None，不创建 Asset        """
+        """根据 URL 模式判断资源类型（使用classify_link 分类）。
+
+        与 DOCX 解析器对齐：所有 URL 类型均创建 Asset。
+        """
         kind = classify_link(url)
         return {
             "image": AssetType.image_link,
             "video": AssetType.video_link,
             "audio": AssetType.video_link,
             "document": AssetType.document_link,
-        }.get(kind)  # "url" 不在映射返回 None
+            "url": AssetType.web_link,
+        }.get(kind)  # 都返回 AssetType，不再有 None
 
