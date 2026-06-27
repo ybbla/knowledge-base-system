@@ -21,10 +21,28 @@ const Chunks = (() => {
      ----------------------------------------------------------------------- */
 
   /**
-   * 渲染知识块管理页面（路由入口），加载筛选项并绘制表格框架
+   * 渲染知识块管理页面（路由入口），先展示骨架再异步加载数据
    */
   async function render() {
     UI.setBreadcrumb([{ label: '仪表盘', path: '#/' }, { label: '知识块管理' }]);
+
+    // ── 立即渲染骨架，消除侧边栏点击后的空白等待感 ──
+    UI.render(`
+      <div class="page-header">
+        <div class="page-header-row">
+          <div><h1 class="page-title">知识块管理</h1><p class="page-subtitle">浏览和管理所有已抽取的知识块</p></div>
+          <div class="page-actions">
+            <button class="btn btn-outline btn-sm" disabled>批量删除</button>
+            <button class="btn btn-primary" disabled>+ 新建知识块</button>
+          </div>
+        </div>
+      </div>
+      <div class="doc-tabs">
+        <button class="doc-tab active" disabled>活跃</button>
+        <button class="doc-tab" disabled>回收站</button>
+      </div>
+      <div class="loading-overlay"><div class="loading-spinner"></div><span>加载知识块列表…</span></div>
+    `);
 
     // 动态加载筛选项
     try {

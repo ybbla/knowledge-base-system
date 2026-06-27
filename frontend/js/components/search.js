@@ -9,10 +9,20 @@ const SearchPage = (() => {
   let pendingTopKSelectId = '';
 
   /**
-   * 渲染搜索页面（路由入口），加载筛选项并绘制搜索工具栏
+   * 渲染搜索页面（路由入口），先展示骨架再异步加载筛选项
    */
   async function render() {
     UI.setBreadcrumb([{ label: '仪表盘', path: '#/' }, { label: '知识搜索' }]);
+
+    // ── 立即渲染骨架，消除侧边栏点击后的空白等待感 ──
+    UI.render(`
+      <div class="page-header">
+        <div class="page-header-row">
+          <div><h1 class="page-title">知识搜索</h1><p class="page-subtitle">按问题检索知识块，支持分类、知识类型过滤与混合检索</p></div>
+        </div>
+      </div>
+      <div class="loading-overlay"><div class="loading-spinner"></div><span>加载搜索…</span></div>
+    `);
 
     // 加载筛选项
     let filterOptions = {};

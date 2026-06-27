@@ -32,9 +32,18 @@ const Dashboard = (() => {
     return '';
   }
 
-  /** 渲染仪表盘页面 */
+  /** 渲染仪表盘页面（先展示骨架，再异步填充数据） */
   async function render() {
     UI.setBreadcrumb([{ label: '仪表盘' }]);
+
+    // ── 立即渲染骨架，消除侧边栏点击后的空白等待感 ──
+    UI.render(`
+      <div class="page-header">
+        <h1 class="page-title">知识库概览</h1>
+        <p class="page-subtitle">文档入库、语义抽取、混合检索 — 一站式知识管理</p>
+      </div>
+      <div class="loading-overlay"><div class="loading-spinner"></div><span>加载仪表盘…</span></div>
+    `);
 
     // ── 全部数据并行获取（health + 4 个统计查询，每个独立容错） ──
     const [healthRes, docsRes, chunksRes, failedRes, processingRes] = await Promise.all([
@@ -53,7 +62,7 @@ const Dashboard = (() => {
     const failedDocCount = failedRes?.metadata?.total || 0;
     const processingDocCount = processingRes?.metadata?.total || 0;
 
-    // ── 第三步：组装外部依赖列表（按固定顺序） ──
+    // ── 组装外部依赖列表（按固定顺序） ──
     const externalDeps = [
       depStatuses.postgresql,
       depStatuses.milvus,
@@ -61,7 +70,7 @@ const Dashboard = (() => {
       depStatuses.llm
     ].filter(Boolean);
 
-    // ── 第四步：渲染页面 ──
+    // ── 用真实数据替换骨架，渲染完整页面 ──
     UI.render(`
       <div class="page-header">
         <h1 class="page-title">知识库概览</h1>
