@@ -24,23 +24,32 @@ const Documents = (() => {
   async function renderList() {
     UI.setBreadcrumb([{ label: '仪表盘', path: '#/' }, { label: '文档管理' }]);
 
-    // 先渲染骨架结构，避免抖动
-    renderSkeleton();
+    // 重置页面级状态，避免上次访问的残留状态导致左侧栏与显示区域对不上
+    _forceFullRender = true;
+    selectedIds.clear();
+    _selectAllAbort++;
 
     // 从 URL hash 参数读取状态筛选（如 /#/documents?status=failed）
     const query = Router.getQuery();
     if (query.status && ['active', 'failed', 'processing', 'deleted'].includes(query.status)) {
       currentTab = query.status;
       currentStatus = query.status;
+    } else {
+      // 无 URL 参数时恢复默认标签页和筛选条件，防止上次的页面状态残留
+      currentTab = 'active';
+      currentStatus = 'active';
+      currentKeyword = '';
+      currentCategory = '';
+      currentSort = 'updated_at:desc';
     }
 
-    // 动态加载分类选项
-    try {
-      const res = await API.searchFilters();
-      categoryOptions = (res?.data?.categories || []).map(c => c.value);
-    } catch (e) { categoryOptions = []; }
-
-    await loadPage(1);
+    // 并行获取筛选项和文档列表，避免串行等待造成页面切换卡顿
+    // searchFilters 带 5 分钟缓存，二次进入页面几乎瞬时返回
+    const filtersPromise = API.searchFilters()
+      .then(res => { categoryOptions = (res?.data?.categories || []).map(c => c.value); })
+      .catch(() => { categoryOptions = []; });
+    const loadPromise = loadPage(1);
+    await Promise.all([filtersPromise, loadPromise]);
   }
 
   function renderSkeleton() {
@@ -653,35 +662,43 @@ const Documents = (() => {
   }
 
   /** 批量重试选中的失败文档（并行，受并发上限控制） */
+  /** 批量重试失败文档（一次后端批量请求，后端异步入库，前端轮询追踪） */
   async function batchRetry() {
     if (!selectedIds.size) return;
     const ok = await UI.showConfirm('批量重试确认', `确认重新入库 ${selectedIds.size} 篇失败文档？`, '确认重试');
     if (!ok) return;
     const ids = [...selectedIds];
-    const tasks = ids.map(id => () => API.retryDocument(id));
-    const results = await runWithConcurrencyLimit(tasks, MAX_CONCURRENT_UPLOADS);
-    let done = 0, fail = 0;
-    for (const r of results) {
-      if (r.status === 'fulfilled') done++; else fail++;
+    try {
+      const res = await API.batchRetryDocuments(ids);
+      const submitted = res?.data?.submitted ?? 0;
+      const skipped = res?.data?.skipped ?? 0;
+      UI.toast(
+        `已提交 ${submitted} 篇重试${skipped ? `，跳过 ${skipped} 篇` : ''}，请等待入库完成后刷新页面`,
+        skipped ? 'warning' : 'success'
+      );
+    } catch (e) {
+      UI.toast(`批量重试失败: ${e.message}`, 'error');
     }
-    UI.toast(`重试完成: 成功 ${done}${fail ? `, 失败 ${fail}` : ''}`, fail ? 'error' : 'success');
     selectedIds.clear();
     loadPage(currentPage);
   }
 
-  /** 批量恢复选中的已删除文档（并行，受并发上限控制） */
+  /** 批量恢复选中的已删除文档（一次后端批量请求） */
   async function batchRestore() {
     if (!selectedIds.size) return;
     const ok = await UI.showConfirm('批量恢复确认', `确认恢复 ${selectedIds.size} 篇已删除文档？`, '确认恢复');
     if (!ok) return;
     const ids = [...selectedIds];
-    const tasks = ids.map(id => () => API.restoreDocument(id));
-    const results = await runWithConcurrencyLimit(tasks, MAX_CONCURRENT_UPLOADS);
-    let done = 0, fail = 0;
-    for (const r of results) {
-      if (r.status === 'fulfilled') done++; else fail++;
+    try {
+      const res = await API.batchRestoreDocuments(ids);
+      const restored = res?.data?.restored ?? 0;
+      const reIngested = res?.data?.re_ingested ?? 0;
+      const parts = [`已恢复 ${restored} 篇`];
+      if (reIngested > 0) parts.push(`${reIngested} 篇已提交重入库，请等待完成后刷新页面`);
+      UI.toast(parts.join('，'), 'success');
+    } catch (e) {
+      UI.toast(`批量恢复失败: ${e.message}`, 'error');
     }
-    UI.toast(`恢复完成: 成功 ${done}${fail ? `, 失败 ${fail}` : ''}`, fail ? 'error' : 'success');
     selectedIds.clear();
     loadPage(currentPage);
   }
@@ -732,19 +749,18 @@ const Documents = (() => {
     if (retryBtn) retryBtn.disabled = selectedIds.size === 0;
   }
 
-  /** 批量删除选中文档（并行，受并发上限控制，含二次确认） */
+  /** 批量删除选中文档（一次后端批量请求，含二次确认） */
   async function batchDelete() {
     if (!selectedIds.size) return;
     const ok = await UI.showConfirm('批量删除确认', `确认批量删除 ${selectedIds.size} 篇文档？（注意：如果有关联的知识块，将同步删除。）`, '确认删除');
     if (!ok) return;
-    const ids = [...selectedIds];
-    const tasks = ids.map(id => () => API.deleteDocument(id));
-    const results = await runWithConcurrencyLimit(tasks, MAX_CONCURRENT_UPLOADS);
-    let done = 0, fail = 0;
-    for (const r of results) {
-      if (r.status === 'fulfilled') done++; else fail++;
+    try {
+      const res = await API.batchDeleteDocuments([...selectedIds]);
+      const updated = res?.data?.updated ?? 0;
+      UI.toast(`批量删除完成: ${updated}/${selectedIds.size}`, updated < selectedIds.size ? 'warning' : 'success');
+    } catch (e) {
+      UI.toast(`批量删除失败: ${e.message}`, 'error');
     }
-    UI.toast(`批量删除完成: ${done}/${selectedIds.size}${fail ? `, 失败 ${fail}` : ''}`, fail ? 'error' : 'success');
     selectedIds.clear();
     loadPage(currentPage);
   }
@@ -865,6 +881,8 @@ const Documents = (() => {
     // 关闭最顶层弹窗
     const backdrops = document.querySelectorAll('.modal-backdrop');
     if (backdrops.length) backdrops[backdrops.length - 1].remove();
+    // 使筛选项缓存失效，确保下次打开下拉时能看到新分类
+    API.invalidateFiltersCache();
     UI.toast(`已添加分类: ${name}`, 'success');
   }
 
@@ -892,6 +910,8 @@ const Documents = (() => {
 
     try {
       await API.updateDocument(docId, { title, category });
+      // 分类可能被修改，使筛选项缓存失效
+      API.invalidateFiltersCache();
       UI.toast('文档已更新', 'success');
       document.querySelector('.modal-backdrop:last-child')?.remove();
       loadPage(currentPage);

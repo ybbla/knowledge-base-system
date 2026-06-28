@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 
 def _source_refs_contains_doc(doc_id: str):
-    """构造参数化的 JSONB 包含表达式，避免拼接文档 ID。"""
-    return DbKnowledgeChunk.source_refs.contains([{"doc_id": doc_id}])
+    """按 doc_id 列过滤，等价于 source_refs JSONB @> 查询但可用 B-tree 索引。"""
+    return DbKnowledgeChunk.doc_id == doc_id
 
 
 class PgChunkStore(BaseRepository):
@@ -165,8 +165,21 @@ class PgChunkStore(BaseRepository):
             )
             return [self._from_db(c) for c in db_chunks]
 
+    def list_by_doc_ids(self, doc_ids: list[str]) -> list[KnowledgeChunk]:
+        """按多个文档 ID 批量查找知识块，一次查询。"""
+        if not doc_ids:
+            return []
+        with self._session() as session:
+            db_chunks = (
+                session.query(DbKnowledgeChunk)
+                .filter(DbKnowledgeChunk.doc_id.in_(doc_ids))
+                .order_by(DbKnowledgeChunk.chunk_id)
+                .all()
+            )
+            return [self._from_db(c) for c in db_chunks]
+
     def bulk_update_status_by_doc_id(self, doc_id: str, status: str) -> None:
-        """将指定文档下所有 chunk 批量更新为目标状态（通过 source_refs 查询）。"""
+        """将指定文档下所有 chunk 批量更新为目标状态。"""
         with self._session() as session:
             rows = (
                 session.query(DbKnowledgeChunk)
@@ -175,6 +188,16 @@ class PgChunkStore(BaseRepository):
             )
             for row in rows:
                 row.status = status
+            session.commit()
+
+    def bulk_update_status_by_doc_ids(self, doc_ids: list[str], status: str) -> None:
+        """批量更新多个文档下所有 chunk 的状态，一条 UPDATE。"""
+        if not doc_ids:
+            return
+        with self._session() as session:
+            session.query(DbKnowledgeChunk).filter(
+                DbKnowledgeChunk.doc_id.in_(doc_ids)
+            ).update({DbKnowledgeChunk.status: status}, synchronize_session=False)
             session.commit()
 
     def bulk_update_fields_by_doc_id(self, doc_id: str, fields: dict) -> list[KnowledgeChunk]:

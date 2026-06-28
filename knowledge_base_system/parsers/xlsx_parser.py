@@ -294,6 +294,10 @@ class XlsxParser(DocumentParser):
                 # 合并嵌入图片AssetData（图片优先排在前面）
                 cell_asset_data = image_cell_map.get((row, col), []) + link_asset_data
 
+                # 将嵌入图片占位符写入单元格文本，与超链接占位符行为一致
+                for ad in image_cell_map.get((row, col), []):
+                    text = f"{text}{ad.placeholder}" if text else ad.placeholder
+
                 if not text and not cell_asset_data and not formula and not hyperlink:
                     continue
 
@@ -440,6 +444,13 @@ class XlsxParser(DocumentParser):
         asset_data_list.append(
             AssetData(placeholder=placeholder, asset_id=asset.asset_id)
         )
+
+        # 将链接文字替换为占位符，与 DOCX 解析器行为一致
+        if placeholder:
+            if url in text:
+                text = text.replace(url, placeholder)
+            else:
+                text = f"{text} {placeholder}" if text else placeholder
 
         return asset_data_list, text
 
@@ -608,7 +619,7 @@ class _XlsxParseState(_BaseParseState):
         )
 
     # 每个表格元素最多包含的数据行数，超出按此分片
-    _MAX_ROWS_PER_ELEMENT = 30
+    _MAX_ROWS_PER_ELEMENT = 5
 
     @staticmethod
     def _strip_cell_meta(meta: dict) -> dict:

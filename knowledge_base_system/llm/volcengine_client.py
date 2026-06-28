@@ -93,6 +93,7 @@ class LLMClient:
                     model=model,
                     messages=messages,  # type: ignore[arg-type]
                     temperature=temperature,
+                    max_tokens=16384,
                 )
                 text = response.choices[0].message.content or ""
 

@@ -149,6 +149,18 @@ const API = (() => {
   async function deleteDocument(docId) {
     return request('DELETE', `/api/v1/documents/${docId}`, { timeout: 30000 });
   }
+  /** 批量软删除文档 */
+  async function batchDeleteDocuments(docIds) {
+    return post('/api/v1/documents/batch-delete', { doc_ids: docIds });
+  }
+  /** 批量重试失败文档 */
+  async function batchRetryDocuments(docIds) {
+    return post('/api/v1/documents/batch-retry', { doc_ids: docIds });
+  }
+  /** 批量恢复已删除文档 */
+  async function batchRestoreDocuments(docIds) {
+    return post('/api/v1/documents/batch-restore', { doc_ids: docIds });
+  }
   /** 从回收站恢复文档 */
   async function restoreDocument(docId) {
     return post(`/api/v1/documents/${docId}/restore`);
@@ -225,8 +237,28 @@ const API = (() => {
   async function search(query, topK = 10, filters = {}, options = {}) {
     return post('/api/v1/search', { query, top_k: topK, filters, options }, { timeout: 180000 });
   }
-  /** 获取检索可用的筛选项（分类列表、知识类型列表等） */
-  async function searchFilters() { return get('/api/v1/search/filters'); }
+
+  /** 筛选项缓存（5 分钟 TTL），减少页面切换时的网络等待 */
+  let _filtersCache = null;
+  let _filtersCacheTime = 0;
+  const FILTERS_CACHE_TTL = 5 * 60 * 1000;
+
+  /** 获取检索可用的筛选项（分类列表、知识类型列表等），带缓存 */
+  async function searchFilters() {
+    if (_filtersCache && (Date.now() - _filtersCacheTime) < FILTERS_CACHE_TTL) {
+      return _filtersCache;
+    }
+    const result = await get('/api/v1/search/filters');
+    _filtersCache = result;
+    _filtersCacheTime = Date.now();
+    return result;
+  }
+
+  /** 使筛选项缓存失效（新增/编辑分类后调用，确保下次获取最新数据） */
+  function invalidateFiltersCache() {
+    _filtersCache = null;
+    _filtersCacheTime = 0;
+  }
 
   /* =======================================================================
      公开 API — v1 方法为默认导出
@@ -236,12 +268,13 @@ const API = (() => {
     health,
     // ── v1 文档 ──
     listDocuments, listDocumentIds, createDocument, getDocument, listDocumentElements, updateDocument,
-    deleteDocument, restoreDocument, retryDocument, uploadDocument, getDocumentHistory,
+    deleteDocument, batchDeleteDocuments, batchRetryDocuments, batchRestoreDocuments,
+    restoreDocument, retryDocument, uploadDocument, getDocumentHistory,
     // ── v1 知识块 ──
     listChunks, listChunkIds, createChunk, getChunk, updateChunk,
     deleteChunk, restoreChunk,
     batchChunkOperation,
     // ── v1 检索 ──
-    search, searchFilters,
+    search, searchFilters, invalidateFiltersCache,
   };
 })();

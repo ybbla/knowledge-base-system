@@ -710,6 +710,199 @@ async def delete_document(doc_id: str):
     )
 
 
+# ── 4.4b 批量软删除文档 ──────────────────────────────────────────
+
+@router.post("/batch-delete")
+async def batch_delete_documents(body: dict[str, Any] = Body(...)):
+    """批量软删除文档，同步关联知识块状态到 Milvus。"""
+    doc_ids: list[str] = body.get("doc_ids", [])
+
+    if not doc_ids:
+        return error_json(
+            ErrorCode.VALIDATION_ERROR,
+            "doc_ids 不能为空",
+            http_status.HTTP_400_BAD_REQUEST,
+        )
+
+    if document_repo is None:
+        return error_json(
+            ErrorCode.SERVICE_UNAVAILABLE,
+            "PostgreSQL 文档仓储不可用",
+            http_status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    # 一次性收集所有待同步的知识块 ID
+    all_chunk_ids: list[str] = []
+    if hasattr(chunk_store, "list_by_doc_ids"):
+        for c in chunk_store.list_by_doc_ids(doc_ids):
+            status = c.status.value if hasattr(c.status, "value") else c.status
+            if status != "deleted":
+                all_chunk_ids.append(c.chunk_id)
+
+    # 批量软删除文档
+    updated = document_repo.bulk_soft_delete(doc_ids)
+
+    # 批量更新关联知识块 PG 状态（一条 UPDATE）
+    if hasattr(chunk_store, "bulk_update_status_by_doc_ids"):
+        try:
+            chunk_store.bulk_update_status_by_doc_ids(doc_ids, "deleted")
+        except Exception:
+            logger.exception("批量更新知识块状态失败")
+
+    # 批量同步 Milvus（一次 RPC）
+    if all_chunk_ids:
+        manager = getattr(vector_index, "manager", None)
+        if manager is not None and hasattr(manager, "delete_batch"):
+            try:
+                manager.delete_batch(all_chunk_ids)
+            except Exception:
+                logger.exception("批量同步 Milvus 删除状态失败")
+        else:
+            for cid in all_chunk_ids:
+                try:
+                    vector_index.delete(cid)
+                except Exception:
+                    pass
+
+    return APIResponse(
+        data={"action": "delete", "updated": updated},
+        metadata={"total_submitted": len(doc_ids)},
+    ).model_dump(mode="json")
+
+
+# ── 4.4c 批量重试文档 ──────────────────────────────────────────
+
+@router.post("/batch-retry")
+async def batch_retry_documents(body: dict[str, Any] = Body(...)):
+    """批量重试失败文档，提交到线程池异步入库。"""
+    doc_ids: list[str] = body.get("doc_ids", [])
+
+    if not doc_ids:
+        return error_json(
+            ErrorCode.VALIDATION_ERROR,
+            "doc_ids 不能为空",
+            http_status.HTTP_400_BAD_REQUEST,
+        )
+
+    if document_repo is None:
+        return error_json(
+            ErrorCode.SERVICE_UNAVAILABLE,
+            "PostgreSQL 文档仓储不可用",
+            http_status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    submitted = 0
+    skipped: list[str] = []
+
+    for doc_id in doc_ids:
+        doc = document_repo.get(doc_id)
+        if doc is None or doc.status != DocStatus.failed:
+            skipped.append(doc_id)
+            continue
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(
+            upload_executor,
+            ingestion_pipeline.ingest,
+            doc,
+        )
+        submitted += 1
+
+    return APIResponse(
+        data={"action": "retry", "submitted": submitted, "skipped": len(skipped)},
+        metadata={"total_submitted": len(doc_ids)},
+    ).model_dump(mode="json")
+
+
+# ── 4.4d 批量恢复文档 ──────────────────────────────────────────
+
+@router.post("/batch-restore")
+async def batch_restore_documents(body: dict[str, Any] = Body(...)):
+    """批量恢复已删除的文档到删前状态。
+
+    - 简单恢复（previous_status=active）：批量改状态 + 同步索引
+    - 复杂恢复（previous_status=failed/processing）：提交到线程池重入库
+    """
+    doc_ids: list[str] = body.get("doc_ids", [])
+
+    if not doc_ids:
+        return error_json(
+            ErrorCode.VALIDATION_ERROR,
+            "doc_ids 不能为空",
+            http_status.HTTP_400_BAD_REQUEST,
+        )
+
+    if document_repo is None:
+        return error_json(
+            ErrorCode.SERVICE_UNAVAILABLE,
+            "PostgreSQL 文档仓储不可用",
+            http_status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    simple_docs: list[Document] = []
+    complex_docs: list[Document] = []
+
+    for doc_id in doc_ids:
+        doc = document_repo.get(doc_id)
+        if doc is None or doc.status != DocStatus.deleted:
+            continue
+        previous_status = (doc.metadata or {}).get("previous_status", "active")
+        if previous_status in ("failed", "processing"):
+            complex_docs.append(doc)
+        else:
+            simple_docs.append(doc)
+
+    restored = 0
+    re_ingested = 0
+
+    # ── 简单恢复：批量改文档状态 ──
+    for doc in simple_docs:
+        doc.status = DocStatus.active
+        doc.updated_at = datetime.now(timezone.utc)
+        if doc.metadata and "previous_status" in doc.metadata:
+            del doc.metadata["previous_status"]
+        try:
+            document_repo.update(doc)
+            restored += 1
+        except Exception:
+            logger.exception("批量恢复文档失败: %s", doc.doc_id)
+
+    # ── 批量更新知识块状态（一条 UPDATE） ──
+    simple_doc_ids = [d.doc_id for d in simple_docs]
+    if simple_doc_ids and hasattr(chunk_store, "bulk_update_status_by_doc_ids"):
+        try:
+            chunk_store.bulk_update_status_by_doc_ids(simple_doc_ids, "active")
+        except Exception:
+            logger.exception("批量恢复知识块状态失败")
+
+    # ── 批量同步 Milvus（一次查询 + 一次 RPC） ──
+    if simple_doc_ids and hasattr(chunk_store, "list_by_doc_ids"):
+        simple_chunks = chunk_store.list_by_doc_ids(simple_doc_ids)
+        if simple_chunks:
+            try:
+                sync_index_metadata_batch(simple_chunks, vector_index, bm25_index)
+            except Exception:
+                logger.exception("批量恢复 Milvus 状态失败")
+
+    # ── 复杂恢复：提交到线程池重入库 ──
+    loop = asyncio.get_running_loop()
+    for doc in complex_docs:
+        loop.run_in_executor(
+            upload_executor,
+            ingestion_pipeline.ingest,
+            doc,
+        )
+        re_ingested += 1
+
+    return APIResponse(
+        data={
+            "action": "restore",
+            "restored": restored,
+            "re_ingested": re_ingested,
+        },
+        metadata={"total_submitted": len(doc_ids)},
+    ).model_dump(mode="json")
+
+
 # ── 4.5 恢复文档 ──────────────────────────────────────────────────
 
 @router.post("/{doc_id}/restore")

@@ -51,11 +51,18 @@ def sync_index_metadata_batch(
     status_value = chunks[0].status.value if hasattr(chunks[0].status, "value") else str(chunks[0].status)
 
     if status_value == "deleted":
-        for cid in chunk_ids:
+        manager = getattr(vector_index, "manager", None)
+        if manager is not None and hasattr(manager, "delete_batch"):
             try:
-                vector_index.delete(cid)
+                manager.delete_batch(chunk_ids)
             except Exception:
-                pass
+                logger.exception("批量删除 Milvus 索引失败")
+        else:
+            for cid in chunk_ids:
+                try:
+                    vector_index.delete(cid)
+                except Exception:
+                    pass
     else:
         try:
             batch_items = []

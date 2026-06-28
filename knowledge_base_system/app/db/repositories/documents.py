@@ -77,20 +77,6 @@ class DocumentRepository(BaseRepository):
                 return None
             return self._from_db(db_doc)
 
-    def find_by_source_uri(self, source_uri: str) -> Document | None:
-        """按 source_uri 查找文档。"""
-        if not source_uri:
-            return None
-        with self._session() as session:
-            db_doc = (
-                session.query(DbDocument)
-                .filter_by(source_uri=source_uri)
-                .first()
-            )
-            if db_doc is None:
-                return None
-            return self._from_db(db_doc)
-
     def create(self, doc: Document) -> Document:
         """创建新文档。先检查 doc_id 是否已存在，存在则抛出 DuplicateDocumentError。"""
         with self._session() as session:
@@ -266,6 +252,34 @@ class DocumentRepository(BaseRepository):
             db_doc.updated_at = datetime.now(timezone.utc)
             session.commit()
             return self._from_db(db_doc)
+
+    def bulk_soft_delete(self, doc_ids: list[str]) -> int:
+        """批量软删除文档，一条 UPDATE 完成。
+
+        将指定文档的状态批量改为 deleted，保存原状态到 meta.previous_status。
+        不存在的 doc_id 静默跳过。
+
+        Returns:
+            实际更新的文档数量。
+        """
+        if not doc_ids:
+            return 0
+        now = datetime.now(timezone.utc)
+        with self._session() as session:
+            # 逐条更新 — SQLAlchemy 批量 update 无法在 JSONB 字段中按行设不同值
+            updated = 0
+            for doc_id in doc_ids:
+                db_doc = session.get(DbDocument, doc_id)
+                if db_doc is None:
+                    continue
+                meta = dict(db_doc.meta or {})
+                meta["previous_status"] = db_doc.status
+                db_doc.meta = meta
+                db_doc.status = "deleted"
+                db_doc.updated_at = now
+                updated += 1
+            session.commit()
+            return updated
 
     def hard_delete(self, doc_id: str) -> None:
         """物理删除文档记录，仅用于预占位回滚等内部场景。

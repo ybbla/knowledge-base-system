@@ -34,7 +34,6 @@ class DbDocument(Base):
     __table_args__ = (
         Index("idx_documents_source_hash_active", "source_hash", unique=True,
               postgresql_where=text("status IN ('active', 'processing')")),
-        Index("idx_documents_source_uri", "source_uri"),
     )
 
     doc_id = Column(String(64), primary_key=True)
@@ -62,6 +61,9 @@ class DbParsedElement(Base):
     """
 
     __tablename__ = "parsed_elements"
+    __table_args__ = (
+        Index("idx_pe_doc_id", "doc_id"),
+    )
 
     element_id = Column(String(64), primary_key=True)
     doc_id = Column(String(64), ForeignKey("documents.doc_id"), nullable=False)
@@ -85,6 +87,9 @@ class DbAsset(Base):
     """
 
     __tablename__ = "assets"
+    __table_args__ = (
+        Index("idx_assets_doc_id", "doc_id"),
+    )
 
     asset_id = Column(String(64), primary_key=True)
     doc_id = Column(String(64), ForeignKey("documents.doc_id"), nullable=False)
@@ -110,6 +115,12 @@ class DbKnowledgeChunk(Base):
     """
 
     __tablename__ = "knowledge_chunks"
+    __table_args__ = (
+        Index("idx_kc_doc_id", "doc_id"),
+        Index("idx_kc_content_hash", "content_hash"),
+        Index("idx_kc_created_at", "created_at"),
+        Index("idx_kc_updated_at", "updated_at"),
+    )
 
     chunk_id = Column(String(64), primary_key=True)
     doc_id = Column(String(64), default="")

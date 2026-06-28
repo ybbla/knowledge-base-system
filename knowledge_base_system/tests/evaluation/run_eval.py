@@ -61,17 +61,14 @@ def _run(rewrite: bool = True, rerank: bool = True, top_k: int = 5) -> int:
     filtered_count = 0
     active_dataset: list[EvalItem] = []
     for item in dataset:
-        if item.expected_chunk_ids and not any(
-            cid in existing_ids for cid in item.expected_chunk_ids
-        ):
+        expected_ids = item.expected_chunk_ids
+        if expected_ids and not any(cid in existing_ids for cid in expected_ids):
             stale_count += 1
             continue
         # 剔除已不存在的 chunk_id，让 Recall 分母反映真实可达上限
-        if item.expected_chunk_ids:
-            original_count = len(item.expected_chunk_ids)
-            item.expected_chunk_ids = [
-                cid for cid in item.expected_chunk_ids if cid in existing_ids
-            ]
+        if expected_ids:
+            original_count = len(expected_ids)
+            item.expected_chunk_ids = [cid for cid in expected_ids if cid in existing_ids]
             if len(item.expected_chunk_ids) < original_count:
                 filtered_count += 1
         active_dataset.append(item)
@@ -107,7 +104,13 @@ def _run(rewrite: bool = True, rerank: bool = True, top_k: int = 5) -> int:
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {
-            executor.submit(retrieval_pipeline.search, item.query, top_k): i
+            executor.submit(
+                retrieval_pipeline.search,
+                item.query,
+                top_k,
+                rewrite=rewrite,
+                rerank=rerank,
+            ): i
             for i, item in enumerate(active_dataset)
         }
         for future in as_completed(futures):
@@ -206,10 +209,25 @@ def _run(rewrite: bool = True, rerank: bool = True, top_k: int = 5) -> int:
 
 if __name__ == "__main__":
     args = sys.argv[1:]
+
+    # 帮助信息
+    if "--help" in args or "-h" in args:
+        print(__doc__)
+        print("选项:")
+        print("  --no-rewrite    关闭查询改写（默认开启）")
+        print("  --no-rerank     关闭 LLM 重排序（默认开启）")
+        print("  --top-k N       检索返回数量及 Recall@K 的 K 值（默认 5）")
+        print("  --help, -h      显示此帮助信息")
+        raise SystemExit(0)
+
     rewrite = "--no-rewrite" not in args
     rerank = "--no-rerank" not in args
     top_k = 5
     for i, arg in enumerate(args):
         if arg == "--top-k" and i + 1 < len(args):
-            top_k = int(args[i + 1])
+            try:
+                top_k = int(args[i + 1])
+            except ValueError:
+                print(f"❌ --top-k 参数值无效: {args[i + 1]}，必须为整数")
+                raise SystemExit(2)
     raise SystemExit(_run(rewrite=rewrite, rerank=rerank, top_k=top_k))
