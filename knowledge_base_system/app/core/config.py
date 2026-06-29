@@ -18,7 +18,8 @@ class Settings(BaseSettings):
 
     api_key: str = ""
     base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
-    llm_model: str = "doubao-seed-2-0-pro-260215"
+    llm_model: str = "doubao-seed-2-0-pro-260215"  # 语义抽取等高质量任务
+    llm_fast_model: str = Field(default="doubao-seed-2-0-mini-260428", validation_alias="LLM_FAST_MODEL")  # 改写/重排等高频低延迟任务
     embedding_model: str = "doubao-embedding-vision-251215"
     request_timeout_seconds: float = Field(default=3600.0, validation_alias="VOLCENGINE_TIMEOUT_SECONDS")
 
@@ -97,6 +98,17 @@ class Settings(BaseSettings):
     # 评测数据自动生成
     auto_eval_enabled: bool = Field(default=True, validation_alias="AUTO_EVAL_ENABLED")
     auto_eval_queries_per_doc: int = Field(default=3, validation_alias="AUTO_EVAL_QUERIES_PER_DOC")
+
+    # 微信微盘下载：浏览器 Cookie（短期，需手动刷新）
+    wechat_drive_cookies: str = Field(default="", validation_alias="WECHAT_DRIVE_COOKIES")
+    # 微信微盘下载：企业 API 凭证（持久化，自动刷新 access_token）
+    wechat_corpid: str = Field(default="", validation_alias="WECHAT_CORPID")
+    wechat_corpsecret: str = Field(default="", validation_alias="WECHAT_CORPSECRET")
+
+    # 异步任务队列（Dramatiq + Redis）
+    redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
+    dramatiq_task_max_retries: int = Field(default=3, validation_alias="DRAMATIQ_TASK_MAX_RETRIES")
+    dramatiq_task_time_limit_ms: int = Field(default=1_800_000, validation_alias="DRAMATIQ_TASK_TIME_LIMIT_MS")  # 30 分钟硬超时
 
     def reload_runtime_env(self) -> "Settings":
         """按需刷新运行期可调配置，支持评测和线上调参无需重启。"""

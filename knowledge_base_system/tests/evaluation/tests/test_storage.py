@@ -151,9 +151,10 @@ class TestInitStorage:
     """存储目录初始化测试。"""
 
     def test_creates_directories(self):
-        """验证 init_storage 创建 datasets/ 和 results/ 目录（幂等）。"""
+        """验证 init_storage 创建 datasets/unmerged/、datasets/merged/ 和 results/ 目录（幂等）。"""
         init_storage()
-        from tests.evaluation.storage import DATASETS_DIR, RESULTS_DIR
+        from tests.evaluation.storage import UNMERGED_DIR, MERGED_DIR, RESULTS_DIR
 
-        assert DATASETS_DIR.exists()
+        assert UNMERGED_DIR.exists()
+        assert MERGED_DIR.exists()
         assert RESULTS_DIR.exists()

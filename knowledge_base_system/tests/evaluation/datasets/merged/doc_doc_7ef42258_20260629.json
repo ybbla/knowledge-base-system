@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "doc_id": "doc_7ef422585911",
+    "doc_title": "常见问题及对应答案汇总",
+    "doc_version": 1,
+    "generated_at": "2026-06-29T00:15:49.872027",
+    "generated_by": "auto-ingest",
+    "chunk_count": 32,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "提现失败一直不到账要怎么处理？",
+      "expected_chunk_ids": [
+        "chunk_3134e7d6c240"
+      ],
+      "expected_content_contains": [
+        "提现失败",
+        "市场财务",
+        "人康工具群"
+      ],
+      "doc_id": "doc_7ef422585911",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "企业微信 换绑微信 操作步骤",
+      "expected_chunk_ids": [
+        "chunk_a03f8042d905"
+      ],
+      "expected_content_contains": [
+        "账号与安全",
+        "解除绑定",
+        "身份验证",
+        "微信授权"
+      ],
+      "doc_id": "doc_7ef422585911",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "给我介绍下直播权限开通的办理规则",
+      "expected_chunk_ids": [
+        "chunk_b9fa61623f6e"
+      ],
+      "expected_content_contains": [
+        "自营主体",
+        "加盟商主体",
+        "工具交流群",
+        "直播账号管理"
+      ],
+      "doc_id": "doc_7ef422585911",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

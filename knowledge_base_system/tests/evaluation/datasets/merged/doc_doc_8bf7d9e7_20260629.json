@@ -1,0 +1,106 @@
+{
+  "metadata": {
+    "doc_id": "doc_8bf7d9e7b60d",
+    "doc_title": "近期扶商问题集",
+    "doc_version": 1,
+    "generated_at": "2026-06-29T00:29:19.621789",
+    "generated_by": "auto-ingest",
+    "chunk_count": 73,
+    "query_count": 6
+  },
+  "items": [
+    {
+      "query": "人康课堂里提现老是失败要怎么解决？",
+      "expected_chunk_ids": [
+        "chunk_bf572a73961d",
+        "chunk_cbf34b3b6873"
+      ],
+      "expected_content_contains": [
+        "提现失败",
+        "小程序提现",
+        "商户号余额"
+      ],
+      "doc_id": "doc_8bf7d9e7b60d",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "养鸡游戏 入口消失 权限限制",
+      "expected_chunk_ids": [
+        "chunk_1d8f387f4e7c",
+        "chunk_8cfc91aeeb21"
+      ],
+      "expected_content_contains": [
+        "养鸡游戏入口",
+        "羊毛党",
+        "奖励设置",
+        "19:10-19:50"
+      ],
+      "doc_id": "doc_8bf7d9e7b60d",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "给我下开通人康直播权限的操作指引",
+      "expected_chunk_ids": [
+        "chunk_5d2ea1bae0e2",
+        "chunk_c066572d0b0c"
+      ],
+      "expected_content_contains": [
+        "直播权限开通",
+        "工具交流群",
+        "部门总监",
+        "流量费"
+      ],
+      "doc_id": "doc_8bf7d9e7b60d",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "企业微信账号被封禁了要怎么申诉？",
+      "expected_chunk_ids": [
+        "chunk_2ffac11b5ec7",
+        "chunk_b6564544125a"
+      ],
+      "expected_content_contains": [
+        "封禁申诉",
+        "群凭证",
+        "王曼",
+        "问题截图"
+      ],
+      "doc_id": "doc_8bf7d9e7b60d",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "富友 开户 金额验证",
+      "expected_chunk_ids": [
+        "chunk_f03ef05828d4"
+      ],
+      "expected_content_contains": [
+        "富友个体工商户",
+        "公户",
+        "金额验证",
+        "注销重新开户"
+      ],
+      "doc_id": "doc_8bf7d9e7b60d",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "华为手机装不了人康课堂",
+      "expected_chunk_ids": [
+        "chunk_1f7d9519b935",
+        "chunk_a4c376e36047"
+      ],
+      "expected_content_contains": [
+        "鸿蒙系统",
+        "华为应用市场",
+        "纯净模式"
+      ],
+      "doc_id": "doc_8bf7d9e7b60d",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

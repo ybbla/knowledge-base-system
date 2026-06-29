@@ -5,11 +5,12 @@
 ## 核心流程
 
 ```
-入库自动生成 → datasets/doc_{id}_{date}.json
+入库自动生成 → datasets/unmerged/doc_{id}_{date}.json
                       │
-          merge_to_global.py <doc_id> (手动合并)
+          merge_to_global.py [--all | <doc_id>] (手动合并)
                       │        去重键: (doc_id, query)
                       │        auto 标注直接覆盖，manual 永远保护
+                      │        合并后源文件 → datasets/merged/
                       ▼
                eval_dataset.json (全局数据集)
                       │
@@ -24,7 +25,7 @@
 
 ### 1. 入库文档 → 自动生成评测数据
 
-文档入库成功后，系统后台异步调用 LLM 生成评测数据，存入 `datasets/` 目录。超过 40 个知识块的大文档自动分片生成，每片独立生成 `AUTO_EVAL_QUERIES_PER_DOC` 条查询，总量上限为 `AUTO_EVAL_QUERIES_PER_DOC * 2`。
+文档入库成功后，系统后台异步调用 LLM 生成评测数据，存入 `datasets/unmerged/` 目录（未合并）。超过 40 个知识块的大文档自动分片生成，每片独立生成 `AUTO_EVAL_QUERIES_PER_DOC` 条查询，总量上限为 `AUTO_EVAL_QUERIES_PER_DOC * 2`。
 
 LLM 生成的查询涵盖多种真实检索风格：完整疑问句、关键词组合、口语片段、祈使/陈述句。
 
@@ -39,16 +40,22 @@ AUTO_EVAL_QUERIES_PER_DOC=3
 
 ### 2. 审核合并到全局数据集
 
-确认 `datasets/doc_{id}_{date}.json` 中的查询质量后，手动合并到全局数据集：
+确认 `datasets/unmerged/doc_{id}_{date}.json` 中的查询质量后，手动合并到全局数据集：
 
 ```bash
 cd knowledge_base_system
+
+# 合并单个文档
 python tests/evaluation/merge_to_global.py <doc_id>
+
+# 合并全部未合并文档
+python tests/evaluation/merge_to_global.py --all
 ```
 
 - 去重键为 `(doc_id, query)`，不同文档的同名 query 不会互相覆盖
 - `"source": "manual"` 的条目永远不会被覆盖
 - `"source": "auto"` 的条目直接覆盖更新，过期的 chunk_id 由评测脚本过滤
+- 合并完成后源文件自动移动到 `datasets/merged/`（已合并）
 
 ### 3. 运行评测
 
@@ -90,8 +97,11 @@ tests/evaluation/
 ├── __init__.py
 ├── README.md
 ├── eval_dataset.json      # 全局评测数据集（人工标注 + 合并后的自动生成）
-├── datasets/              # 分文档自动生成数据
-│   └── doc_{id}_{date}.json
+├── datasets/
+│   ├── unmerged/          # 未合并 — 入库自动生成，待人工确认
+│   │   └── doc_{id}_{date}.json
+│   └── merged/            # 已合并 — merge_to_global.py 执行后移入
+│       └── doc_{id}_{date}.json
 ├── results/
 │   └── history.jsonl      # 评测历史（JSONL 每行一条记录）
 └── tests/                 # 评测系统自测试
@@ -135,7 +145,7 @@ tests/evaluation/
 
 ## 数据集格式
 
-### 分文档数据集 (datasets/doc_{id}_{date}.json)
+### 分文档数据集 (datasets/unmerged/doc_{id}_{date}.json)
 
 ```json
 {
@@ -216,8 +226,8 @@ AUTO_EVAL_QUERIES_PER_DOC=3
 ## 生命周期
 
 ```
-文档初次入库 → datasets/doc_{id}_v1.json 生成
-文档重入库   → 旧文件自动删除 → datasets/doc_{id}_v2.json 生成（doc_version=2）
-merge_to_global → 按 (doc_id, query) 去重，auto 覆盖、manual 保护
+文档初次入库 → datasets/unmerged/doc_{id}_v1.json 生成
+文档重入库   → 旧文件自动删除 → datasets/unmerged/doc_{id}_v2.json 生成（doc_version=2）
+merge_to_global → 按 (doc_id, query) 去重，auto 覆盖、manual 保护 → 源文件 → merged/
 run_eval    → 过滤过期 chunk_id → 复用现有索引 → 评测 → history.jsonl
 ```

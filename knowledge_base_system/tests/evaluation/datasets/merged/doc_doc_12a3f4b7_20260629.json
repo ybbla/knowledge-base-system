@@ -1,0 +1,60 @@
+{
+  "metadata": {
+    "doc_id": "doc_12a3f4b7efd5",
+    "doc_title": "品牌通用知识",
+    "doc_version": 1,
+    "generated_at": "2026-06-29T00:42:43.290270",
+    "generated_by": "auto-ingest",
+    "chunk_count": 20,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "店长端提示加入企业超过30天要怎么处理？",
+      "expected_chunk_ids": [
+        "chunk_7a13f7789088",
+        "chunk_12c629ab6722"
+      ],
+      "expected_content_contains": [
+        "《合作入门学习班》",
+        "店长端",
+        "30天"
+      ],
+      "doc_id": "doc_12a3f4b7efd5",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "加盟商 开店 富友打款 流程",
+      "expected_chunk_ids": [
+        "chunk_6a7fea3aabcd",
+        "chunk_99c074088e00",
+        "chunk_a4765e99d1e0"
+      ],
+      "expected_content_contains": [
+        "富友账户",
+        "打款截图",
+        "开店审批",
+        "erp系统"
+      ],
+      "doc_id": "doc_12a3f4b7efd5",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "企信被封了咋整",
+      "expected_chunk_ids": [
+        "chunk_12e816b923d5"
+      ],
+      "expected_content_contains": [
+        "违禁词",
+        "新企信号",
+        "人员调店",
+        "实名"
+      ],
+      "doc_id": "doc_12a3f4b7efd5",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

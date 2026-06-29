@@ -1,0 +1,733 @@
+[
+  {
+    "query": "店长端提示加入企业超过30天要怎么处理？",
+    "expected_chunk_ids": [
+      "chunk_7a13f7789088",
+      "chunk_12c629ab6722"
+    ],
+    "expected_content_contains": [
+      "《合作入门学习班》",
+      "店长端",
+      "30天"
+    ],
+    "doc_id": "doc_12a3f4b7efd5",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "加盟商 开店 富友打款 流程",
+    "expected_chunk_ids": [
+      "chunk_6a7fea3aabcd",
+      "chunk_99c074088e00",
+      "chunk_a4765e99d1e0"
+    ],
+    "expected_content_contains": [
+      "富友账户",
+      "打款截图",
+      "开店审批",
+      "erp系统"
+    ],
+    "doc_id": "doc_12a3f4b7efd5",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "企信被封了咋整",
+    "expected_chunk_ids": [
+      "chunk_12e816b923d5"
+    ],
+    "expected_content_contains": [
+      "违禁词",
+      "新企信号",
+      "人员调店",
+      "实名"
+    ],
+    "doc_id": "doc_12a3f4b7efd5",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "华为手机装不了人康课堂该怎么解决？",
+    "expected_chunk_ids": [
+      "chunk_95a5582f401c",
+      "chunk_16ca150efe00"
+    ],
+    "expected_content_contains": [
+      "人康课堂",
+      "二维码",
+      "纯净模式",
+      "安装未知应用"
+    ],
+    "doc_id": "doc_14e99c2faad2",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "看视频 现金奖励 发放规则",
+    "expected_chunk_ids": [
+      "chunk_5abd953b6792"
+    ],
+    "expected_content_contains": [
+      "累计有效观看天数",
+      "现金奖励",
+      "黑名单用户",
+      "小程序用户"
+    ],
+    "doc_id": "doc_14e99c2faad2",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "直播买的东西退不了",
+    "expected_chunk_ids": [
+      "chunk_08b9c053bfb4"
+    ],
+    "expected_content_contains": [
+      "直播订单",
+      "退款",
+      "直联",
+      "间联",
+      "预留金额"
+    ],
+    "doc_id": "doc_14e99c2faad2",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "电脑端怎么通过企业微信使用人康直播啊？",
+    "expected_chunk_ids": [
+      "chunk_c7e977b3ce36"
+    ],
+    "expected_content_contains": [
+      "企业微信",
+      "工作台",
+      "人康直播",
+      "预约直播",
+      "浏览器开播"
+    ],
+    "doc_id": "doc_152f4ff9e110",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "polyv直播软件 摄像头 背景替换",
+    "expected_chunk_ids": [
+      "chunk_d7f790957a6f"
+    ],
+    "expected_content_contains": [
+      "摄像头",
+      "AI智能抠像",
+      "人像背景",
+      "美颜",
+      "翻转"
+    ],
+    "doc_id": "doc_152f4ff9e110",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "给我介绍下人康直播的下载渠道",
+    "expected_chunk_ids": [
+      "chunk_28c50ce6b38e"
+    ],
+    "expected_content_contains": [
+      "电脑端",
+      "手机端",
+      "下载地址",
+      "QR码",
+      "定位标识"
+    ],
+    "doc_id": "doc_152f4ff9e110",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "直播间订单要做称重退差，应该从哪里进入操作页面？",
+    "expected_chunk_ids": [
+      "chunk_fcffd2c00318"
+    ],
+    "expected_content_contains": [
+      "企信应用",
+      "扫码查订单/直播间订单",
+      "常用应用"
+    ],
+    "doc_id": "doc_16a7f596bd59",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "直播间订单 称重退差 操作流程",
+    "expected_chunk_ids": [
+      "chunk_08eb7ecef06e"
+    ],
+    "expected_content_contains": [
+      "扫码退差",
+      "确认提货",
+      "去结算",
+      "我的二维码"
+    ],
+    "doc_id": "doc_16a7f596bd59",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "给我讲下直播间订单称重退差的完整操作方法",
+    "expected_chunk_ids": [
+      "chunk_fcffd2c00318",
+      "chunk_08eb7ecef06e"
+    ],
+    "expected_content_contains": [
+      "企信应用",
+      "扫码退差",
+      "确认提货",
+      "去结算"
+    ],
+    "doc_id": "doc_16a7f596bd59",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "人康课堂APP用直播连麦功能的时候提示获取不到设备权限要怎么解决？",
+    "expected_chunk_ids": [
+      "chunk_81bbd0ef1a7c"
+    ],
+    "expected_content_contains": [
+      "直播连麦"
+    ],
+    "doc_id": "doc_2327e423319a",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "人康课堂 iOS 闪退 解决",
+    "expected_chunk_ids": [
+      "chunk_701aa2cf4dbe"
+    ],
+    "expected_content_contains": [
+      "iOS版本较低",
+      "更新APP",
+      "闪退"
+    ],
+    "doc_id": "doc_2327e423319a",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "咋关人康课堂养小鸡游戏的权限",
+    "expected_chunk_ids": [
+      "chunk_0e11f7b59320"
+    ],
+    "expected_content_contains": [
+      "店长端",
+      "小程序奖励设置",
+      "养鸡游戏",
+      "关闭开关"
+    ],
+    "doc_id": "doc_2327e423319a",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "开通微信子商户号需要准备哪些法人相关的资料？",
+    "expected_chunk_ids": [
+      "chunk_f3005b899266"
+    ],
+    "expected_content_contains": [
+      "营业执照",
+      "法人身份证",
+      "手机号",
+      "基本存款账户信息"
+    ],
+    "doc_id": "doc_4e1cd49cfd85",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "微信子商户号 自动提现 设置步骤",
+    "expected_chunk_ids": [
+      "chunk_645435128ecf"
+    ],
+    "expected_content_contains": [
+      "微信支付官方网站",
+      "法人扫码授权",
+      "留存金额",
+      "自动提现"
+    ],
+    "doc_id": "doc_4e1cd49cfd85",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "查一下微信子商户号的开户操作流程",
+    "expected_chunk_ids": [
+      "chunk_b6bd2cad2717"
+    ],
+    "expected_content_contains": [
+      "门店收款码管理",
+      "开户二维码",
+      "微信审核",
+      "待签约"
+    ],
+    "doc_id": "doc_4e1cd49cfd85",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "2026招扶商版本的招商流程总共分为几个阶段？",
+    "expected_chunk_ids": [
+      "chunk_10957fdb01bb"
+    ],
+    "expected_content_contains": [
+      "招商流程",
+      "企业文化学习",
+      "招商沟通",
+      "签约阶段",
+      "开店阶段"
+    ],
+    "doc_id": "doc_7176bdd85b9b",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "加盟商 查区 意向金 间距规则",
+    "expected_chunk_ids": [
+      "chunk_89d11f1f28fe"
+    ],
+    "expected_content_contains": [
+      "查区",
+      "意向金",
+      "高德地图步行距离",
+      "1.5公里",
+      "地址保护"
+    ],
+    "doc_id": "doc_7176bdd85b9b",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "查一下加盟商店长端账号被禁用的解决方法",
+    "expected_chunk_ids": [
+      "chunk_3fa8479db75d",
+      "chunk_0e34088afbf7"
+    ],
+    "expected_content_contains": [
+      "王曼",
+      "店长端",
+      "权限",
+      "关闭端口"
+    ],
+    "doc_id": "doc_7176bdd85b9b",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "人康课堂里的养鸡游戏入口找不到了怎么办？",
+    "expected_chunk_ids": [
+      "chunk_813b323c5fd4",
+      "chunk_377878c98834"
+    ],
+    "expected_content_contains": [
+      "养鸡游戏",
+      "活动开关",
+      "直播期间",
+      "APP审核"
+    ],
+    "doc_id": "doc_7cc9d72f2c12",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "提现失败 未到账 处理方式",
+    "expected_chunk_ids": [
+      "chunk_4fb0580b6e50",
+      "chunk_c8e65cf4c250",
+      "chunk_ec7c0b2db77d"
+    ],
+    "expected_content_contains": [
+      "提现记录",
+      "微信版本",
+      "康邻家园"
+    ],
+    "doc_id": "doc_7cc9d72f2c12",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "给我新平台店长端登录异常的解决方法",
+    "expected_chunk_ids": [
+      "chunk_ec5cd1046a33"
+    ],
+    "expected_content_contains": [
+      "清理缓存",
+      "重新登录",
+      "刷新页面"
+    ],
+    "doc_id": "doc_7cc9d72f2c12",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "怎么设置企业微信群的管理权限？",
+    "expected_chunk_ids": [
+      "chunk_a13bbf7a2b6a"
+    ],
+    "expected_content_contains": [
+      "群管理",
+      "仅群主管理",
+      "禁言成员",
+      "群聊水印"
+    ],
+    "doc_id": "doc_7cc9d72f2c12",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "加盟商 退货退款 审批入口",
+    "expected_chunk_ids": [
+      "chunk_85a250e03252"
+    ],
+    "expected_content_contains": [
+      "企业微信",
+      "工作台",
+      "审批",
+      "加盟商退货退款审批"
+    ],
+    "doc_id": "doc_7cc9d72f2c12",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "新平台店长端筛选完笔记显示空白咋解决",
+    "expected_chunk_ids": [
+      "chunk_061b59eb782f"
+    ],
+    "expected_content_contains": [
+      "清除缓存",
+      "功能设置",
+      "员工账号"
+    ],
+    "doc_id": "doc_7cc9d72f2c12",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "提现失败一直不到账要怎么处理？",
+    "expected_chunk_ids": [
+      "chunk_3134e7d6c240"
+    ],
+    "expected_content_contains": [
+      "提现失败",
+      "市场财务",
+      "人康工具群"
+    ],
+    "doc_id": "doc_7ef422585911",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "企业微信 换绑微信 操作步骤",
+    "expected_chunk_ids": [
+      "chunk_a03f8042d905"
+    ],
+    "expected_content_contains": [
+      "账号与安全",
+      "解除绑定",
+      "身份验证",
+      "微信授权"
+    ],
+    "doc_id": "doc_7ef422585911",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "给我介绍下直播权限开通的办理规则",
+    "expected_chunk_ids": [
+      "chunk_b9fa61623f6e"
+    ],
+    "expected_content_contains": [
+      "自营主体",
+      "加盟商主体",
+      "工具交流群",
+      "直播账号管理"
+    ],
+    "doc_id": "doc_7ef422585911",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "人康课堂里提现老是失败要怎么解决？",
+    "expected_chunk_ids": [
+      "chunk_bf572a73961d",
+      "chunk_cbf34b3b6873"
+    ],
+    "expected_content_contains": [
+      "提现失败",
+      "小程序提现",
+      "商户号余额"
+    ],
+    "doc_id": "doc_8bf7d9e7b60d",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "养鸡游戏 入口消失 权限限制",
+    "expected_chunk_ids": [
+      "chunk_1d8f387f4e7c",
+      "chunk_8cfc91aeeb21"
+    ],
+    "expected_content_contains": [
+      "养鸡游戏入口",
+      "羊毛党",
+      "奖励设置",
+      "19:10-19:50"
+    ],
+    "doc_id": "doc_8bf7d9e7b60d",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "给我下开通人康直播权限的操作指引",
+    "expected_chunk_ids": [
+      "chunk_5d2ea1bae0e2",
+      "chunk_c066572d0b0c"
+    ],
+    "expected_content_contains": [
+      "直播权限开通",
+      "工具交流群",
+      "部门总监",
+      "流量费"
+    ],
+    "doc_id": "doc_8bf7d9e7b60d",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "企业微信账号被封禁了要怎么申诉？",
+    "expected_chunk_ids": [
+      "chunk_2ffac11b5ec7",
+      "chunk_b6564544125a"
+    ],
+    "expected_content_contains": [
+      "封禁申诉",
+      "群凭证",
+      "王曼",
+      "问题截图"
+    ],
+    "doc_id": "doc_8bf7d9e7b60d",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "富友 开户 金额验证",
+    "expected_chunk_ids": [
+      "chunk_f03ef05828d4"
+    ],
+    "expected_content_contains": [
+      "富友个体工商户",
+      "公户",
+      "金额验证",
+      "注销重新开户"
+    ],
+    "doc_id": "doc_8bf7d9e7b60d",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "华为手机装不了人康课堂",
+    "expected_chunk_ids": [
+      "chunk_1f7d9519b935",
+      "chunk_a4c376e36047"
+    ],
+    "expected_content_contains": [
+      "鸿蒙系统",
+      "华为应用市场",
+      "纯净模式"
+    ],
+    "doc_id": "doc_8bf7d9e7b60d",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "之前门店要货用的白名单停用了，要切换成富友账户该怎么走流程？",
+    "expected_chunk_ids": [
+      "chunk_c02cc7f52093",
+      "chunk_bcd82b3e18cd"
+    ],
+    "expected_content_contains": [
+      "存量账户切换",
+      "白名单",
+      "资金迁移",
+      "富友账户"
+    ],
+    "doc_id": "doc_ad1a6e88e466",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "门店要货 下单 退款 规则",
+    "expected_chunk_ids": [
+      "chunk_e2eb1b9263f3"
+    ],
+    "expected_content_contains": [
+      "下单规则",
+      "退款规则",
+      "扣款成功",
+      "原路退回"
+    ],
+    "doc_id": "doc_ad1a6e88e466",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "给我一份富友账户开户和绑定门店的操作说明",
+    "expected_chunk_ids": [
+      "chunk_ddcf596016f9"
+    ],
+    "expected_content_contains": [
+      "扶商端",
+      "富友账户管理",
+      "新增开户"
+    ],
+    "doc_id": "doc_ad1a6e88e466",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "店员找不到直播间订单入口该怎么解决？",
+    "expected_chunk_ids": [
+      "chunk_04d1736eda3f",
+      "chunk_ad01e50fd37b"
+    ],
+    "expected_content_contains": [
+      "直播间订单入口",
+      "功能设置",
+      "权限设置",
+      "功能权限",
+      "店员"
+    ],
+    "doc_id": "doc_bb40be5e47e4",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "直播间订单 按直播查询 导出明细",
+    "expected_chunk_ids": [
+      "chunk_1df6b11fad23"
+    ],
+    "expected_content_contains": [
+      "按直播查询",
+      "下单明细",
+      "导出表格",
+      "待提货状态",
+      "筛选订单"
+    ],
+    "doc_id": "doc_bb40be5e47e4",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "教我怎么操作分享直播间补单链接",
+    "expected_chunk_ids": [
+      "chunk_457312e3245f"
+    ],
+    "expected_content_contains": [
+      "补单链接",
+      "直播商品应用",
+      "下单截止时间",
+      "门店库存",
+      "分享"
+    ],
+    "doc_id": "doc_bb40be5e47e4",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "简版店长开通富友收款账户的流程是什么？",
+    "expected_chunk_ids": [
+      "chunk_b1dffcfaed48"
+    ],
+    "expected_content_contains": [
+      "门店收款码管理",
+      "营业执照",
+      "法人身份证",
+      "人脸验证"
+    ],
+    "doc_id": "doc_cbe91be67954",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "富友收款账户 开通 店长端 所需资料",
+    "expected_chunk_ids": [
+      "chunk_b1dffcfaed48"
+    ],
+    "expected_content_contains": [
+      "签约短信",
+      "分账账户",
+      "银行卡照片"
+    ],
+    "doc_id": "doc_cbe91be67954",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "给我份简版店长开富友收款码的操作指引",
+    "expected_chunk_ids": [
+      "chunk_b1dffcfaed48"
+    ],
+    "expected_content_contains": [
+      "开户页面",
+      "主体类型",
+      "公户",
+      "扫码确认"
+    ],
+    "doc_id": "doc_cbe91be67954",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "关联直播发红包用户要满足什么条件才能领取？",
+    "expected_chunk_ids": [
+      "chunk_bf96511f9846",
+      "chunk_c90b3204a309"
+    ],
+    "expected_content_contains": [
+      "关联直播",
+      "红包奖励",
+      "发放条件",
+      "任意一场直播"
+    ],
+    "doc_id": "doc_d7df104ecf3a",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "试服小单 线上退款 操作步骤",
+    "expected_chunk_ids": [
+      "chunk_da7dd9e4b935"
+    ],
+    "expected_content_contains": [
+      "店长端",
+      "订单管理",
+      "退货",
+      "无需审批"
+    ],
+    "doc_id": "doc_d7df104ecf3a",
+    "doc_version": 1,
+    "source": "auto"
+  },
+  {
+    "query": "微信支付被风控是什么情况",
+    "expected_chunk_ids": [
+      "chunk_886f152707a4",
+      "chunk_38a6fbe0a10e"
+    ],
+    "expected_content_contains": [
+      "风控触发场景",
+      "资金安全"
+    ],
+    "doc_id": "doc_d7df104ecf3a",
+    "doc_version": 1,
+    "source": "auto"
+  }
+]

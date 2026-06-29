@@ -1,0 +1,61 @@
+{
+  "metadata": {
+    "doc_id": "doc_152f4ff9e110",
+    "doc_title": "人康直播操作使用文档",
+    "doc_version": 1,
+    "generated_at": "2026-06-29T00:34:39.128541",
+    "generated_by": "auto-ingest",
+    "chunk_count": 5,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "电脑端怎么通过企业微信使用人康直播啊？",
+      "expected_chunk_ids": [
+        "chunk_c7e977b3ce36"
+      ],
+      "expected_content_contains": [
+        "企业微信",
+        "工作台",
+        "人康直播",
+        "预约直播",
+        "浏览器开播"
+      ],
+      "doc_id": "doc_152f4ff9e110",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "polyv直播软件 摄像头 背景替换",
+      "expected_chunk_ids": [
+        "chunk_d7f790957a6f"
+      ],
+      "expected_content_contains": [
+        "摄像头",
+        "AI智能抠像",
+        "人像背景",
+        "美颜",
+        "翻转"
+      ],
+      "doc_id": "doc_152f4ff9e110",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "给我介绍下人康直播的下载渠道",
+      "expected_chunk_ids": [
+        "chunk_28c50ce6b38e"
+      ],
+      "expected_content_contains": [
+        "电脑端",
+        "手机端",
+        "下载地址",
+        "QR码",
+        "定位标识"
+      ],
+      "doc_id": "doc_152f4ff9e110",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

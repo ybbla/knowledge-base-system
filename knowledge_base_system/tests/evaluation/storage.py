@@ -1,7 +1,8 @@
 """评测数据与结果存储封装。
 
 提供：
-- 分文档评测数据集保存到 datasets/ 目录
+- 分文档评测数据集保存到 datasets/unmerged/ 目录（未合并）
+- 合并后将源文件移动到 datasets/merged/ 目录（已合并）
 - 评测结果以 JSONL 格式追加写入 results/history.jsonl
 - 存储目录初始化
 """
@@ -14,13 +15,15 @@ from pathlib import Path
 from typing import Any
 
 EVAL_DIR = Path(__file__).resolve().parent
-DATASETS_DIR = EVAL_DIR / "datasets"
+UNMERGED_DIR = EVAL_DIR / "datasets" / "unmerged"
+MERGED_DIR = EVAL_DIR / "datasets" / "merged"
 RESULTS_DIR = EVAL_DIR / "results"
 
 
 def init_storage() -> None:
-    """初始化存储目录结构 — 确保 datasets/ 和 results/ 存在。"""
-    DATASETS_DIR.mkdir(exist_ok=True)
+    """初始化存储目录结构 — 确保 datasets/unmerged/、datasets/merged/ 和 results/ 存在。"""
+    UNMERGED_DIR.mkdir(parents=True, exist_ok=True)
+    MERGED_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(exist_ok=True)
 
 
@@ -31,7 +34,7 @@ def save_per_doc_dataset(
     chunk_count: int,
     doc_version: int = 1,
 ) -> Path:
-    """保存单个文档的评测数据到 datasets/ 目录。
+    """保存单个文档的评测数据到 datasets/unmerged/ 目录。
 
     同 doc_id 的旧文件在写入前自动清理（文档重入库后旧标注失效）。
 
@@ -52,12 +55,12 @@ def save_per_doc_dataset(
     init_storage()
 
     # 清理同 doc_id 的旧数据集文件（重入库后旧标注失效）
-    for old_file in DATASETS_DIR.glob(f"doc_{doc_id[:12]}*.json"):
+    for old_file in UNMERGED_DIR.glob(f"doc_{doc_id[:12]}*.json"):
         old_file.unlink()
 
     timestamp = datetime.now().strftime("%Y%m%d")
     filename = f"doc_{doc_id[:12]}_{timestamp}.json"
-    path = DATASETS_DIR / filename
+    path = UNMERGED_DIR / filename
 
     data = {
         "metadata": {

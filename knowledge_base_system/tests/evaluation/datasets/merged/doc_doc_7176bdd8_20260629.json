@@ -1,0 +1,61 @@
+{
+  "metadata": {
+    "doc_id": "doc_7176bdd85b9b",
+    "doc_title": "2026招扶商版常见审批与软件操作问题汇总",
+    "doc_version": 1,
+    "generated_at": "2026-06-29T00:39:08.699161",
+    "generated_by": "auto-ingest",
+    "chunk_count": 40,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "2026招扶商版本的招商流程总共分为几个阶段？",
+      "expected_chunk_ids": [
+        "chunk_10957fdb01bb"
+      ],
+      "expected_content_contains": [
+        "招商流程",
+        "企业文化学习",
+        "招商沟通",
+        "签约阶段",
+        "开店阶段"
+      ],
+      "doc_id": "doc_7176bdd85b9b",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "加盟商 查区 意向金 间距规则",
+      "expected_chunk_ids": [
+        "chunk_89d11f1f28fe"
+      ],
+      "expected_content_contains": [
+        "查区",
+        "意向金",
+        "高德地图步行距离",
+        "1.5公里",
+        "地址保护"
+      ],
+      "doc_id": "doc_7176bdd85b9b",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "查一下加盟商店长端账号被禁用的解决方法",
+      "expected_chunk_ids": [
+        "chunk_3fa8479db75d",
+        "chunk_0e34088afbf7"
+      ],
+      "expected_content_contains": [
+        "王曼",
+        "店长端",
+        "权限",
+        "关闭端口"
+      ],
+      "doc_id": "doc_7176bdd85b9b",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

@@ -135,3 +135,4 @@ class DbKnowledgeChunk(Base):
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
     meta = Column("metadata", JSONBType, default=dict)
+

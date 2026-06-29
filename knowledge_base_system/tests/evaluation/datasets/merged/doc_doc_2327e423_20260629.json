@@ -1,0 +1,54 @@
+{
+  "metadata": {
+    "doc_id": "doc_2327e423319a",
+    "doc_title": "人康课堂app下载及常见问题",
+    "doc_version": 1,
+    "generated_at": "2026-06-29T00:23:22.556308",
+    "generated_by": "auto-ingest",
+    "chunk_count": 16,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "人康课堂APP用直播连麦功能的时候提示获取不到设备权限要怎么解决？",
+      "expected_chunk_ids": [
+        "chunk_81bbd0ef1a7c"
+      ],
+      "expected_content_contains": [
+        "直播连麦"
+      ],
+      "doc_id": "doc_2327e423319a",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "人康课堂 iOS 闪退 解决",
+      "expected_chunk_ids": [
+        "chunk_701aa2cf4dbe"
+      ],
+      "expected_content_contains": [
+        "iOS版本较低",
+        "更新APP",
+        "闪退"
+      ],
+      "doc_id": "doc_2327e423319a",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "咋关人康课堂养小鸡游戏的权限",
+      "expected_chunk_ids": [
+        "chunk_0e11f7b59320"
+      ],
+      "expected_content_contains": [
+        "店长端",
+        "小程序奖励设置",
+        "养鸡游戏",
+        "关闭开关"
+      ],
+      "doc_id": "doc_2327e423319a",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

@@ -16,13 +16,14 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.errors import DuplicateDocumentError
-from app.utils.thread_pool import asset_worker_pool, sub_ingest_pool, eval_gen_pool
+from app.utils.thread_pool import asset_worker_pool, eval_gen_pool
 from app.core.models import (
     Asset,
     AssetStatus,
     AssetType,
     DocStatus,
     Document,
+    JobStage,
     KnowledgeChunk,
     new_id,
 )
@@ -167,11 +168,16 @@ class IngestionPipeline:
             self._element_repo.delete_by_doc_id(doc_id)
 
     def _cleanup_old_assets(self, doc_id: str) -> None:
-        """删除重入库文档的旧资源对象与元数据，防止产生失效资源引用。"""
-        if not hasattr(self._asset_store, "get_by_doc_id"):
-            return
-        for asset in self._asset_store.get_by_doc_id(doc_id):
-            self._asset_store.delete(asset.asset_id)
+        """删除重入库文档的旧资源对象与元数据，防止产生失效资源引用。
+
+        优先走 MinioAssetStore.delete_by_doc_id 批量删除（一条 DELETE）；
+        未实现时回退到 get_by_doc_id + 逐条 delete。
+        """
+        if hasattr(self._asset_store, "delete_by_doc_id"):
+            self._asset_store.delete_by_doc_id(doc_id)
+        elif hasattr(self._asset_store, "get_by_doc_id"):
+            for asset in self._asset_store.get_by_doc_id(doc_id):
+                self._asset_store.delete(asset.asset_id)
 
     def _cleanup_previous_artifacts(self, doc_id: str) -> None:
         """按知识块、解析元素、资源的依赖顺序清理旧入库产物。"""
@@ -209,7 +215,7 @@ class IngestionPipeline:
             # ── 重入库前清理旧知识块、解析元素和资源 ──
             self._cleanup_previous_artifacts(doc.doc_id)
 
-            self._run_create(doc, raw_content)
+            self._run_create(doc, raw_content, options)
 
             doc.status = DocStatus.active
             doc.error_message = None
@@ -232,9 +238,21 @@ class IngestionPipeline:
         self,
         doc: Document,
         raw_content: bytes | str | None,
+        options: dict[str, Any] | None = None,
     ) -> None:
         """文档入库流程（解析 → 资源处理 → 抽取 → 索引）。"""
+        # ── 提取进度回调（actor 通过 options 传入） ──
+        _progress = (options or {}).get("progress_callback")
+
+        def _notify(stage: str, pct: int):
+            if _progress:
+                try:
+                    _progress(stage, pct)
+                except Exception:
+                    pass
+
         # 1. 解析文档
+        _notify(JobStage.PARSING, 15)
         parser = self._parser_registry.get(doc.source_type)
 
         # 降级路径：调用方未传内容时从 MinIO / file:// / http(s):// 读取
@@ -254,13 +272,6 @@ class IngestionPipeline:
         elements = result.elements
         assets = result.assets
 
-        # DEBUG: 验证解析结果的 asset_data
-        for el in elements:
-            if el.asset_data:
-                logger.warning("DEBUG element %s: asset_data=%d items, ids=%s",
-                    el.element_type.value, len(el.asset_data),
-                    [ad.asset_id[-8:] for ad in el.asset_data])
-
         # Element 先于 Asset 持久化（核心数据优先保证）
         if self._element_repo and elements:
             self._element_repo.create_batch(elements)
@@ -268,6 +279,7 @@ class IngestionPipeline:
         self._prepare_assets(assets)
 
         # 2. 语义抽取（全文优先 + 递进降级）
+        _notify(JobStage.EXTRACTING, 40)
         chunks = self._extractor.extract(elements, assets, doc.category)
 
         # 将文档标题写入 chunk metadata，供 Milvus 索引直接返回，免查 PG
@@ -276,6 +288,7 @@ class IngestionPipeline:
             c.metadata["doc_title"] = doc_title
 
         # 3. 索引
+        _notify(JobStage.INDEXING, 70)
         if chunks:
             self._index_chunks(chunks)
 
@@ -448,31 +461,34 @@ class IngestionPipeline:
         asset.status = AssetStatus.ready
         self._asset_store.put(asset)
 
-        # ── [7] 异步入库（对标 _do_upload 的 ingest 调用，失败不传播） ──
-        self._submit_child_ingest(child_doc, data)
+        # ── [7] 异步入库（对标 _do_upload：创建 Job + Dramatiq 入队） ──
+        from app.core.deps import job_repo  # pylint: disable=import-outside-toplevel
+        from app.core.models import IngestJob  # pylint: disable=import-outside-toplevel
+        from app.tasks.ingest import ingest_document  # pylint: disable=import-outside-toplevel
 
-    def _submit_child_ingest(self, child_doc: Document, data: bytes) -> None:
-        """提交子文档后台入库任务，失败标记 child_doc 为 failed、不传播异常。"""
+        job_id = new_id("job")
+        job = IngestJob(job_id=job_id, doc_id=child_doc_id)
+
+        if job_repo is not None:
+            try:
+                job = job_repo.create(job)
+            except Exception:
+                logger.exception("创建子文档 IngestJob 失败: %s", child_doc_id)
+                job = None
+
+        # 入队 Dramatiq
         try:
-            if sub_ingest_pool is not None:
-                sub_ingest_pool.submit(self.ingest, child_doc, raw_content=data)
-            else:
-                thread = threading.Thread(
-                    target=self.ingest,
-                    args=(child_doc,),
-                    kwargs={"raw_content": data},
-                    daemon=True,
-                )
-                thread.start()
+            message = ingest_document.send(job_id, child_doc_id)
+            if job is not None and job_repo is not None:
+                job.dramatiq_message_id = message.message_id
+                job_repo.update(job)
         except Exception:
-            logger.exception("子文档 %s 提交异步入库失败", child_doc.doc_id)
-            child_doc.status = DocStatus.failed
-            child_doc.error_message = "提交异步入库失败"
-            if self._document_repo:
+            logger.exception("子文档 Dramatiq 入队失败: job_id=%s, doc_id=%s", job_id, child_doc_id)
+            if job is not None and job_repo is not None:
                 try:
-                    self._document_repo.update(child_doc)
+                    job_repo.hard_delete(job_id)
                 except Exception:
-                    logger.exception("持久化子文档失败状态时出错: %s", child_doc.doc_id)
+                    logger.exception("回滚子文档 job 失败: %s", job_id)
 
 
     def index_existing_chunks(self, chunks: list[KnowledgeChunk]) -> None:

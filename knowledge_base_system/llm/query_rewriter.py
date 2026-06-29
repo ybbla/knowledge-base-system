@@ -6,6 +6,7 @@
 
 import logging
 
+from app.core.config import settings
 from app.core.errors import LLMError
 from llm.prompts import QUERY_REWRITE_SCHEMA, build_rewrite_messages
 from llm.volcengine_client import llm_client
@@ -28,7 +29,10 @@ class QueryRewriter:
         """
         try:
             messages = build_rewrite_messages(query)
-            result = llm_client.chat_json(messages, schema=QUERY_REWRITE_SCHEMA)
+            result = llm_client.chat_json(
+                messages, schema=QUERY_REWRITE_SCHEMA, model=settings.llm_fast_model,
+                max_tokens=1024,
+            )
             return {
                 "rewritten_query": result.get("rewritten_query", query),
                 "keywords": result.get("keywords", []),

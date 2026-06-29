@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
-from app.core.models import DocStatus
+from app.core.models import DocStatus, JobStage, JobStatus
 from assets.minio_store import MinioAssetStore
 from ingestion.pipeline import IngestionPipeline, _strip_placeholders
 from llm.semantic_extractor import SemanticExtractor
@@ -38,6 +38,7 @@ def _init_postgres_backend() -> None:
         from app.db.repositories.chunks import PgChunkStore
         from app.db.repositories.documents import DocumentRepository
         from app.db.repositories.elements import ParsedElementRepository
+        from app.db.repositories.jobs import IngestJobRepository
 
         engine = get_engine()
         with engine.connect() as conn:
@@ -49,6 +50,7 @@ def _init_postgres_backend() -> None:
         globals()["chunk_store"] = PgChunkStore(sf)
         globals()["document_repo"] = DocumentRepository(sf)
         globals()["element_repo"] = ParsedElementRepository(sf)
+        globals()["job_repo"] = IngestJobRepository(sf)
     except Exception as exc:
         logger.exception("PostgreSQL 初始化失败")
         raise RuntimeError("PostgreSQL 不可用，服务启动失败") from exc
@@ -59,6 +61,7 @@ asset_store = None
 chunk_store = None
 document_repo = None
 element_repo = None
+job_repo = None
 
 if settings.backend != "postgres":
     raise RuntimeError(f"仅支持 BACKEND=postgres，当前配置为 {settings.backend!r}")
@@ -231,6 +234,54 @@ def recover_stale_processing_docs(
 
     if recovered:
         logger.info("已恢复 %d 个超时 processing 文档", recovered)
+    return recovered
+
+
+def recover_stale_processing_jobs(
+    timeout_minutes: int = 60,
+) -> int:
+    """启动时恢复超时的 processing 任务，标记为 failed。
+
+    Worker 进程异常退出（OOM / kill -9）会导致 IngestJob 永久停留在
+    processing 状态。扫描所有 processing 任务，将 updated_at 超过阈值的
+    标记为 failed 并设置错误信息。
+
+    Args:
+        timeout_minutes: processing 超时阈值（分钟），默认 60。
+
+    Returns:
+        恢复的任务数量。
+    """
+    if job_repo is None:
+        return 0
+
+    processing_jobs = job_repo.list_by_status("processing")
+    if not processing_jobs:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    timeout = timedelta(minutes=timeout_minutes)
+    recovered = 0
+
+    for job in processing_jobs:
+        stale_at = job.updated_at
+        if now - stale_at <= timeout:
+            continue
+        job.status = JobStatus.failed
+        job.error_message = "入库超时：Worker 可能在入库过程中异常退出，请重试"
+        job.updated_at = now
+        try:
+            job_repo.update(job)
+            recovered += 1
+            logger.warning(
+                "恢复超时 processing 任务: %s (processing 开始于 %s, doc_id=%s)",
+                job.job_id, stale_at.isoformat(), job.doc_id,
+            )
+        except Exception:
+            logger.exception("恢复 processing 任务失败: %s", job.job_id)
+
+    if recovered:
+        logger.info("已恢复 %d 个超时 processing 任务", recovered)
     return recovered
 
 

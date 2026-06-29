@@ -183,6 +183,19 @@ class MinioAssetStore(AssetStore):
         """
         self._metadata_store.delete(asset_id)
 
+    def delete_by_doc_id(self, doc_id: str) -> int:
+        """按文档 ID 批量删除全部资源元数据，一条 DELETE 完成。
+
+        Args:
+            doc_id: 目标文档 ID。
+
+        Returns:
+            删除的资源数量。
+        """
+        if not hasattr(self._metadata_store, "delete_by_doc_id"):
+            return 0
+        return self._metadata_store.delete_by_doc_id(doc_id)
+
     def upload_bytes(
         self,
         bucket: str,

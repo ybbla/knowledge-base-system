@@ -217,3 +217,44 @@ class SearchResult(BaseModel):
     rewritten_query: str = ""
     total_count: int = 0
     results: list[SearchResultItem] = Field(default_factory=list)
+
+
+# ── 入库任务模型（Dramatiq 异步任务状态追踪） ────────────────────
+
+
+class JobStatus(str, Enum):
+    """入库任务生命周期状态。"""
+
+    queued = "queued"           # 已入队，等待 Worker 取走
+    processing = "processing"   # Worker 正在执行
+    completed = "completed"     # 入库成功
+    failed = "failed"           # 入库失败（可重试）
+
+
+class JobStage:
+    """入库阶段常量，仅在 status=processing 时有意义。
+
+    SSE 端点据此推送中文阶段名给前端弹条。
+    终态（completed/failed）由 JobStatus 单独表达，不在此重复。
+    """
+
+    PARSING = "parsing"           # 解析文档结构
+    EXTRACTING = "extracting"     # 语义抽取
+    INDEXING = "indexing"         # 向量化 + 索引写入
+
+
+class IngestJob(BaseModel):
+    """入库任务领域模型。
+
+    持久化到 ingest_jobs 表，SSE 端点每秒轮询此表推送状态变更。
+    """
+
+    job_id: str
+    doc_id: str
+    dramatiq_message_id: str = ""
+    status: JobStatus = JobStatus.queued
+    stage: str = ""                             # 当前阶段，仅 processing 时有值
+    progress: int = 0                          # 0-100
+    error_message: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -1,0 +1,103 @@
+{
+  "metadata": {
+    "doc_id": "doc_7cc9d72f2c12",
+    "doc_title": "现有知识库问答对（终版）",
+    "doc_version": 1,
+    "generated_at": "2026-06-29T00:13:17.726816",
+    "generated_by": "auto-ingest",
+    "chunk_count": 142,
+    "query_count": 6
+  },
+  "items": [
+    {
+      "query": "人康课堂里的养鸡游戏入口找不到了怎么办？",
+      "expected_chunk_ids": [
+        "chunk_813b323c5fd4",
+        "chunk_377878c98834"
+      ],
+      "expected_content_contains": [
+        "养鸡游戏",
+        "活动开关",
+        "直播期间",
+        "APP审核"
+      ],
+      "doc_id": "doc_7cc9d72f2c12",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "提现失败 未到账 处理方式",
+      "expected_chunk_ids": [
+        "chunk_4fb0580b6e50",
+        "chunk_c8e65cf4c250",
+        "chunk_ec7c0b2db77d"
+      ],
+      "expected_content_contains": [
+        "提现记录",
+        "微信版本",
+        "康邻家园"
+      ],
+      "doc_id": "doc_7cc9d72f2c12",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "给我新平台店长端登录异常的解决方法",
+      "expected_chunk_ids": [
+        "chunk_ec5cd1046a33"
+      ],
+      "expected_content_contains": [
+        "清理缓存",
+        "重新登录",
+        "刷新页面"
+      ],
+      "doc_id": "doc_7cc9d72f2c12",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "怎么设置企业微信群的管理权限？",
+      "expected_chunk_ids": [
+        "chunk_a13bbf7a2b6a"
+      ],
+      "expected_content_contains": [
+        "群管理",
+        "仅群主管理",
+        "禁言成员",
+        "群聊水印"
+      ],
+      "doc_id": "doc_7cc9d72f2c12",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "加盟商 退货退款 审批入口",
+      "expected_chunk_ids": [
+        "chunk_85a250e03252"
+      ],
+      "expected_content_contains": [
+        "企业微信",
+        "工作台",
+        "审批",
+        "加盟商退货退款审批"
+      ],
+      "doc_id": "doc_7cc9d72f2c12",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "新平台店长端筛选完笔记显示空白咋解决",
+      "expected_chunk_ids": [
+        "chunk_061b59eb782f"
+      ],
+      "expected_content_contains": [
+        "清除缓存",
+        "功能设置",
+        "员工账号"
+      ],
+      "doc_id": "doc_7cc9d72f2c12",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

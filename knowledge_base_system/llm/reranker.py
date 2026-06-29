@@ -8,6 +8,7 @@
 import logging
 from typing import Any
 
+from app.core.config import settings
 from app.core.models import KnowledgeChunk
 from llm.prompts import (
     RERANK_BATCH_SCHEMA,
@@ -33,7 +34,10 @@ def _score_batch(
     ]
     try:
         messages = build_rerank_batch_message(query, candidates)
-        result = llm_client.chat_json(messages, schema=RERANK_BATCH_SCHEMA)
+        result = llm_client.chat_json(
+            messages, schema=RERANK_BATCH_SCHEMA, model=settings.llm_fast_model,
+            max_tokens=2048,
+        )
         scores = result.get("scores", [])
     except Exception:
         logger.exception("批量重排打分失败，所有候选回退使用 RRF 分数")
@@ -78,7 +82,10 @@ def _score_one(query: str, chunk: KnowledgeChunk) -> dict[str, Any]:
     """对单条知识块调用 LLM 进行相关性打分（仅候选数=1 时使用）。"""
     try:
         messages = build_rerank_message(query, chunk.content)
-        result = llm_client.chat_json(messages, schema=RERANK_SCHEMA)
+        result = llm_client.chat_json(
+            messages, schema=RERANK_SCHEMA, model=settings.llm_fast_model,
+            max_tokens=512,
+        )
         score = float(result.get("relevance_score", 0.0))
         return {
             "chunk_id": chunk.chunk_id,

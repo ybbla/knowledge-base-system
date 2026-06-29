@@ -36,14 +36,25 @@ def _extract_json(text: str) -> str:
     return text.strip()
 
 
-def _create_ark_client(settings) -> Ark:
-    """创建带统一超时配置的火山方舟 Ark 客户端（max_retries=0，由上层自行重试）。"""
-    return Ark(
-        api_key=settings.api_key,
-        base_url=settings.base_url,
-        timeout=settings.request_timeout_seconds,
-        max_retries=0,
-    )
+_cached_client: Ark | None = None
+"""模块级缓存的 Ark 客户端，进程生命周期内复用同一个 httpx 连接池。"""
+
+
+def _get_cached_client() -> Ark:
+    """获取缓存的 Ark 客户端实例，首次调用时创建，后续复用 TCP 连接池。"""
+    global _cached_client
+    if _cached_client is None:
+        settings = get_settings()
+        _cached_client = Ark(
+            api_key=settings.api_key,
+            base_url=settings.base_url,
+            timeout=settings.request_timeout_seconds,
+            max_retries=0,
+        )
+        logger.info("Ark 客户端已创建（首次），后续将复用此实例及 TCP 连接池")
+    else:
+        logger.debug("复用已缓存的 Ark 客户端")
+    return _cached_client
 
 
 class LLMClient:
@@ -60,6 +71,9 @@ class LLMClient:
         messages: list[dict[str, str]],
         schema: dict[str, Any] | None = None,
         temperature: float = 0.3,
+        model: str | None = None,
+        max_tokens: int = 16384,
+        extra_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """发送聊天请求并返回解析后的 JSON dict。
 
@@ -70,6 +84,9 @@ class LLMClient:
             messages: 消息列表 [{"role": "system", "content": ...}, ...]
             schema: 可选的 JSON Schema（仅校验 required 字段）
             temperature: 采样温度，默认 0.3
+            model: 模型名称，不传则使用默认 llm_model
+            max_tokens: 输出 token 上限，默认 16384
+            extra_body: 透传给 API 的额外参数（如 {"thinking": {"type": "enabled"}, "reasoning_effort": "medium"}）
 
         返回:
             解析后的 JSON 字典
@@ -77,24 +94,27 @@ class LLMClient:
         抛出:
             LLMError: 所有重试均失败或 API Key 未配置
         """
-        settings = get_settings(reload_env=True)
-        model = settings.llm_model
+        settings = get_settings()
+        effective_model = model or settings.llm_model
         max_retries = settings.max_json_retries
 
         if not settings.api_key:
             raise LLMError("VOLCENGINE_API_KEY 未配置")
 
-        client = _create_ark_client(settings)
+        client = _get_cached_client()
         last_error: str = ""
 
         for attempt in range(max_retries + 1):
             try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,  # type: ignore[arg-type]
-                    temperature=temperature,
-                    max_tokens=16384,
-                )
+                kwargs: dict[str, Any] = {
+                    "model": effective_model,
+                    "messages": messages,  # type: ignore[arg-type]
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                if extra_body is not None:
+                    kwargs["extra_body"] = extra_body
+                response = client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
                 text = response.choices[0].message.content or ""
 
                 json_text = _extract_json(text)
@@ -150,7 +170,7 @@ class LLMClient:
         返回:
             模型生成的图片描述文本；失败时返回 None。
         """
-        settings = get_settings(reload_env=True)
+        settings = get_settings()
 
         if not settings.api_key:
             logger.warning("VOLCENGINE_API_KEY 未配置，跳过图片视觉提取")
@@ -170,7 +190,7 @@ class LLMClient:
         ]
 
         try:
-            client = _create_ark_client(settings)
+            client = _get_cached_client()
             response = client.chat.completions.create(
                 model=settings.llm_model,
                 messages=messages,  # type: ignore[arg-type]
@@ -200,7 +220,7 @@ class LLMClient:
         返回:
             模型生成的视频总结文本；失败时返回 None。
         """
-        settings = get_settings(reload_env=True)
+        settings = get_settings()
 
         if not settings.api_key:
             logger.warning("VOLCENGINE_API_KEY 未配置，跳过视频视觉提取")
@@ -225,7 +245,7 @@ class LLMClient:
         ]
 
         try:
-            client = _create_ark_client(settings)
+            client = _get_cached_client()
             response = client.chat.completions.create(
                 model=settings.llm_model,
                 messages=messages,  # type: ignore[arg-type]
@@ -258,12 +278,12 @@ class EmbeddingClient:
         if not texts:
             return []
 
-        settings = get_settings(reload_env=True)
+        settings = get_settings()
 
         if not settings.api_key:
             raise LLMError("VOLCENGINE_API_KEY 未配置")
 
-        client = _create_ark_client(settings)
+        client = _get_cached_client()
         model = settings.embedding_model
         embeddings: list[list[float]] = []
 

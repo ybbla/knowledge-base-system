@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import mount_v1_sub_routers, register_v1_exception_handlers, router as v1_router
-from app.core.deps import recover_stale_processing_docs, shutdown_resources
+from app.core.deps import recover_stale_processing_docs, recover_stale_processing_jobs, shutdown_resources
 from app.utils.thread_pool import (
     startup_health_pool, shutdown_health_pool,
     startup_search_pool, shutdown_search_pool,
@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI):
     startup_asset_worker_pool()
     startup_eval_gen_pool()
     recover_stale_processing_docs()
+    recover_stale_processing_jobs()
     try:
         yield
     finally:

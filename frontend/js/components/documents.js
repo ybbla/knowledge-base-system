@@ -534,8 +534,103 @@ const Documents = (() => {
   /* -----------------------------------------------------------------------
      处理中通知条
      ----------------------------------------------------------------------- */
+  /* ----------------------------------------------------------------------
+     SSE 进度弹条 — 上传后实时接收 Worker 推送的入库进度
+     ----------------------------------------------------------------------- */
+
+  /** 入库阶段的中文标签映射（仅 processing 内的分步） */
+  const STAGE_LABELS = {
+    parsing:     '解析文档',
+    extracting:  '语义抽取',
+    indexing:    '写入索引',
+  };
+
+  /** status → 中文标签（queued 时 stage 为空，由 status 驱动展示） */
+  const STATUS_LABELS = {
+    queued:      '等待处理',
+    processing:  '处理中',
+  };
+
+  /**
+   * 为单个上传任务建立 SSE 连接，实时推送入库进度到弹条。
+   * @param {HTMLElement} el      弹条 DOM 元素
+   * @param {object}      info    { jobId, docId, title }
+   */
+  function connectJobSSE(el, info) {
+    const { jobId, title } = info;
+    const source = new EventSource(`/api/v1/jobs/${jobId}/stream`);
+
+    // ── 进度更新 ──
+    source.addEventListener('progress', (e) => {
+      const data = JSON.parse(e.data);
+      // stage 非空 → processing 内部分段；stage 为空 → 终态之前，由 status 映射
+      const label = STAGE_LABELS[data.stage] || STATUS_LABELS[data.status] || data.stage || data.status;
+      const progress = data.progress || 0;
+
+      // 更新弹条文字：「解析文档 10%」
+      const infoEl = el.querySelector('.processing-info');
+      if (infoEl) {
+        infoEl.textContent = `${label} ${progress}%`;
+      }
+    });
+
+    // ── 完成 ──
+    source.addEventListener('completed', () => {
+      source.close();
+      const spinner = el.querySelector('.loading-spinner');
+      if (spinner) spinner.remove();
+      const infoEl = el.querySelector('.processing-info');
+      if (infoEl) infoEl.textContent = '完成';
+      el.insertAdjacentHTML('beforeend', '<span class="processing-done"> ✓</span>');
+      UI.toast(`「${title}」入库完成`, 'success');
+      // 刷新文档列表
+      if (typeof loadPage === 'function') loadPage(currentPage);
+      // 延迟淡出
+      setTimeout(() => {
+        el.classList.add('fading');
+        setTimeout(() => el.remove(), 400);
+      }, 3000);
+    });
+
+    // ── 失败 ──
+    source.addEventListener('failed', (e) => {
+      source.close();
+      const data = JSON.parse(e.data);
+      const spinner = el.querySelector('.loading-spinner');
+      if (spinner) spinner.remove();
+      const infoEl = el.querySelector('.processing-info');
+      if (infoEl) infoEl.textContent = '失败';
+      el.insertAdjacentHTML('beforeend', '<span class="processing-error"> ✗</span>');
+
+      const errMsg = data.error_message || '入库失败';
+      UI.toast(`「${title}」入库失败：${errMsg}`, 'error');
+      setTimeout(() => {
+        el.classList.add('fading');
+        setTimeout(() => el.remove(), 400);
+      }, 5000);
+    });
+
+    // ── 连接异常兜底 ──
+    source.onerror = () => {
+      if (source.readyState === EventSource.CLOSED) {
+        const spinner = el.querySelector('.loading-spinner');
+        if (spinner) {
+          spinner.remove();
+          el.insertAdjacentHTML('beforeend',
+            '<span class="processing-error"> ⚠ 连接断开</span>');
+        }
+      }
+    };
+
+    // 存储引用供页面卸载时清理
+    el._sseSource = source;
+  }
+
+  /**
+   * 显示处理中弹条，为每个 item 建立 SSE 连接。
+   * @param {Array<{title: string, jobId: string, docId: string}>} items
+   */
   function showProcessingToast(items) {
-    // items: [{title, docId?}]
     if (!items || !items.length) return;
 
     let container = document.querySelector('.processing-toast-container');
@@ -546,72 +641,39 @@ const Documents = (() => {
     }
 
     items.forEach((item) => {
-      // 如果已有同 title 弹条且本次带了 docId，更新它
-      if (item.docId) {
+      // 去重：已有同 title + jobId 的弹条则跳过
+      if (item.jobId) {
         const existing = [...container.querySelectorAll('.processing-toast-item')];
         const match = existing.find(
-          el => el.querySelector('span')?.textContent === (item.title || '未命名')
+          el => el.dataset.jobId === item.jobId
         );
-        if (match && !match.dataset.docId) {
-          match.dataset.docId = item.docId;
-          startPolling(match, item.docId);
-          return; // 更新已有条目，不新增
-        }
+        if (match) return;
       }
 
       // 新增弹条
       const el = document.createElement('div');
       el.className = 'processing-toast-item';
-      el.innerHTML = `<div class="loading-spinner" style="width:14px;height:14px;border-width:2px"></div><span>${UI.escapeHtml(item.title || '未命名')}</span>`;
+      el.dataset.jobId = item.jobId || '';
+      el.innerHTML =
+        `<div class="loading-spinner" style="width:14px;height:14px;border-width:2px"></div>` +
+        `<span>${UI.escapeHtml(item.title || '未命名')}</span>` +
+        `<span class="processing-info">等待处理 0%</span>`;
 
-      // 限制最多3条，挤掉旧弹条时同步停止其轮询
+      // 限制最多 5 条，挤掉旧弹条时关闭其 SSE 连接
       const all = container.querySelectorAll('.processing-toast-item');
-      while (all.length >= 3) {
+      while (all.length >= 5) {
         const old = all[0];
-        if (old._pollId) clearInterval(old._pollId);
+        if (old._sseSource) old._sseSource.close();
         old.remove();
       }
 
       container.appendChild(el);
 
-      // 如果已有 docId，开始轮询；轮询结束时会自动移除弹条
-      if (item.docId) {
-        el.dataset.docId = item.docId;
-        startPolling(el, item.docId);
+      // 建立 SSE 连接（替代旧轮询）
+      if (item.jobId) {
+        connectJobSSE(el, item);
       }
     });
-  }
-
-  function startPolling(el, docId) {
-    let count = 0;
-    let errCount = 0;
-    const MAX_COUNT = 150;  // 150 × 2s = 5 分钟，覆盖大文档入库
-    const poll = setInterval(async () => {
-      count++;
-      try {
-        const res = await API.getDocument(docId);
-        const status = res?.data?.status;
-        errCount = 0;  // 成功拿到响应则重置错误计数
-        if (status === 'active' || status === 'failed') {
-          clearInterval(poll);
-          el.querySelector('.loading-spinner')?.remove();
-          el.innerHTML += status === 'active' ? ' ✓' : ' ✗';
-          setTimeout(() => { el.classList.add('fading'); setTimeout(() => el.remove(), 400); }, 2000);
-        }
-      } catch (e) {
-        errCount++;
-        console.warn('轮询文档状态失败 (%d/%d): %s', errCount, docId, e.message || e);
-        // 连续 10 次网络错误 → 放弃轮询，避免通知条永久挂起
-        if (errCount >= 10) {
-          clearInterval(poll);
-          el.querySelector('.loading-spinner')?.remove();
-          el.innerHTML += ' ?';
-          setTimeout(() => { el.classList.add('fading'); setTimeout(() => el.remove(), 400); }, 2000);
-        }
-      }
-      if (count >= MAX_COUNT) clearInterval(poll);
-    }, 2000);
-    el._pollId = poll;
   }
 
   /* -----------------------------------------------------------------------
@@ -1147,10 +1209,9 @@ const Documents = (() => {
     let needConfirm = 0;
     const successItems = [];
 
-    // 并行上传（受并发上限控制）
+    // 并行上传（受并发上限控制），ingest_after_create 已移除（后端必定异步入库）
     const tasks = fileList.map(file => () =>
       API.uploadDocument(file, title, category, {
-        ingestAfterCreate: true,
         replaceDocId,
         confirmReplace,
       })
@@ -1177,7 +1238,7 @@ const Documents = (() => {
         UI.toast(`「${fileName}」与已有文档同名，请单独上传并确认替换`, 'warning');
       } else {
         success++;
-        successItems.push({ title: fileName, docId: data.doc_id });
+        successItems.push({ title: fileName, jobId: data.job_id, docId: data.doc_id });
       }
     }
 
@@ -1350,7 +1411,6 @@ const Documents = (() => {
 
     try {
       const result = await API.uploadDocument(file, '', '通用', {
-        ingestAfterCreate: true,
         replaceDocId: updatingDocId,
         confirmReplace: true,
       });
@@ -1363,7 +1423,7 @@ const Documents = (() => {
       } else {
         UI.toast('文档已更新', 'success');
         loadPage(1);
-        showProcessingToast([{ title: updateTitle, docId: data.doc_id }]);
+        showProcessingToast([{ title: updateTitle, jobId: data.job_id, docId: data.doc_id }]);
       }
     } catch (e) {
       UI.toast(`更新失败: ${e.message}`, 'error');

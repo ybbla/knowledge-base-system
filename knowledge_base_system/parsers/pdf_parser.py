@@ -159,12 +159,15 @@ class PdfParser(DocumentParser):
             # 获取目录并构建页码到标题的映射。
             toc_entries = self._build_toc_map(pdf)
 
-            # 第一遍：收集所有页面文本块
+            # 第一遍：收集所有页面文本块，并按页码分组
+            blocks_by_page: dict[int, list[_TextBlock]] = {}
             all_blocks: list[_TextBlock] = []
             for page_num in range(pdf.page_count):
                 page = pdf[page_num]
                 page_blocks = self._extract_blocks(page, page_num + 1)
                 all_blocks.extend(page_blocks)
+                if page_blocks:
+                    blocks_by_page[page_num + 1] = page_blocks
 
             # 检测并标记页眉页脚
             header_footer_keys = self._detect_header_footer_blocks(
@@ -180,10 +183,10 @@ class PdfParser(DocumentParser):
                 # 该页TOC 标题
                 page_titles = toc_entries.get(page_number, [])
 
-                # 该页的文本块（过滤页眉页脚）
+                # 该页的文本块（过滤页眉页脚，直接从分组字典获取）
                 page_blocks = [
-                    b for b in all_blocks
-                    if b.page == page_number and not self._is_header_footer(
+                    b for b in blocks_by_page.get(page_number, [])
+                    if not self._is_header_footer(
                         b, header_footer_keys, page_height
                     )
                 ]

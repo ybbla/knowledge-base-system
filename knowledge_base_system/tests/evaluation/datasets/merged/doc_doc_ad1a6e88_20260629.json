@@ -1,0 +1,58 @@
+{
+  "metadata": {
+    "doc_id": "doc_ad1a6e88e466",
+    "doc_title": "加盟商要货取消白名单培训",
+    "doc_version": 1,
+    "generated_at": "2026-06-29T00:16:09.129039",
+    "generated_by": "auto-ingest",
+    "chunk_count": 4,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "之前门店要货用的白名单停用了，要切换成富友账户该怎么走流程？",
+      "expected_chunk_ids": [
+        "chunk_c02cc7f52093",
+        "chunk_bcd82b3e18cd"
+      ],
+      "expected_content_contains": [
+        "存量账户切换",
+        "白名单",
+        "资金迁移",
+        "富友账户"
+      ],
+      "doc_id": "doc_ad1a6e88e466",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "门店要货 下单 退款 规则",
+      "expected_chunk_ids": [
+        "chunk_e2eb1b9263f3"
+      ],
+      "expected_content_contains": [
+        "下单规则",
+        "退款规则",
+        "扣款成功",
+        "原路退回"
+      ],
+      "doc_id": "doc_ad1a6e88e466",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "给我一份富友账户开户和绑定门店的操作说明",
+      "expected_chunk_ids": [
+        "chunk_ddcf596016f9"
+      ],
+      "expected_content_contains": [
+        "扶商端",
+        "富友账户管理",
+        "新增开户"
+      ],
+      "doc_id": "doc_ad1a6e88e466",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

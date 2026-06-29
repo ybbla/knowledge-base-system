@@ -1,0 +1,58 @@
+{
+  "metadata": {
+    "doc_id": "doc_d7df104ecf3a",
+    "doc_title": "关联直播发红包小单退款培训",
+    "doc_version": 1,
+    "generated_at": "2026-06-29T00:19:51.072077",
+    "generated_by": "auto-ingest",
+    "chunk_count": 9,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "关联直播发红包用户要满足什么条件才能领取？",
+      "expected_chunk_ids": [
+        "chunk_bf96511f9846",
+        "chunk_c90b3204a309"
+      ],
+      "expected_content_contains": [
+        "关联直播",
+        "红包奖励",
+        "发放条件",
+        "任意一场直播"
+      ],
+      "doc_id": "doc_d7df104ecf3a",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "试服小单 线上退款 操作步骤",
+      "expected_chunk_ids": [
+        "chunk_da7dd9e4b935"
+      ],
+      "expected_content_contains": [
+        "店长端",
+        "订单管理",
+        "退货",
+        "无需审批"
+      ],
+      "doc_id": "doc_d7df104ecf3a",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "微信支付被风控是什么情况",
+      "expected_chunk_ids": [
+        "chunk_886f152707a4",
+        "chunk_38a6fbe0a10e"
+      ],
+      "expected_content_contains": [
+        "风控触发场景",
+        "资金安全"
+      ],
+      "doc_id": "doc_d7df104ecf3a",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

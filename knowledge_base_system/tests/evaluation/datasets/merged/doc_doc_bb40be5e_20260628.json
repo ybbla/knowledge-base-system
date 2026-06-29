@@ -1,0 +1,62 @@
+{
+  "metadata": {
+    "doc_id": "doc_bb40be5e47e4",
+    "doc_title": "直播间订单店长操作手册",
+    "doc_version": 1,
+    "generated_at": "2026-06-28T23:55:12.235144",
+    "generated_by": "auto-ingest",
+    "chunk_count": 5,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "店员找不到直播间订单入口该怎么解决？",
+      "expected_chunk_ids": [
+        "chunk_04d1736eda3f",
+        "chunk_ad01e50fd37b"
+      ],
+      "expected_content_contains": [
+        "直播间订单入口",
+        "功能设置",
+        "权限设置",
+        "功能权限",
+        "店员"
+      ],
+      "doc_id": "doc_bb40be5e47e4",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "直播间订单 按直播查询 导出明细",
+      "expected_chunk_ids": [
+        "chunk_1df6b11fad23"
+      ],
+      "expected_content_contains": [
+        "按直播查询",
+        "下单明细",
+        "导出表格",
+        "待提货状态",
+        "筛选订单"
+      ],
+      "doc_id": "doc_bb40be5e47e4",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "教我怎么操作分享直播间补单链接",
+      "expected_chunk_ids": [
+        "chunk_457312e3245f"
+      ],
+      "expected_content_contains": [
+        "补单链接",
+        "直播商品应用",
+        "下单截止时间",
+        "门店库存",
+        "分享"
+      ],
+      "doc_id": "doc_bb40be5e47e4",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

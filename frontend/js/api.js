@@ -170,12 +170,12 @@ const API = (() => {
     return post(`/api/v1/documents/${docId}/retry`);
   }
   /**
-   * 上传文档文件（支持 multipart/form-data），可指定标题、分类及入库选项
+   * 上传文档文件（支持 multipart/form-data），可指定标题、分类及替换选项。
+   * 上传后自动异步入库，返回 {job_id, doc_id, status: "queued"}。
    * @param {File} file - 文件对象
    * @param {string} [title=''] - 文档标题，为空则使用文件名
    * @param {string} [category='通用'] - 文档分类
-   * @param {object} [options] - 入库选项
-   * @param {boolean} [options.ingestAfterCreate=true] - 是否上传后自动入库
+   * @param {object} [options] - 可选参数
    * @param {string} [options.replaceDocId] - 替换已有文档的 ID
    * @param {boolean} [options.confirmReplace] - 是否确认替换
    */
@@ -185,11 +185,16 @@ const API = (() => {
     if (title) fd.append('title', title);
     if (category) fd.append('category', category);
     const params = {
-      ingest_after_create: options.ingestAfterCreate !== false,
       replace_doc_id: options.replaceDocId,
       confirm_replace: options.confirmReplace,
     };
-    return post('/api/v1/documents/upload', fd, { params, timeout: 120000 });
+    // 60s 足够 MinIO 写入（ingest 不再同步执行）
+    return post('/api/v1/documents/upload', fd, { params, timeout: 60000 });
+  }
+
+  /** 查询异步入库任务状态（Restful 备用，正常情况下使用 SSE） */
+  async function getJobStatus(jobId) {
+    return get(`/api/v1/jobs/${jobId}`);
   }
 
   /** 获取文档的版本历史记录 */

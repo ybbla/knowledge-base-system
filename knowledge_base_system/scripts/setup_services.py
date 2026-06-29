@@ -24,6 +24,7 @@ def setup_postgresql() -> None:
     from app.core.config import settings
     from app.db.engine import get_engine
     from app.db.models import Base
+    from app.db.job_models import DbIngestJob  # noqa: F401  # 注册到 Base.metadata
     from sqlalchemy import text, inspect
 
     logger.info("=== PostgreSQL: 建表 ===")

@@ -147,9 +147,9 @@ class TestLLMPromptFormat:
         assert "expected_chunk_ids" in rendered
         assert "expected_content_contains" in rendered
         assert "3" in rendered
-        assert "直接询问" in rendered
-        assert "口语化改写" in rendered
-        assert "模糊查询" in rendered
+        assert "直接复制" in rendered
+        assert "口语化" in rendered
+        assert "关键词组合" in rendered
         assert "{target_count}" not in rendered  # 占位符已替换
 
     def test_user_prompt_template(self):

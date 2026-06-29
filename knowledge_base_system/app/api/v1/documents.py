@@ -23,7 +23,7 @@ from app.api.v1.schemas import (
     SearchParams,
     error_json,
 )
-from app.api.v1.services import sync_index_metadata
+from app.api.v1.services import sync_index_metadata_batch
 from app.core.deps import (
     asset_store,
     bm25_index,
@@ -38,7 +38,7 @@ from app.core.errors import (
     DuplicateDocumentError,
 )
 from app.core.config import settings
-from app.core.models import DocStatus, Document, compute_hash, new_id
+from app.core.models import ChunkStatus, DocStatus, Document, compute_hash, new_id
 from app.utils.thread_pool import upload_executor
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -146,6 +146,28 @@ def _source_type_from_filename(filename: str) -> str:
     }.get(ext, "unknown")
 
 
+def _cleanup_old_doc(old_doc_id: str) -> None:
+    """软删除旧文档并同步关联知识块索引状态。
+
+    用于文档更新/替换场景：新文件已成功写入 MinIO 后，
+    清理旧文档及其 chunk 的索引条目。
+    """
+    if document_repo is None:
+        return
+    try:
+        document_repo.soft_delete(old_doc_id)
+        if hasattr(chunk_store, "bulk_update_status_by_doc_id"):
+            chunk_store.bulk_update_status_by_doc_id(old_doc_id, "deleted")
+        if hasattr(chunk_store, "list_by_doc_id"):
+            old_chunks = chunk_store.list_by_doc_id(old_doc_id)
+            if old_chunks:
+                sync_index_metadata_batch(old_chunks, vector_index, bm25_index)
+    except Exception:
+        logger.exception(
+            "软删除旧文档失败: %s（新文档已就位，可手动清理）", old_doc_id,
+        )
+
+
 # ── 4.1 文档列表 ──────────────────────────────────────────────────
 
 @router.get("/ids")
@@ -230,11 +252,12 @@ async def create_document(
     source_hash: str = Body(default=""),
     category: str = Body(default="通用"),
     metadata: str | None = Body(default=None, description="JSON 格式的元数据"),
-    ingest_after_create: bool = Body(default=False),
 ):
-    """创建新文档，支持创建后立即触发入库。
+    """创建新文档并立即提交异步入库任务。
 
-    如果 ingest_after_create=true，创建文档后自动提交入库任务。
+    与 upload 端点一致，必定触发异步入库（不可跳过）。
+    HTTP 请求在 Document 创建后立即返回 job_id，
+    Worker 异步执行 ingest。
     """
     import json
 
@@ -277,19 +300,19 @@ async def create_document(
 
         response_data = _doc_to_item(created)
 
-        # 创建后入库（在线程池中执行，避免阻塞事件循环）
-        if ingest_after_create:
-            try:
-                loop = asyncio.get_running_loop()
-                created = await loop.run_in_executor(
-                    upload_executor,
-                    ingestion_pipeline.ingest,
-                    created,
-                )
-                response_data = _doc_to_item(created)
-            except Exception as e:
-                logger.exception("入库触发失败")
-                response_data["ingest_error"] = str(e)
+        # 创建 Job + 入队 Dramatiq（异步入库，不阻塞 HTTP 响应）
+        try:
+            from app.core.deps import job_repo
+            from app.core.models import IngestJob
+            from app.tasks.ingest import ingest_document
+
+            job = IngestJob(job_id=new_id("job"), doc_id=created.doc_id)
+            job_repo.create(job)
+            ingest_document.send(job.job_id, created.doc_id)
+            response_data["job_id"] = job.job_id
+        except Exception as e:
+            logger.exception("入队失败: %s", created.doc_id)
+            response_data["ingest_error"] = str(e)
 
         return APIResponse(data=response_data).model_dump(mode="json")
 
@@ -308,18 +331,21 @@ async def upload_document(
     replace_doc_id: str | None = None,
     confirm_replace: bool = False,
 ):
-    """上传文件，创建文档并立即入库。
+    """上传文件，创建文档并立即提交异步入库任务。
 
     支持同名文件检测和更新：
     - 检测到同名文档且未确认替换 → 返回 suggested_replace 提示
     - 提供 replace_doc_id 且 confirm_replace=True → 更新流程
 
-    上传必定触发入库（ingest），不可跳过。
-    热路径在 upload 线程池中执行，不阻塞事件循环。
+    上传必定触发异步入库（不可跳过）。HTTP 请求在 MinIO 写入完成后
+    立即返回 job_id，前端通过 SSE 端点 GET /api/v1/jobs/{job_id}/stream
+    接收实时进度推送。
 
     流程：
-    1-3) 参数解析 + 重复/同名检测（事件循环中，轻量 DB 查询）
-    4-9) 预占位 → MinIO → 旧文档清理 → ingest（线程池，I/O 密集）
+    ① 参数解析 + 文件大小检查 + hash 计算（事件循环中，< 1ms）
+    ② 重复/同名/旧文档校验（事件循环中，轻量 DB 查询，< 50ms）
+    ③ MinIO 写入 + 旧文档清理 + 创建 Job + 入队（upload 线程池，< 5s）
+    ④ 返回 job_id，Worker 异步执行 ingest（独立进程，5-300s）
     """
     original_name = file.filename or "upload"
 
@@ -404,11 +430,11 @@ async def upload_document(
         old_doc = None
         replace_doc_id_typed = None
 
-    # ── 热路径：提交到 upload 线程池 ──
+    # ── [4] MinIO 写入 + [5] 入队（在线程池中同步执行 I/O 密集操作） ──
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         upload_executor,
-        _do_upload,
+        _do_upload_sync,
         file_content,
         original_name,
         size,
@@ -422,11 +448,11 @@ async def upload_document(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 上传热路径（在线程池中同步执行）
+# 上传同步阶段（在线程池中同步执行 MinIO 写入 + 入队，不阻塞事件循环）
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _do_upload(
+def _do_upload_sync(
     file_content: bytes,
     original_name: str,
     size: int,
@@ -437,10 +463,10 @@ def _do_upload(
     old_doc: Document | None,
     replace_doc_id: str | None,
 ) -> dict[str, Any]:
-    """上传热路径：预占位 → MinIO → 旧文档清理 → ingest。
+    """上传同步阶段：预占位 → MinIO → 旧文档清理 → 创建 Job + 入队。
 
-    在 upload 线程池中同步执行，不阻塞事件循环。
-    返回完整的 API 响应 dict（success 或 error）。
+    入库（ingest）不在本函数中执行，而是由 Dramatiq Worker 异步消费。
+    仅做必须在 HTTP 请求中完成的操作（文件写入 MinIO），返回 job_id 给前端。
     """
     # ── [5] 创建 Document 预占位 ──
     pre_doc_id = new_id("doc")
@@ -497,41 +523,64 @@ def _do_upload(
         except Exception:
             logger.exception("更新 source_uri 失败: %s", pre_doc_id)
 
-    # ── [8] 软删除旧文档（更新场景，MinIO 成功后执行） ──
+    # ── [8] 软删除旧文档 + 同步旧 chunk 索引（更新场景） ──
     replaced = old_doc is not None
     if old_doc is not None:
-        try:
-            document_repo.soft_delete(old_doc.doc_id)
-            if hasattr(chunk_store, "bulk_update_status_by_doc_id"):
-                chunk_store.bulk_update_status_by_doc_id(old_doc.doc_id, "deleted")
-            if hasattr(chunk_store, "list_by_doc_id"):
-                old_chunks = chunk_store.list_by_doc_id(old_doc.doc_id)
-                if old_chunks:
-                    for c in old_chunks:
-                        try:
-                            sync_index_metadata(c, vector_index, bm25_index)
-                        except Exception:
-                            logger.exception("同步旧 chunk 删除状态失败: %s", c.chunk_id)
-        except Exception:
-            logger.exception("软删除旧文档失败: %s（新文档已就位，可手动清理）", old_doc.doc_id)
+        _cleanup_old_doc(old_doc.doc_id)
 
-    # ── [9] 入库（必定执行，失败标记 failed 不抛异常） ──
+    # ── [9] 创建 IngestJob + 入队 Dramatiq（不再同步 ingest） ──
+    from app.core.deps import job_repo
+    from app.core.models import IngestJob
+    from app.tasks.ingest import ingest_document
+
+    job_id = new_id("job")
+    job = IngestJob(
+        job_id=job_id,
+        doc_id=pre_doc_id,
+        stage="",
+        progress=0,
+    )
+
+    if job_repo is not None:
+        try:
+            job = job_repo.create(job)
+        except Exception:
+            logger.exception("创建 IngestJob 失败: %s", pre_doc_id)
+            return error_json(
+                ErrorCode.INTERNAL_ERROR,
+                "创建入库任务失败，请重试",
+                http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    # 入队 Dramatiq 任务
     try:
-        doc = ingestion_pipeline.ingest(doc, raw_content=file_content)
-        response_data = _doc_to_item(doc)
+        message = ingest_document.send(job_id, pre_doc_id)
+        job.dramatiq_message_id = message.message_id
+        if job_repo is not None:
+            job_repo.update(job)
     except Exception:
-        logger.exception("入库失败: %s", pre_doc_id)
-        doc.status = DocStatus.failed
-        doc.error_message = "入库失败，可稍后重试"
+        logger.exception("Dramatiq 入队失败: job_id=%s, doc_id=%s", job_id, pre_doc_id)
+        # 入队失败 → 全量回滚（删除 job + doc），用户可原样重传，不会被 hash 去重拦
+        if job_repo is not None:
+            try:
+                job_repo.hard_delete(job_id)
+            except Exception:
+                logger.exception("回滚 job 失败: %s", job_id)
         if document_repo is not None:
             try:
-                document_repo.update(doc)
+                document_repo.hard_delete(pre_doc_id)
             except Exception:
-                logger.exception("持久化失败状态时出错: %s", pre_doc_id)
-        response_data = _doc_to_item(doc)
-        response_data["ingest_error"] = True
+                logger.exception("回滚 doc 失败: %s", pre_doc_id)
+        return error_json(
+            ErrorCode.SERVICE_UNAVAILABLE,
+            "任务队列不可用，请稍后重试",
+            http_status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
+    # ── 构造响应 ──
+    response_data = _doc_to_item(doc)
     response_data.update({
+        "job_id": job_id,
         "duplicate": False,
         "suggested_replace": False,
         "replaced": replaced,
@@ -616,11 +665,7 @@ async def update_document(
     if chunk_updates and hasattr(chunk_store, "bulk_update_fields_by_doc_id"):
         try:
             synced_chunks = chunk_store.bulk_update_fields_by_doc_id(doc_id, chunk_updates)
-            for c in synced_chunks:
-                try:
-                    sync_index_metadata(c, vector_index, bm25_index)
-                except Exception:
-                    logger.exception("同步 chunk 元数据到索引失败: %s", c.chunk_id)
+            sync_index_metadata_batch(synced_chunks, vector_index, bm25_index)
         except Exception:
             logger.exception("批量更新 chunk 元数据失败")
 
@@ -693,13 +738,11 @@ async def delete_document(doc_id: str):
         if hasattr(chunk_store, "bulk_update_status_by_doc_id"):
             chunk_store.bulk_update_status_by_doc_id(doc_id, "deleted")
 
-        # 在索引中标记知识块为已删除
+        # 在索引中批量标记知识块为已删除
         if chunks_to_sync:
             for c in chunks_to_sync:
-                try:
-                    sync_index_metadata(c, vector_index, bm25_index)
-                except Exception:
-                    logger.exception("同步删除状态失败: %s", c.chunk_id)
+                c.status = ChunkStatus.deleted
+            sync_index_metadata_batch(chunks_to_sync, vector_index, bm25_index)
 
         return APIResponse(data=_doc_to_item(doc)).model_dump(mode="json")
 
@@ -943,11 +986,9 @@ async def restore_document(doc_id: str):
         if hasattr(chunk_store, "bulk_update_status_by_doc_id"):
             chunk_store.bulk_update_status_by_doc_id(doc_id, "active")
         if hasattr(chunk_store, "list_by_doc_id"):
-            for c in chunk_store.list_by_doc_id(doc_id):
-                try:
-                    sync_index_metadata(c, vector_index, bm25_index)
-                except Exception:
-                    logger.exception("同步恢复状态失败: %s", c.chunk_id)
+            restored_chunks = chunk_store.list_by_doc_id(doc_id)
+            if restored_chunks:
+                sync_index_metadata_batch(restored_chunks, vector_index, bm25_index)
 
     elif previous_status == "failed":
         # 失败删除恢复：重走入库（在线程池中执行，避免阻塞事件循环）

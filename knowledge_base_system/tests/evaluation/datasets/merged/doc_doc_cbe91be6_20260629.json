@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "doc_id": "doc_cbe91be67954",
+    "doc_title": "简版店长开通收款账户教程",
+    "doc_version": 1,
+    "generated_at": "2026-06-29T00:20:27.916843",
+    "generated_by": "auto-ingest",
+    "chunk_count": 1,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "简版店长开通富友收款账户的流程是什么？",
+      "expected_chunk_ids": [
+        "chunk_b1dffcfaed48"
+      ],
+      "expected_content_contains": [
+        "门店收款码管理",
+        "营业执照",
+        "法人身份证",
+        "人脸验证"
+      ],
+      "doc_id": "doc_cbe91be67954",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "富友收款账户 开通 店长端 所需资料",
+      "expected_chunk_ids": [
+        "chunk_b1dffcfaed48"
+      ],
+      "expected_content_contains": [
+        "签约短信",
+        "分账账户",
+        "银行卡照片"
+      ],
+      "doc_id": "doc_cbe91be67954",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "给我份简版店长开富友收款码的操作指引",
+      "expected_chunk_ids": [
+        "chunk_b1dffcfaed48"
+      ],
+      "expected_content_contains": [
+        "开户页面",
+        "主体类型",
+        "公户",
+        "扫码确认"
+      ],
+      "doc_id": "doc_cbe91be67954",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

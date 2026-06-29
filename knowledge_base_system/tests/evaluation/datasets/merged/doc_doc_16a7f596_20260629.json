@@ -1,0 +1,58 @@
+{
+  "metadata": {
+    "doc_id": "doc_16a7f596bd59",
+    "doc_title": "直播间订单称重退差操作手册",
+    "doc_version": 1,
+    "generated_at": "2026-06-29T00:29:21.062575",
+    "generated_by": "auto-ingest",
+    "chunk_count": 2,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "直播间订单要做称重退差，应该从哪里进入操作页面？",
+      "expected_chunk_ids": [
+        "chunk_fcffd2c00318"
+      ],
+      "expected_content_contains": [
+        "企信应用",
+        "扫码查订单/直播间订单",
+        "常用应用"
+      ],
+      "doc_id": "doc_16a7f596bd59",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "直播间订单 称重退差 操作流程",
+      "expected_chunk_ids": [
+        "chunk_08eb7ecef06e"
+      ],
+      "expected_content_contains": [
+        "扫码退差",
+        "确认提货",
+        "去结算",
+        "我的二维码"
+      ],
+      "doc_id": "doc_16a7f596bd59",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "给我讲下直播间订单称重退差的完整操作方法",
+      "expected_chunk_ids": [
+        "chunk_fcffd2c00318",
+        "chunk_08eb7ecef06e"
+      ],
+      "expected_content_contains": [
+        "企信应用",
+        "扫码退差",
+        "确认提货",
+        "去结算"
+      ],
+      "doc_id": "doc_16a7f596bd59",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

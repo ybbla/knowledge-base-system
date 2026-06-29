@@ -149,13 +149,13 @@ def _check_llm() -> dict[str, Any]:
     """检查 LLM 服务 — 发送真实 API 请求验证连通性和 API Key 有效性。"""
     try:
         from app.core.config import get_settings
-        from llm.volcengine_client import _create_ark_client
+        from llm.volcengine_client import _get_cached_client
 
-        settings = get_settings(reload_env=True)
+        settings = get_settings()
         if not settings.api_key:
             return {"status": "not_configured", "name": "LLM"}
 
-        client = _create_ark_client(settings)
+        client = _get_cached_client()
         # 发送最轻量的请求，仅验证服务可达、API Key 有效
         client.chat.completions.create(
             model=settings.llm_model,

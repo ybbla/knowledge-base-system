@@ -1,0 +1,58 @@
+{
+  "metadata": {
+    "doc_id": "doc_4e1cd49cfd85",
+    "doc_title": "开通微信子商户号",
+    "doc_version": 1,
+    "generated_at": "2026-06-29T00:28:52.956152",
+    "generated_by": "auto-ingest",
+    "chunk_count": 5,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "开通微信子商户号需要准备哪些法人相关的资料？",
+      "expected_chunk_ids": [
+        "chunk_f3005b899266"
+      ],
+      "expected_content_contains": [
+        "营业执照",
+        "法人身份证",
+        "手机号",
+        "基本存款账户信息"
+      ],
+      "doc_id": "doc_4e1cd49cfd85",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "微信子商户号 自动提现 设置步骤",
+      "expected_chunk_ids": [
+        "chunk_645435128ecf"
+      ],
+      "expected_content_contains": [
+        "微信支付官方网站",
+        "法人扫码授权",
+        "留存金额",
+        "自动提现"
+      ],
+      "doc_id": "doc_4e1cd49cfd85",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "查一下微信子商户号的开户操作流程",
+      "expected_chunk_ids": [
+        "chunk_b6bd2cad2717"
+      ],
+      "expected_content_contains": [
+        "门店收款码管理",
+        "开户二维码",
+        "微信审核",
+        "待签约"
+      ],
+      "doc_id": "doc_4e1cd49cfd85",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}
