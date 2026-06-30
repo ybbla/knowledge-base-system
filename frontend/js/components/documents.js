@@ -545,10 +545,12 @@ const Documents = (() => {
     indexing:    '写入索引',
   };
 
-  /** status → 中文标签（queued 时 stage 为空，由 status 驱动展示） */
+  /** status → 中文标签 */
   const STATUS_LABELS = {
     queued:      '等待处理',
     processing:  '处理中',
+    completed:   '完成',
+    failed:      '失败',
   };
 
   /**
@@ -1191,65 +1193,53 @@ const Documents = (() => {
    */
   async function doUpload(replaceDocId = null, confirmReplace = false) {
     if (!selectedFiles.length) { UI.toast('请先选择文件', 'error'); return; }
-    const title = selectedFiles.length === 1 ? (document.getElementById('docTitle')?.value?.trim() || '') : '';
     const categorySelect = document.getElementById('docCategorySelect');
     const category = categorySelect?.value || '通用';
 
-    // 立即关闭弹窗，显示处理中弹条
+    // 先关闭弹窗，但延迟 DOM 重操作，避免和 FormData 构造冲突阻塞主线程
     const fileList = selectedFiles.slice();
     closeUploadModal();
-    currentTab = 'active';
-    currentStatus = 'active';
-    loadPage(1);
-    showProcessingToast(fileList.map(f => ({ title: f.name })));
 
-    let success = 0;
-    let duplicate = 0;
-    let failed = 0;
-    let needConfirm = 0;
-    const successItems = [];
+    try {
+      // 立即上传（此时 DOM 还干净），一次 HTTP 请求发送全部文件
+      const res = await API.uploadDocument(fileList, category, { replaceDocId, confirmReplace });
 
-    // 并行上传（受并发上限控制），ingest_after_create 已移除（后端必定异步入库）
-    const tasks = fileList.map(file => () =>
-      API.uploadDocument(file, title, category, {
-        replaceDocId,
-        confirmReplace,
-      })
-    );
-    const results = await runWithConcurrencyLimit(tasks, MAX_CONCURRENT_UPLOADS);
+      // 上传完成后再做 DOM 操作
+      currentTab = 'active';
+      currentStatus = 'active';
+      loadPage(1);
+      showProcessingToast(fileList.map(f => ({ title: f.name })));
+      const data = res?.data || {};
+      const results = data.files || [];
 
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      const fileName = fileList[i].name;
+      let success = 0;
+      let duplicate = 0;
+      let failed = 0;
+      const successItems = [];
 
-      if (result.status === 'rejected') {
-        failed++;
-        UI.toast(`「${fileName}」上传失败: ${result.reason?.message || result.reason}`, 'error');
-        continue;
+      for (const r of results) {
+        if (r.error) {
+          failed++;
+          UI.toast(`「${r.file_name}」上传失败: ${r.error}`, 'error');
+        } else if (r.duplicate) {
+          duplicate++;
+          UI.toast(`「${r.file_name}」内容重复，已跳过`, 'info');
+        } else {
+          success++;
+          successItems.push({ title: r.file_name, jobId: r.job_id, docId: r.doc_id });
+        }
       }
 
-      const data = result.value?.data || {};
-      if (data.duplicate) {
-        duplicate++;
-        UI.toast(`「${fileName}」内容重复，已跳过`, 'info');
-      } else if (data.suggested_replace && !confirmReplace) {
-        // 并行上传时不支持交互式替换确认，提示用户单独处理
-        needConfirm++;
-        UI.toast(`「${fileName}」与已有文档同名，请单独上传并确认替换`, 'warning');
-      } else {
-        success++;
-        successItems.push({ title: fileName, jobId: data.job_id, docId: data.doc_id });
-      }
+      const parts = [`成功 ${success}`];
+      if (duplicate) parts.push(`重复 ${duplicate}`);
+      if (failed) parts.push(`失败 ${failed}`);
+      UI.toast(`上传完成：${parts.join('，')}`, failed ? 'warning' : 'success');
+      loadPage(1);
+      // 更新弹条为实际 docId 以便 SSE 轮询入库状态
+      if (successItems.length) showProcessingToast(successItems);
+    } catch (e) {
+      UI.toast(`上传失败: ${e.message}`, 'error');
     }
-
-    const parts = [`成功 ${success}`];
-    if (duplicate) parts.push(`重复 ${duplicate}`);
-    if (needConfirm) parts.push(`需确认 ${needConfirm}`);
-    if (failed) parts.push(`失败 ${failed}`);
-    UI.toast(`上传完成：${parts.join('，')}`, failed || needConfirm ? 'warning' : 'success');
-    loadPage(1);
-    // 更新弹条为实际 docId 以便轮询入库状态
-    if (successItems.length) showProcessingToast(successItems);
   }
 
   function showReplaceConfirmModal(suggestedData, file, title, category) {
@@ -1410,7 +1400,7 @@ const Documents = (() => {
     showProcessingToast([{ title: updateTitle }]);
 
     try {
-      const result = await API.uploadDocument(file, '', '通用', {
+      const result = await API.uploadDocument(file, '通用', {
         replaceDocId: updatingDocId,
         confirmReplace: true,
       });

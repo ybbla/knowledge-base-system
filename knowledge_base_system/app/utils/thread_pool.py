@@ -519,52 +519,7 @@ def shutdown_upload_pool() -> None:
         upload_executor = None
 
 
-# ── 子文档入库线程池（生命周期由 lifespan 管理） ──────────────────────────
-
-sub_ingest_pool: ThreadPoolExecutor | None = None
-"""子文档入库专用线程池，4 线程。
-
-document_link 触发子文档异步入库时使用此池。
-独立池 → 不与 _prepare_assets 竞争 worker，避免嵌套提交死锁。
-"""
-
-
-def startup_sub_ingest_pool(
-    max_workers: int = 4,
-    *,
-    thread_name_prefix: str = "kb-sub-ingest",
-) -> ThreadPoolExecutor:
-    """创建子文档入库专用线程池。
-
-    应在 FastAPI lifespan startup 阶段调用。
-
-    Args:
-        max_workers: 最大工作线程数，默认 4。
-        thread_name_prefix: 线程名前缀。
-
-    Returns:
-        配置好的 ThreadPoolExecutor 实例。
-    """
-    global sub_ingest_pool
-    sub_ingest_pool = create_thread_pool(
-        max_workers=max_workers,
-        thread_name_prefix=thread_name_prefix,
-    )
-    return sub_ingest_pool
-
-
-def shutdown_sub_ingest_pool() -> None:
-    """关闭子文档入库线程池。
-
-    应在 FastAPI lifespan shutdown 阶段调用。
-    """
-    global sub_ingest_pool
-    if sub_ingest_pool is not None:
-        shutdown_thread_pool(sub_ingest_pool, wait=True, cancel_futures=False)
-        sub_ingest_pool = None
-
-
-# ── 资源处理线程池（生命周期由 lifespan 管理） ──────────────────────────
+# ── 资源处理线程池（生命周期由 deps.py 模块级管理） ──────────────────────────
 
 asset_worker_pool: ThreadPoolExecutor | None = None
 """资源处理专用线程池，6 线程。

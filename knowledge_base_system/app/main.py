@@ -4,15 +4,15 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+# ── deps 必须在 api.v1 之前导入，确保线程池在消费模块之前完成初始化 ──
+from app.core.deps import recover_stale_processing_docs, recover_stale_processing_jobs, shutdown_resources  # noqa: E402
 from app.api.v1 import mount_v1_sub_routers, register_v1_exception_handlers, router as v1_router
-from app.core.deps import recover_stale_processing_docs, recover_stale_processing_jobs, shutdown_resources
 from app.utils.thread_pool import (
-    startup_health_pool, shutdown_health_pool,
-    startup_search_pool, shutdown_search_pool,
-    startup_upload_pool, shutdown_upload_pool,
-    startup_sub_ingest_pool, shutdown_sub_ingest_pool,
-    startup_asset_worker_pool, shutdown_asset_worker_pool,
-    startup_eval_gen_pool, shutdown_eval_gen_pool,
+    shutdown_health_pool,
+    shutdown_search_pool,
+    shutdown_upload_pool,
+    shutdown_asset_worker_pool,
+    shutdown_eval_gen_pool,
 )
 
 # 前端静态文件目录
@@ -21,12 +21,7 @@ _FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    startup_health_pool()
-    startup_search_pool()
-    startup_upload_pool()
-    startup_sub_ingest_pool()
-    startup_asset_worker_pool()
-    startup_eval_gen_pool()
+    # 线程池已在 app.core.deps 模块级初始化（FastAPI 和 Worker 进程均生效）
     recover_stale_processing_docs()
     recover_stale_processing_jobs()
     try:
@@ -36,7 +31,6 @@ async def lifespan(app: FastAPI):
         shutdown_health_pool()
         shutdown_search_pool()
         shutdown_asset_worker_pool()
-        shutdown_sub_ingest_pool()
         shutdown_upload_pool()
         shutdown_eval_gen_pool()
 

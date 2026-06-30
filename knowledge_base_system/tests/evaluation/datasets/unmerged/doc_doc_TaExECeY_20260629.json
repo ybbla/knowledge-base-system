@@ -1,0 +1,58 @@
+{
+  "metadata": {
+    "doc_id": "doc_TaExECeYIAE571JG",
+    "doc_title": "微信群基础配置指南",
+    "doc_version": 1,
+    "generated_at": "2026-06-29T22:35:23.982576",
+    "generated_by": "auto-ingest",
+    "chunk_count": 3,
+    "query_count": 3
+  },
+  "items": [
+    {
+      "query": "微信群要怎么设置才能防止普通成员修改群名？",
+      "expected_chunk_ids": [
+        "chunk_ugGet8dA4B8B982j"
+      ],
+      "expected_content_contains": [
+        "禁止改群名",
+        "通用设置",
+        "群管理员",
+        "成员修改群名称"
+      ],
+      "doc_id": "doc_TaExECeYIAE571JG",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "微信群 成员邀请 群二维码 备注设置",
+      "expected_chunk_ids": [
+        "chunk_Fd-0oAie7FO_Tgi0"
+      ],
+      "expected_content_contains": [
+        "成员管理",
+        "邀请链接",
+        "群二维码",
+        "群备注"
+      ],
+      "doc_id": "doc_TaExECeYIAE571JG",
+      "doc_version": 1,
+      "source": "auto"
+    },
+    {
+      "query": "查下微信群编辑公告和保存群聊的操作方法",
+      "expected_chunk_ids": [
+        "chunk_0uUy7Ss2v9OCXXZD"
+      ],
+      "expected_content_contains": [
+        "群公告",
+        "保存至通讯录",
+        "右上角\"...\"菜单",
+        "自定义昵称"
+      ],
+      "doc_id": "doc_TaExECeYIAE571JG",
+      "doc_version": 1,
+      "source": "auto"
+    }
+  ]
+}

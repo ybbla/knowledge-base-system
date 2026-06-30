@@ -179,17 +179,27 @@ const API = (() => {
    * @param {string} [options.replaceDocId] - 替换已有文档的 ID
    * @param {boolean} [options.confirmReplace] - 是否确认替换
    */
-  async function uploadDocument(file, title = '', category = '通用', options = {}) {
+  /**
+   * 上传文档（支持单文件或多文件），一次 HTTP 请求完成。
+   * 多文件时浏览器只发一个 multipart 请求，避免并发请求阻塞主线程。
+   * @param {File|File[]} files - 单个文件或文件数组
+   * @param {string} [category='通用'] - 文档分类
+   * @param {object} [options] - 可选参数
+   * @param {string} [options.replaceDocId] - 替换已有文档的 ID（仅单文件有效）
+   * @param {boolean} [options.confirmReplace] - 是否确认替换（仅单文件有效）
+   */
+  async function uploadDocument(files, category = '通用', options = {}) {
     const fd = new FormData();
-    fd.append('file', file);
-    if (title) fd.append('title', title);
+    const fileList = Array.isArray(files) ? files : [files];
+    fileList.forEach(f => fd.append('files', f));
     if (category) fd.append('category', category);
     const params = {
       replace_doc_id: options.replaceDocId,
       confirm_replace: options.confirmReplace,
     };
-    // 60s 足够 MinIO 写入（ingest 不再同步执行）
-    return post('/api/v1/documents/upload', fd, { params, timeout: 60000 });
+    // 多文件时给更长超时
+    const timeout = fileList.length > 1 ? 120000 : 60000;
+    return post('/api/v1/documents/upload', fd, { params, timeout });
   }
 
   /** 查询异步入库任务状态（Restful 备用，正常情况下使用 SSE） */

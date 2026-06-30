@@ -67,10 +67,11 @@ def ingest_document(job_id: str, doc_id: str):
             doc, options={"progress_callback": _on_progress},
         )
 
-        # ingest 成功 → 文档已由 pipeline 标记为 active
+        # ingest 成功 → 文档已由 pipeline 标记为 active，清空 stage
         _update_job(
             job_id,
             status=JobStatus.completed,
+            stage="",
             progress=100,
         )
         logger.info("异步入库完成: doc_id=%s, job_id=%s", doc_id, job_id)
@@ -82,6 +83,7 @@ def ingest_document(job_id: str, doc_id: str):
         _update_job(
             job_id,
             status=JobStatus.failed,
+            stage="",
             progress=0,
             error_message=error_msg[:2000],
         )

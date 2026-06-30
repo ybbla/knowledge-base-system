@@ -1,5 +1,5 @@
 import hashlib
-import uuid
+import secrets
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 # ── 辅助函数 ──────────────────────────────────────────────────────
 
 def new_id(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+    return f"{prefix}_{secrets.token_urlsafe(12)}"
 
 
 def compute_hash(content: str | bytes) -> str:

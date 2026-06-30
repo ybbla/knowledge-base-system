@@ -5,6 +5,22 @@ from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
 from app.core.models import DocStatus, JobStage, JobStatus
+
+# ── 线程池初始化（必须在导入 pipeline 等消费模块之前完成，避免 from-import 绑定 None） ──
+from app.utils.thread_pool import (
+    startup_health_pool,
+    startup_search_pool,
+    startup_upload_pool,
+    startup_asset_worker_pool,
+    startup_eval_gen_pool,
+)
+
+startup_health_pool()       # 4 线程，健康检查
+startup_search_pool()       # 8 线程，并发搜索隔离
+startup_upload_pool()       # 8 线程，文件上传 + MinIO 写入
+startup_asset_worker_pool() # 6 线程，资源处理六路并发
+startup_eval_gen_pool()     # 8 线程，评测数据异步生成
+
 from assets.minio_store import MinioAssetStore
 from ingestion.pipeline import IngestionPipeline, _strip_placeholders
 from llm.semantic_extractor import SemanticExtractor
@@ -120,6 +136,10 @@ retrieval_pipeline = RetrievalPipeline(
     # executor 不注入：pipeline 内部自建临时 2 线程池跑 Vector+BM25；
     # 外层由 search_executor 管理并发搜索隔离。
 )
+
+# ── 评测数据生成线程池已在模块顶部初始化，此处保留注释说明 ──
+# startup_eval_gen_pool() 在 pipeline 等消费模块导入之前就已调用，
+# 确保 from-import 不会绑定到 None。
 
 
 def rebuild_retrieval_indexes_from_chunks(category: str | None = None) -> int:

@@ -324,127 +324,96 @@ async def create_document(
 
 
 @router.post("/upload", status_code=http_status.HTTP_201_CREATED)
-async def upload_document(
-    file: UploadFile = File(...),
-    title: str | None = Form(default=None),
+async def upload_documents(
+    files: list[UploadFile] = File(...),
     category: str = Form(default=upload_api.DEFAULT_CATEGORY),
-    replace_doc_id: str | None = None,
-    confirm_replace: bool = False,
+    replace_doc_id: str | None = Form(default=None),
+    confirm_replace: bool = Form(default=False),
 ):
-    """上传文件，创建文档并立即提交异步入库任务。
+    """上传文件（支持单文件或多文件），创建文档并提交异步入库任务。
 
-    支持同名文件检测和更新：
-    - 检测到同名文档且未确认替换 → 返回 suggested_replace 提示
-    - 提供 replace_doc_id 且 confirm_replace=True → 更新流程
+    单文件模式（len(files)==1）：支持 replace_doc_id / confirm_replace 替换流程。
+    多文件模式：跳过替换逻辑，逐个验证后批量写入 MinIO 并入队。
 
-    上传必定触发异步入库（不可跳过）。HTTP 请求在 MinIO 写入完成后
-    立即返回 job_id，前端通过 SSE 端点 GET /api/v1/jobs/{job_id}/stream
-    接收实时进度推送。
-
-    流程：
-    ① 参数解析 + 文件大小检查 + hash 计算（事件循环中，< 1ms）
-    ② 重复/同名/旧文档校验（事件循环中，轻量 DB 查询，< 50ms）
-    ③ MinIO 写入 + 旧文档清理 + 创建 Job + 入队（upload 线程池，< 5s）
-    ④ 返回 job_id，Worker 异步执行 ingest（独立进程，5-300s）
+    一次 HTTP 请求完成全部文件处理，避免浏览器并发多个请求阻塞主线程。
     """
-    original_name = file.filename or "upload"
-
-    # 文件大小检查：防止大文件全量读入内存导致 OOM
-    file.file.seek(0, 2)  # 移动到文件末尾
-    size = file.file.tell()
-    file.file.seek(0)     # 回起始位置
+    loop = asyncio.get_running_loop()
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
-    if size > max_bytes:
-        return error_json(
-            ErrorCode.VALIDATION_ERROR,
-            f"文件大小 {size / 1024 / 1024:.1f} MB 超过上限 {settings.max_upload_size_mb} MB",
-            http_status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-        )
-
-    file_content = file.file.read()
-    source_hash = compute_hash(file_content)
-    content_type = file.content_type or "application/octet-stream"
-
-    # ── 参数解析：title/category 默认值 ──
-    resolved_title = title or Path(original_name).stem
     resolved_category = category or upload_api.DEFAULT_CATEGORY
 
-    # ── 重复内容检测（事件循环中快速返回） ──
-    if document_repo is not None:
-        existing = document_repo.find_by_hash(source_hash)
-        if existing is not None:
-            return APIResponse(
-                data={
-                    "duplicate": True,
-                    "existing_doc_id": existing.doc_id,
-                    "source_uri": existing.source_uri,
-                    "source_hash": source_hash,
-                    "doc_id": existing.doc_id,
-                    "file_name": original_name,
-                    "size": size,
-                    "title": existing.title,
-                    "category": existing.category,
-                },
-                metadata={"duplicate": True},
-            ).model_dump(mode="json")
+    # ── 逐个验证 ──
+    valid_items: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+    is_single = len(files) == 1
 
-    # ── 同名文档检测（仅上传新文件时） ──
-    if document_repo is not None and not replace_doc_id:
-        similar_docs = document_repo.find_similar_by_filename(original_name)
-        if len(similar_docs) == 1 and not confirm_replace:
-            suggested_doc = similar_docs[0]
-            return APIResponse(
-                data={
-                    "suggested_replace": True,
-                    "suggested_doc_id": suggested_doc.doc_id,
-                    "suggested_doc_title": suggested_doc.title,
-                    "source_hash": source_hash,
-                    "file_name": original_name,
-                    "size": size,
-                    "title": resolved_title,
-                    "category": resolved_category,
-                },
-                metadata={"suggested_replace": True},
-            ).model_dump(mode="json")
+    for f in files:
+        original_name = f.filename or "upload"
+        f.file.seek(0, 2)
+        size = f.file.tell()
+        f.file.seek(0)
+        if size > max_bytes:
+            results.append({"file_name": original_name, "size": size, "duplicate": False, "error": f"文件大小 {size / 1024 / 1024:.1f} MB 超过上限"})
+            continue
 
-    # ── 更新场景：旧文档校验 + 默认值回填 ──
-    if replace_doc_id and confirm_replace and document_repo is not None:
-        old_doc = document_repo.get(replace_doc_id)
-        if old_doc is None:
-            return error_json(
-                ErrorCode.DOCUMENT_NOT_FOUND,
-                f"要替换的文档 {replace_doc_id} 不存在",
-                http_status.HTTP_404_NOT_FOUND,
-            )
-        if old_doc.status != DocStatus.active:
-            return error_json(
-                ErrorCode.DOCUMENT_NOT_FOUND,
-                f"文档 {replace_doc_id} 状态不是 active，无法替换",
-                http_status.HTTP_409_CONFLICT,
-            )
-        # 更新时 title/category 未填 → 沿用旧文档的值
-        resolved_title = title or old_doc.title
-        resolved_category = category or old_doc.category
-        replace_doc_id_typed: str | None = replace_doc_id
-    else:
+        file_content = f.file.read()
+        source_hash = compute_hash(file_content)
+        content_type = f.content_type or "application/octet-stream"
+        resolved_title = Path(original_name).stem
+
+        # 重复内容检测
+        if document_repo is not None:
+            existing = document_repo.find_by_hash(source_hash)
+            if existing is not None:
+                results.append({"file_name": original_name, "size": size, "duplicate": True, "doc_id": existing.doc_id, "title": existing.title, "category": existing.category})
+                continue
+
+        # 单文件替换流程
         old_doc = None
-        replace_doc_id_typed = None
+        replace_id = None
+        if is_single and replace_doc_id and confirm_replace and document_repo is not None:
+            old_doc = document_repo.get(replace_doc_id)
+            if old_doc is None:
+                return error_json(ErrorCode.DOCUMENT_NOT_FOUND, f"要替换的文档 {replace_doc_id} 不存在", http_status.HTTP_404_NOT_FOUND)
+            if old_doc.status != DocStatus.active:
+                return error_json(ErrorCode.DOCUMENT_NOT_FOUND, f"文档 {replace_doc_id} 状态不是 active，无法替换", http_status.HTTP_409_CONFLICT)
+            resolved_title = old_doc.title
+            resolved_category = old_doc.category
+            replace_id = replace_doc_id
 
-    # ── [4] MinIO 写入 + [5] 入队（在线程池中同步执行 I/O 密集操作） ──
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        upload_executor,
-        _do_upload_sync,
-        file_content,
-        original_name,
-        size,
-        source_hash,
-        resolved_title,
-        resolved_category,
-        content_type,
-        old_doc,
-        replace_doc_id_typed,
-    )
+        valid_items.append({"file_content": file_content, "original_name": original_name, "size": size, "source_hash": source_hash, "resolved_title": resolved_title, "content_type": content_type, "old_doc": old_doc, "replace_doc_id": replace_id})
+
+    if not valid_items:
+        dup = sum(1 for r in results if r.get("duplicate"))
+        err = sum(1 for r in results if r.get("error"))
+        return APIResponse(data={"files": results, "total": len(files), "success": 0, "duplicate": dup, "failed": err}).model_dump(mode="json")
+
+    # ── 批量写入 MinIO + 入队（线程池顺序执行） ──
+    batch_results = await loop.run_in_executor(upload_executor, _batch_upload_sync, valid_items, resolved_category)
+    results.extend(batch_results)
+    success = sum(1 for r in results if r.get("job_id") and not r.get("duplicate") and not r.get("error"))
+    dup = sum(1 for r in results if r.get("duplicate"))
+    failed = len(results) - success - dup
+
+    return APIResponse(data={"files": results, "total": len(files), "success": success, "duplicate": dup, "failed": failed}).model_dump(mode="json")
+
+
+def _batch_upload_sync(items: list[dict[str, Any]], category: str) -> list[dict[str, Any]]:
+    """在线程池中逐文件写入 MinIO + 创建 Job + 入队 Dramatiq。"""
+    results: list[dict[str, Any]] = []
+    for item in items:
+        try:
+            result = _do_upload_sync(
+                file_content=item["file_content"], original_name=item["original_name"],
+                size=item["size"], source_hash=item["source_hash"],
+                resolved_title=item["resolved_title"], resolved_category=category,
+                content_type=item["content_type"], old_doc=item.get("old_doc"),
+                replace_doc_id=item.get("replace_doc_id"),
+            )
+            results.append(result)
+        except Exception:
+            logger.exception("批量上传写入失败: %s", item["original_name"])
+            results.append({"file_name": item["original_name"], "size": item["size"], "duplicate": False, "error": "文件保存失败"})
+    return results
 
 
 # ═══════════════════════════════════════════════════════════════════════

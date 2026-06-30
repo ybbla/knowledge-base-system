@@ -165,11 +165,14 @@ def generate_for_chunks(
     入库流程调用的唯一入口。调用 LLM 生成查询和标注，校验后补充元数据字段。
     超过 LLM_INPUT_CHUNK_LIMIT 的知识块列表自动分片生成（每批最多 40 个 chunk）。
 
+    生成数量自适应：实际生成条数不超过 chunk 总数，避免小文档因知识点不足
+    而产生同质化查询（例如 1 个 chunk 只生成 1 条，2 个 chunk 生成 2 条）。
+
     Args:
         chunks: 知识块列表，每个 dict 包含 chunk_id, title, content。
         doc_id: 文档 ID。
         doc_title: 文档标题。
-        query_count: 期望生成的查询数量，默认 3。
+        query_count: 期望生成的查询数量，默认 3。实际不超过 chunk 数量。
         doc_version: 文档版本号，用于过滤过期标注。默认 1。
 
     Returns:
@@ -178,6 +181,9 @@ def generate_for_chunks(
     """
     all_items: list[dict] = []
     all_errors: list[str] = []
+
+    # 实际生成数不超过 chunk 总数，避免小文档查询同质化
+    effective_count = max(1, min(query_count, len(chunks))) if chunks else 0
 
     # 分片：每批 ≤ LLM_INPUT_CHUNK_LIMIT 个 chunk，每批独立生成 query_count 条
     max_total = query_count * 2  # 分片场景总量上限，避免大文档生成过多条目
@@ -191,13 +197,15 @@ def generate_for_chunks(
             if len(all_items) >= max_total:
                 break
             batch = chunks[i : i + LLM_INPUT_CHUNK_LIMIT]
-            items = _generate(batch, target_count=query_count)
+            # 每批的生成数也不超过该批 chunk 数
+            batch_target = max(1, min(query_count, len(batch)))
+            items = _generate(batch, target_count=batch_target)
             if items:
                 valid_items, errors = _validate_annotations(items, chunks)
                 all_items.extend(valid_items)
                 all_errors.extend(errors)
     else:
-        items = _generate(chunks, target_count=query_count)
+        items = _generate(chunks, target_count=effective_count)
         if items:
             all_items, all_errors = _validate_annotations(items, chunks)
 

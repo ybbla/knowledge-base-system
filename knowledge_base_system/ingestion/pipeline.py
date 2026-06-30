@@ -232,6 +232,7 @@ class IngestionPipeline:
                     self._document_repo.update(doc)
                 except Exception:
                     logger.exception("持久化文档失败状态时出错")
+            raise  # 重新抛出，让上层（actor / Dramatiq）根据策略决定重试或标记 job 失败
         return doc
 
     def _run_create(
@@ -294,7 +295,10 @@ class IngestionPipeline:
 
         # 4. 自动生成评测数据（后台异步）
         if settings.auto_eval_enabled and chunks:
+            logger.warning("触发评测数据生成: doc_id=%s, chunks=%d", doc.doc_id, len(chunks))
             self._trigger_eval_data_generation(doc, chunks)
+        else:
+            logger.warning("跳过评测数据生成: enabled=%s, chunks=%d", settings.auto_eval_enabled, len(chunks))
 
     def _prepare_assets(self, assets: list[Asset]) -> None:
         """按资源类型分发处理：六路统一提交到 asset_worker_pool 并发。
@@ -576,6 +580,7 @@ class IngestionPipeline:
         失败不影响主流程，仅记录日志。
         """
         def _generate() -> None:
+            logger.warning("评测数据生成线程启动: doc_id=%s, chunks=%d", doc.doc_id, len(chunks))
             try:
                 from tests.evaluation.gen_dataset import generate_for_chunks
                 from tests.evaluation.storage import save_per_doc_dataset
@@ -619,22 +624,22 @@ class IngestionPipeline:
                     chunk_count=len(chunks),
                     doc_version=doc.version,
                 )
-                logger.info(
+                logger.warning(
                     "文档 %s 评测数据生成完成，%d 条 → %s",
                     doc.doc_id, len(items), path,
                 )
 
             except ImportError:
-                # LLM 调用异常，不影响主流程
-                logger.exception("评测数据生成失败，已跳过")
+                logger.exception("评测数据生成失败（导入错误），已跳过")
             except Exception:
-                # 捕获所有异常，确保不影响主流程
                 logger.exception("评测数据生成异常，已跳过")
 
         # 提交到评测专用线程池执行（8 线程，控制 LLM 并发）
         if eval_gen_pool is not None:
+            logger.warning("提交评测数据生成到线程池: doc_id=%s", doc.doc_id)
             eval_gen_pool.submit(_generate)
         else:
             # 线程池未初始化时（如测试环境）回退裸线程
+            logger.warning("评测线程池未初始化，回退裸线程: doc_id=%s", doc.doc_id)
             thread = threading.Thread(target=_generate, daemon=True)
             thread.start()
