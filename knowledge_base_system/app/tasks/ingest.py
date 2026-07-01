@@ -43,7 +43,7 @@ def ingest_document(job_id: str, doc_id: str):
     # 延迟导入避免 broker 初始化前的循环依赖
     from app.core.deps import document_repo, ingestion_pipeline  # pylint: disable=import-outside-toplevel
 
-    # ── 阶段 0：标记开始（stage 空，由 status 表达） ──
+    # ── 阶段 0：标记开始 ──
     _update_job(job_id, status=JobStatus.processing, stage=JobStage.PARSING, progress=5)
 
     # ── 获取文档 ──
@@ -67,11 +67,11 @@ def ingest_document(job_id: str, doc_id: str):
             doc, options={"progress_callback": _on_progress},
         )
 
-        # ingest 成功 → 文档已由 pipeline 标记为 active，清空 stage
+        # ingest 成功 → 文档已由 pipeline 标记为 active
         _update_job(
             job_id,
             status=JobStatus.completed,
-            stage="",
+            stage=JobStage.COMPLETED,
             progress=100,
         )
         logger.info("异步入库完成: doc_id=%s, job_id=%s", doc_id, job_id)
@@ -83,7 +83,7 @@ def ingest_document(job_id: str, doc_id: str):
         _update_job(
             job_id,
             status=JobStatus.failed,
-            stage="",
+            stage=JobStage.FAILED,
             progress=0,
             error_message=error_msg[:2000],
         )

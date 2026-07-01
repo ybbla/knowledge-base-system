@@ -131,8 +131,6 @@ services:
       - MINIO_SECRET_KEY=minioadmin
       - REDIS_URL=redis://redis:6379/0
       - BACKEND=postgres
-      - LLM_API_KEY=${LLM_API_KEY:-}
-      - LLM_BASE_URL=${LLM_BASE_URL:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -145,7 +143,6 @@ services:
     volumes:
       - ./knowledge_base_system/tests/evaluation/datasets:/app/tests/evaluation/datasets
       - ./knowledge_base_system/tests/evaluation/results:/app/tests/evaluation/results
-
   nginx:
     image: nginx:stable-alpine
     container_name: kb-nginx

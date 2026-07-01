@@ -113,13 +113,18 @@ def _run(rewrite: bool = True, rerank: bool = True, top_k: int = 5) -> int:
             ): i
             for i, item in enumerate(active_dataset)
         }
+        completed = 0
         for future in as_completed(futures):
             i = futures[future]
+            completed += 1
             try:
                 result = future.result(timeout=30)
                 chunk_ids_map[i] = [r.chunk_id for r in result.results]
             except Exception as exc:
                 error_map[i] = str(exc)
+            # 每 10 条输出一次进度
+            if completed % 10 == 0 or completed == total:
+                print(f"  [{completed}/{total}] 检索完成...")
 
     # ── 5. 按原始顺序计算指标 ──
     recall_scores: list[float | None] = []

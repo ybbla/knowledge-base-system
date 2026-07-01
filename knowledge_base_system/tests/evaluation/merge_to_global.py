@@ -42,10 +42,10 @@ def merge_doc_to_global(doc_id: str) -> tuple[int, int, int]:
     init_storage()
 
     # ── 1. 查找匹配的未合并数据集 ──
-    matching_files = sorted(UNMERGED_DIR.glob(f"doc_{doc_id[:12]}*.json"))
+    matching_files = sorted(UNMERGED_DIR.glob(f"{doc_id}*.json"))
     if not matching_files:
         print(f"❌ 未在 {UNMERGED_DIR} 中找到文档 {doc_id} 的评测数据文件")
-        print(f"   搜索模式: doc_{doc_id[:12]}*.json")
+        print(f"   搜索模式: {doc_id}*.json")
         return (0, 0, 0)
 
     print(f"📂 在 unmerged/ 中找到 {len(matching_files)} 个匹配文件:")

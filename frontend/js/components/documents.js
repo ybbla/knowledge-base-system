@@ -538,11 +538,13 @@ const Documents = (() => {
      SSE 进度弹条 — 上传后实时接收 Worker 推送的入库进度
      ----------------------------------------------------------------------- */
 
-  /** 入库阶段的中文标签映射（仅 processing 内的分步） */
+  /** 入库阶段的中文标签 */
   const STAGE_LABELS = {
-    parsing:     '解析文档',
-    extracting:  '语义抽取',
-    indexing:    '写入索引',
+    parsing:    '解析文档',
+    extracting: '语义抽取',
+    indexing:   '写入索引',
+    completed:  '已完成',
+    failed:     '失败',
   };
 
   /** status → 中文标签 */
@@ -565,7 +567,6 @@ const Documents = (() => {
     // ── 进度更新 ──
     source.addEventListener('progress', (e) => {
       const data = JSON.parse(e.data);
-      // stage 非空 → processing 内部分段；stage 为空 → 终态之前，由 status 映射
       const label = STAGE_LABELS[data.stage] || STATUS_LABELS[data.status] || data.stage || data.status;
       const progress = data.progress || 0;
 
@@ -1208,7 +1209,6 @@ const Documents = (() => {
       currentTab = 'active';
       currentStatus = 'active';
       loadPage(1);
-      showProcessingToast(fileList.map(f => ({ title: f.name })));
       const data = res?.data || {};
       const results = data.files || [];
 
@@ -1392,12 +1392,11 @@ const Documents = (() => {
     const file = selectedUpdateFile;
     const updateTitle = file.name || '文档';
 
-    // 立即关闭弹窗，显示弹条
+    // 立即关闭弹窗
     document.querySelector('.modal-backdrop:last-child')?.remove();
     currentTab = 'active';
     currentStatus = 'active';
     loadPage(1);
-    showProcessingToast([{ title: updateTitle }]);
 
     try {
       const result = await API.uploadDocument(file, '通用', {

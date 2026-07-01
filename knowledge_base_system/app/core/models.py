@@ -232,15 +232,17 @@ class JobStatus(str, Enum):
 
 
 class JobStage:
-    """入库阶段常量，仅在 status=processing 时有意义。
+    """入库阶段常量。
 
-    SSE 端点据此推送中文阶段名给前端弹条。
-    终态（completed/failed）由 JobStatus 单独表达，不在此重复。
+    processing 阶段：PARSING / EXTRACTING / INDEXING
+    终态：COMPLETED / FAILED
     """
 
     PARSING = "parsing"           # 解析文档结构
     EXTRACTING = "extracting"     # 语义抽取
     INDEXING = "indexing"         # 向量化 + 索引写入
+    COMPLETED = "completed"       # 入库成功
+    FAILED = "failed"             # 入库失败
 
 
 class IngestJob(BaseModel):

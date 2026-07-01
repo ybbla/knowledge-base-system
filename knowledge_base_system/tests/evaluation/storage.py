@@ -55,11 +55,11 @@ def save_per_doc_dataset(
     init_storage()
 
     # 清理同 doc_id 的旧数据集文件（重入库后旧标注失效）
-    for old_file in UNMERGED_DIR.glob(f"doc_{doc_id[:12]}*.json"):
+    for old_file in UNMERGED_DIR.glob(f"{doc_id}*.json"):
         old_file.unlink()
 
     timestamp = datetime.now().strftime("%Y%m%d")
-    filename = f"doc_{doc_id[:12]}_{timestamp}.json"
+    filename = f"{doc_id}_{timestamp}.json"
     path = UNMERGED_DIR / filename
 
     data = {
