@@ -23,33 +23,47 @@
 ## 架构概览
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                        前端 SPA                              │
-│   Vanilla JS · Router · 仪表盘/文档/搜索/入库/知识块           │
-└──────────────────────────┬───────────────────────────────────┘
-                           │ HTTP REST (JSON)
-┌──────────────────────────▼───────────────────────────────────┐
-│                     FastAPI 后端                              │
-│                                                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────────┐ │
-│  │ 文档管理  │  │ 知识块管理 │  │ 混合检索  │  │ 入库任务管理 │ │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └──────┬──────┘ │
-│       │             │             │               │         │
-│  ┌────▼─────────────▼─────────────▼───────────────▼──────┐  │
-│  │                    核心服务层                           │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌────────────────────┐  │  │
-│  │  │ 解析器    │  │ 入库管道  │  │ 检索管道            │  │  │
-│  │  │ (7种格式) │  │ (语义抽取) │  │ (向量+BM25+RRF)    │  │  │
-│  │  └──────────┘  └──────────┘  └────────────────────┘  │  │
-│  └───────────────────────────────────────────────────────┘  │
-└──────────────────────────┬───────────────────────────────────┘
-                           │
-        ┌──────────────────┼──────────────────┐
-        │                  │                  │
-┌───────▼───────┐  ┌───────▼───────┐  ┌───────▼───────┐
-│   火山引擎     │  │    Milvus     │  │  PostgreSQL   │
-│ LLM/Embedding │  │ 混合向量索引   │  │   数据存储      │
-└───────────────┘  └───────────────┘  └───────────────┘
+                              ┌──────────────┐
+                              │   Nginx 反向代理 │
+                              │  HTTP/2 · SSE │
+                              └──────┬───────┘
+                                     │
+┌────────────────────────────────────┼──────────────────────────┐
+│                                   │   前端 SPA                 │
+│  Vanilla JS · Router · 仪表盘/文档/搜索/入库/知识块              │
+└────────────────────────────────────┼──────────────────────────┘
+                                     │ HTTP REST + SSE (JSON)
+┌────────────────────────────────────▼──────────────────────────┐
+│                         FastAPI 后端                           │
+│                                                               │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐ │
+│  │ 文档管理  │  │ 知识块管理 │  │ 混合检索  │  │ 入库任务管理  │ │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └──────┬───────┘ │
+│       │             │             │               │          │
+│  ┌────▼─────────────▼─────────────▼───────────────▼────────┐ │
+│  │                      核心服务层                          │ │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐  │ │
+│  │  │ 解析器    │  │ 入库管道  │  │ 检索管道              │  │ │
+│  │  │ (7种格式) │  │ (语义抽取) │  │ (向量+BM25+RRF+Rerank)│  │ │
+│  │  └──────────┘  └──────────┘  └──────────────────────┘  │ │
+│  └────────────────────────────────────────────────────────┘ │
+│                                                               │
+│  ┌──────────────────────────────────────────────────────────┐│
+│  │  异步任务层                              ┌──────────────┐ ││
+│  │  Dramatiq Worker ←→ Redis Broker         │ SSE 进度推送  │ ││
+│  │  (异步入库 · 自动重试 · 分段进度)          └──────────────┘ ││
+│  └──────────────────────────────────────────────────────────┘│
+└────────────────────────────┬────────────────────────────────┘
+                             │
+     ┌───────────────┼───────────────┬───────────────┬───────────────┐
+     │               │               │               │               │
+ ┌───▼───┐  ┌────────▼────────┐  ┌───▼───┐  ┌───────▼──────┐  ┌──────▼───┐
+ │ 火山引擎│  │    Milvus      │  │  PG   │  │    MinIO     │  │  Redis   │
+ │LLM/Emb │  │ 向量+BM25 双索引 │  │数据存储│  │  对象存储     │  │ 任务队列  │
+ └───────┘  └────────┬────────┘  └───────┘  └──────┬───────┘  └─────┬────┘
+                     │                             │               │
+                     └────────── 内部依赖 ──────────┴───────────────┘
+                     (Milvus 内部使用 MinIO + etcd)
 ```
 
 **核心流程：**
@@ -71,28 +85,32 @@
                                    最终结果
 ```
 
-**检索链路已完全去 PG 化**：Milvus 存储全量标量字段（chunk_id / doc_id / title / content / category 等），检索时直接返回完整元数据，无需回查 PostgreSQL。
+**检索链路已完全去 PG 化**：Milvus 存储全量标量字段（chunk_id / doc_id / title / content / category / knowledge_type / status / source_refs / asset_refs），筛选、召回、排序全链路闭环在 Milvus 内完成，无需回查 PostgreSQL。
 
 ---
 
 ## 技术栈
 
-| 层级 | 技术 | 说明 |
-|------|------|------|
-| **Web 框架** | FastAPI 0.115+ | 异步 REST API，自动 OpenAPI 文档 |
-| **语言** | Python 3.10+ | 类型注解 `X \| None`、`list[X]` 语法 |
-| **数据模型** | Pydantic v2 | 请求/响应校验，Settings 配置管理 |
-| **LLM** | 火山引擎 doubao-seed-2-0-pro | 语义抽取、查询重写、Rerank |
-| **Embedding** | 火山引擎 doubao-embedding-vision | 文本+视觉联合向量化（1024 维） |
-| **向量检索** | Milvus 2.5 HNSW + COSINE | 持久化稠密向量索引 |
-| **全文检索** | Milvus 2.5 原生 BM25 | Tantivy 引擎 + chinese 分析器，自动稀疏向量化 |
-| **融合排序** | RRF + LLM Rerank | 倒数排序融合 + 深度语义重排 |
-| **数据库** | PostgreSQL | 文档/知识块/资产元数据持久化 |
-| **对象存储** | MinIO + 内容寻址 | 资产去重存储，SHA-256 哈希为 Key |
-| **PDF 精准解析** | MinerU API + PyMuPDF | 布局分析、阅读顺序、公式识别，自动降级 |
-| **前端** | Vanilla JS SPA | 自制路由、组件化，无框架依赖 |
-| **样式** | 自定义 CSS | 思源黑体 + JetBrains Mono |
-| **容器化** | Docker Compose | PostgreSQL + Milvus + MinIO + etcd + Attu |
+| 层级            | 技术                           | 说明                                                        |
+| ------------- | ---------------------------- | --------------------------------------------------------- |
+| **Web 框架**    | FastAPI 0.115+               | 异步 REST API + SSE 流式推送，自动 OpenAPI 文档                      |
+| **反向代理**      | Nginx                        | HTTP/2 前端，SSE 长连接兼容配置                                     |
+| **语言**        | Python 3.10+                 | 类型注解 `X \| None`、`list[X]` 语法                             |
+| **数据模型**      | Pydantic v2                  | 请求/响应校验，Settings 配置管理                                     |
+| **LLM（高质量）**  | 火山引擎 doubao-seed-2-0-pro     | 语义抽取等高质量任务                                                |
+| **LLM（快速）**   | 火山引擎 doubao-seed-2-0-mini    | 查询重写、Rerank 等高频低延迟任务                                      |
+| **Embedding** | 火山引擎 doubao-embedding-vision | 文本+视觉联合向量化（1024 维）                                        |
+| **向量检索**      | Milvus 2.5 HNSW + COSINE     | 持久化稠密向量索引                                                 |
+| **全文检索**      | Milvus 2.5 原生 BM25           | Tantivy 引擎 + chinese 分析器，自动稀疏向量化                          |
+| **融合排序**      | RRF + LLM Rerank             | 倒数排序融合 + 深度语义重排                                           |
+| **数据库**       | PostgreSQL                   | 文档/知识块/资产/任务/解析元素 元数据持久化                                  |
+| **对象存储**      | MinIO + 内容寻址                 | 资产去重存储，SHA-256 哈希为 Key                                    |
+| **任务队列**      | Dramatiq + Redis             | 异步入库、自动重试、分段进度                                            |
+| **PDF 精准解析**  | MinerU API + PyMuPDF         | 布局分析、阅读顺序、公式识别，自动降级                                       |
+| **微信微盘**      | 企业 API + Playwright          | 双路径下载策略，支持管理员/非管理员                                        |
+| **前端**        | Vanilla JS SPA               | 自制路由、组件化，无框架依赖                                            |
+| **样式**        | 自定义 CSS                      | 思源黑体 + JetBrains Mono                                     |
+| **容器化**       | Docker Compose               | PostgreSQL + Milvus + MinIO + Redis + Nginx + etcd + Attu |
 
 ---
 
@@ -104,13 +122,13 @@ knowledge-base-system/
 │   ├── index.html                     # SPA 入口
 │   ├── css/style.css                  # 全局样式 (57KB 定制设计)
 │   └── js/
-│       ├── api.js                     # API 客户端（封装所有后端接口）
+│       ├── api.js                     # API 客户端（封装所有后端接口，含 SSE）
 │       ├── router.js                  # Hash 路由
 │       ├── app.js                     # 应用入口，路由注册与初始化
 │       └── components/
 │           ├── common.js              # 公共 UI 组件（Toast/Modal/Badge/状态）
 │           ├── dashboard.js           # 仪表盘页面
-│           ├── documents.js           # 文档列表页面
+│           ├── documents.js           # 文档列表页面（含批量操作 + SSE 进度条）
 │           ├── document-detail.js     # 文档详情页面
 │           ├── search.js              # 搜索页面（含调试模式）
 │           └── chunks.js              # 知识块管理页面
@@ -124,11 +142,12 @@ knowledge-base-system/
 │   │   │       ├── __init__.py        # 路由挂载与异常处理器注册
 │   │   │       ├── schemas.py         # 统一响应模型 (APIResponse/Error/Pagination)
 │   │   │       ├── errors.py          # 错误码与异常处理器
-│   │   │       ├── services.py        # 依赖注入服务工厂
+│   │   │       ├── services.py        # 依赖注入服务工厂 + 索引同步服务
 │   │   │       ├── health.py          # 健康检查 (/live /ready /dependencies)
-│   │   │       ├── documents.py       # 文档 CRUD + 上传 + 入库触发
+│   │   │       ├── documents.py       # 文档 CRUD + 上传 + 入库触发 + 批量操作
 │   │   │       ├── chunks.py          # 知识块 CRUD + 批量操作 + 索引重建
 │   │   │       ├── search.py          # 混合检索 + 调试检索 + 过滤器
+│   │   │       └── jobs.py            # 入库任务 SSE 进度推送
 │   │   ├── core/                      # 核心基础设施
 │   │   │   ├── config.py              # 配置管理 (pydantic-settings)
 │   │   │   ├── deps.py                # 全局依赖：LLM/Embedding/索引/仓库
@@ -138,14 +157,20 @@ knowledge-base-system/
 │   │   ├── db/                        # 数据库层
 │   │   │   ├── engine.py              # 数据库引擎（自动创建表+扩展）
 │   │   │   ├── models.py              # SQLAlchemy ORM 模型
+│   │   │   ├── job_models.py          # 入库任务 ORM 模型
 │   │   │   └── repositories/          # 仓库模式
 │   │   │       ├── base.py            # 基础仓库类
 │   │   │       ├── documents.py       # 文档仓库
 │   │   │       ├── elements.py        # 解析元素仓库
 │   │   │       ├── chunks.py          # 知识块仓库
-│   │   │       └── assets.py          # 资产仓库
+│   │   │       ├── assets.py          # 资产仓库
+│   │   │       └── jobs.py            # 入库任务仓库
+│   │   ├── tasks/                     # 异步任务（Dramatiq）
+│   │   │   ├── __init__.py            # 注册 broker + 导入 actor
+│   │   │   ├── broker.py              # Redis Broker 配置
+│   │   │   └── ingest.py              # 异步入库 actor（分段进度 + 自动重试）
 │   │   └── utils/                     # 工具模块
-│   │       └── thread_pool.py         # 多业务线隔离的线程池体系（6 个专用池）
+│   │       └── thread_pool.py         # 多业务线隔离的线程池体系（5 个专用池）
 │   │
 │   ├── parsers/                       # 文档解析器
 │   │   ├── base.py                    # 解析器基类 + ParsedElement 模型
@@ -160,7 +185,7 @@ knowledge-base-system/
 │   │   └── markdown_parser.py         # Markdown 解析
 │   │
 │   ├── ingestion/                     # 入库管道
-│   │   └── pipeline.py                # 主入库流程（解析→抽取→索引→资产处理）
+│   │   └── pipeline.py                # 主入库流程（清理→解析→资产处理→语义抽取→双路索引）
 │   │
 │   ├── indexing/                      # 索引层
 │   │   ├── base.py                    # 索引抽象基类 (VectorIndex / BM25Index)
@@ -188,12 +213,16 @@ knowledge-base-system/
 │   │
 │   ├── scripts/                       # 运维脚本
 │   │   ├── setup_services.py          # 外部服务初始化（PG 建表 + Milvus 建 Collection + MinIO 建 Bucket）
-│   │   └── clear_services.py          # 外部服务数据清空（不可逆）
+│   │   ├── clear_services.py          # 外部服务数据清空（不可逆）
+│   │   ├── import_folder.py           # 批量文件夹导入（支持嵌套目录、Dramatiq 异步入库）
+│   │   ├── cleanup_general_category.py # 通用分类清理（级联删除文档/知识块/索引）
+│   │   ├── _analyze_eval.py           # 评测结果分析工具
+│   │   └── _check_similarity.py       # 跨文档语义相似度检查
 │   │
 │   ├── tests/                         # 测试套件
 │   │   ├── conftest.py                # 测试配置与 Fixtures
-│   │   ├── test_models.py             # 数据模型单元测试 (38KB)
-│   │   ├── test_db_models.py          # 数据库模型测试 (35KB)
+│   │   ├── test_models.py             # 数据模型单元测试 (33KB)
+│   │   ├── test_db_models.py          # 数据库模型测试 (29KB)
 │   │   ├── test_db_repositories.py    # 仓库层测试
 │   │   ├── test_api_contracts.py      # API 契约测试
 │   │   ├── test_v1_*.py               # v1 API 接口测试（health/contracts/documents_chunks/search/real_endpoints）
@@ -219,7 +248,7 @@ knowledge-base-system/
 │   │   │   ├── gen_dataset.py         # 入库时 LLM 自动生成评测数据
 │   │   │   ├── merge_to_global.py     # 手动合并到全局数据集
 │   │   │   ├── run_eval.py            # 评测执行入口
-│   │   │   ├── metrics.py             # 评测指标 (Recall@K / MRR)
+│   │   │   ├── metrics.py             # 评测指标 (Hit@K、Recall@K、Precision@K、MRR)
 │   │   │   ├── storage.py             # 分文档存储 + JSONL 历史追加
 │   │   │   ├── README.md              # 评测系统详细文档
 │   │   │   ├── eval_dataset.json      # 全局评测数据集
@@ -230,18 +259,25 @@ knowledge-base-system/
 │   │   └── integration_mock/          # Mock 集成测试
 │   │
 │   ├── requirements.txt               # Python 依赖
+│   ├── Dockerfile.worker               # Dramatiq Worker 镜像
 │   └── .env                           # 环境变量配置
 │
 ├── docs/                              # 文档
-│   └── API接口汇总.md                  # 全部 API 接口说明
+│   ├── API接口汇总.md                  # 全部 API 接口说明
+│   ├── develop.md                     # 开发文档（架构演进记录）
+│   └── devlog-20260630.md             # 开发日志（Dramatiq/SSE/Nginx 架构决策）
 │
 ├── data/                              # 数据目录
 │   ├── source_documents/              # 原始文档
 │   ├── uploads/                       # 上传文件存储
 │   └── simulated_inputs/              # 模拟输入
 │
-├── docker-compose.yml                 # Docker 服务编排
+├── docker-compose.yml                 # Docker 服务编排（含 Redis/Dramatiq/Nginx）
+├── nginx.conf                         # Nginx 反向代理配置（HTTP/2 + SSE + /assets/ MinIO 代理）
 ├── openspec/                          # 变更规范与设计文档
+├── todo/                              # 开发计划文档
+├── KNOWLEDGE_BASE_DEVELOPMENT.md      # 知识库开发文档
+├── 全链路流程分析.md                   # 全链路流程与调用关系分析
 ├── AGENTS.md                          # AI Agent 配置
 └── CLAUDE.md                          # Claude 项目配置
 ```
@@ -253,9 +289,10 @@ knowledge-base-system/
 ### 环境要求
 
 - Python 3.10+
-- Docker & Docker Compose（用于 PostgreSQL / Milvus / MinIO）
+- Docker & Docker Compose（用于 PostgreSQL / Milvus / MinIO / Redis）
 - 火山引擎 API Key（LLM 和 Embedding 服务）
 - MinerU API Token（可选，用于 PDF 精准解析）
+- 微信企业 API 凭证（可选，用于微信微盘下载）
 
 ### 1. 克隆项目
 
@@ -287,15 +324,20 @@ VOLCENGINE_API_KEY=your-api-key-here
 ### 4. 启动基础服务
 
 ```bash
-# 启动 PostgreSQL + Milvus + MinIO（需要 Docker）
+# 启动全部服务（PostgreSQL + Milvus + MinIO + Redis + Nginx + Dramatiq Worker）
 docker compose up -d
+
+# 仅启动基础服务（不含 Nginx 和 Worker，适合本地开发）
+docker compose up -d postgres etcd minio milvus-standalone redis
 ```
 
 > **Docker 服务端口映射：**
 >
 > | 服务 | 端口 | 说明 |
 > |------|------|------|
+> | Nginx | `80` | HTTP/2 反向代理（生产入口） |
 > | PostgreSQL | `5432` | 关系数据库 |
+> | Redis | `6379` | 任务队列 Broker |
 > | MinIO API | `9000` | 对象存储 |
 > | MinIO Console | `9001` | MinIO Web 管理 |
 > | Milvus | `19530` | 向量数据库 |
@@ -318,7 +360,8 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ### 7. 访问系统
 
-- **前端界面**：http://localhost:8000
+- **生产入口 (Nginx)**：http://localhost
+- **前端界面（直连）**：http://localhost:8000
 - **API 文档 (Swagger)**：http://localhost:8000/docs
 - **API 文档 (ReDoc)**：http://localhost:8000/redoc
 - **Milvus 管理 (Attu)**：http://localhost:8001（如果启动了 Attu）
@@ -334,7 +377,8 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `VOLCENGINE_API_KEY` | — | 火山引擎 API Key（**必填**） |
-| `VOLCENGINE_LLM_MODEL` | `doubao-seed-2-0-pro-260215` | LLM 模型 |
+| `VOLCENGINE_LLM_MODEL` | `doubao-seed-2-0-pro-260215` | LLM 模型（高质量任务：语义抽取） |
+| `LLM_FAST_MODEL` | `doubao-seed-2-0-mini-260428` | LLM 快速模型（低延迟任务：查询重写、Rerank） |
 | `VOLCENGINE_EMBEDDING_MODEL` | `doubao-embedding-vision-251215` | Embedding 模型（1024 维） |
 | `VOLCENGINE_TIMEOUT_SECONDS` | `3600` | API 请求超时（秒） |
 
@@ -347,58 +391,73 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ### Milvus 向量检索
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `MILVUS_ENABLED` | `true` | 启用 Milvus |
-| `MILVUS_HOST` | `localhost` | Milvus 主机 |
-| `MILVUS_PORT` | `19530` | Milvus 端口 |
-| `MILVUS_COLLECTION` | `knowledge_chunks` | Collection 名称 |
-| `MILVUS_HNSW_M` | `16` | HNSW 图连接数 |
-| `MILVUS_HNSW_EF_CONSTRUCTION` | `200` | HNSW 构建时搜索宽度 |
-| `MILVUS_HNSW_EF` | `200` | HNSW 搜索时候选集大小（建议 ≥ top_k×4） |
-| `MILVUS_SPARSE_EF` | `100` | BM25 稀疏向量搜索候选集大小（建议 ≥ top_k×2） |
+| 变量                            | 默认值                | 说明                             |
+| ----------------------------- | ------------------ | ------------------------------ |
+| `MILVUS_ENABLED`              | `true`             | 启用 Milvus                      |
+| `MILVUS_HOST`                 | `localhost`        | Milvus 主机                      |
+| `MILVUS_PORT`                 | `19530`            | Milvus 端口                      |
+| `MILVUS_COLLECTION`           | `knowledge_chunks` | Collection 名称                  |
+| `MILVUS_HNSW_M`               | `16`               | HNSW 图连接数                      |
+| `MILVUS_HNSW_EF_CONSTRUCTION` | `200`              | HNSW 构建时搜索宽度                   |
+| `MILVUS_HNSW_EF`              | `120`              | HNSW 搜索时候选集大小（建议 ≥ top_k×4）    |
+| `MILVUS_SPARSE_EF`            | `60`               | BM25 稀疏向量搜索候选集大小（建议 ≥ top_k×2） |
 
 ### MinIO 对象存储
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `MINIO_ENABLED` | `true` | 启用 MinIO |
-| `MINIO_ENDPOINT` | `localhost:9000` | MinIO 地址 |
-| `MINIO_ACCESS_KEY` | `minioadmin` | 访问密钥 |
-| `MINIO_SECRET_KEY` | `minioadmin` | 秘密密钥 |
-| `MINIO_BUCKET_INPUT` | `kb-input` | 原始文件 Bucket |
-| `MINIO_BUCKET_ASSETS` | `kb-assets` | 资产 Bucket（图片/视频） |
-| `MINIO_PRESIGNED_EXPIRY` | `3600` | 预签名 URL 有效期（秒） |
+| 变量                       | 默认值              | 说明                                               |
+| ------------------------ | ---------------- | ------------------------------------------------ |
+| `MINIO_ENABLED`          | `true`           | 启用 MinIO                                         |
+| `MINIO_ENDPOINT`         | `localhost:9000` | MinIO 地址                                         |
+| `MINIO_ACCESS_KEY`       | `minioadmin`     | 访问密钥                                             |
+| `MINIO_SECRET_KEY`       | `minioadmin`     | 秘密密钥                                             |
+| `MINIO_BUCKET_INPUT`     | `kb-input`       | 原始文件 Bucket                                      |
+| `MINIO_BUCKET_ASSETS`    | `kb-assets`      | 资产 Bucket（图片/视频）                                 |
+| `MINIO_PRESIGNED_EXPIRY` | `3600`           | 预签名 URL 有效期（秒）                                   |
+| `MINIO_PUBLIC_ENDPOINT`  | —                | 预签名 URL 对外地址，如 `https://kb.example.com`；留空使用内部地址 |
 
 ### MinerU PDF 精准解析
 
+| 变量                 | 默认值                  | 说明                                  |
+| ------------------ | -------------------- | ----------------------------------- |
+| `MINERU_API_TOKEN` | —                    | MinerU API Token（不配置则自动降级到 PyMuPDF） |
+| `MINERU_API_BASE`  | `https://mineru.net` | MinerU API 基础地址                     |
+| `MINERU_USE_VLM`   | `false`              | 是否启用 VLM 辅助识别                       |
+
+### 异步任务队列（Dramatiq + Redis）
+
+| 变量                            | 默认值                        | 说明                         |
+| ----------------------------- | -------------------------- | -------------------------- |
+| `REDIS_URL`                   | `redis://localhost:6379/0` | Redis 连接串（Dramatiq Broker） |
+| `DRAMATIQ_TASK_MAX_RETRIES`   | `3`                        | 入库任务最大重试次数                 |
+| `DRAMATIQ_TASK_TIME_LIMIT_MS` | `1800000`                  | 单任务硬超时（毫秒），默认 30 分钟        |
+
+### 微信微盘下载
+
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `MINERU_API_TOKEN` | — | MinerU API Token（不配置则自动降级到 PyMuPDF） |
-| `MINERU_API_BASE` | `https://mineru.net` | MinerU API 基础地址 |
-| `MINERU_USE_VLM` | `false` | 是否启用 VLM 辅助识别 |
+| `WECHAT_DRIVE_COOKIES` | — | 浏览器 Cookie（短期，需手动刷新，非管理员路径） |
+| `WECHAT_CORPID` | — | 企业微信 CorpID（管理员路径，持久化） |
+| `WECHAT_CORPSECRET` | — | 企业微信 CorpSecret（管理员路径，持久化） |
 
 ### 检索参数
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `VECTOR_TOP_K` | `30` | 向量召回候选数 |
-| `BM25_TOP_K` | `30` | BM25 召回候选数 |
+| 变量             | 默认值  | 说明         |
+| -------------- | ---- | ---------- |
+| `VECTOR_TOP_K` | `30` | 向量召回候选数    |
+| `BM25_TOP_K`   | `30` | BM25 召回候选数 |
 | `FUSION_TOP_K` | `15` | RRF 融合后保留数 |
-| `FINAL_TOP_K` | `5` | 最终返回数 |
-| `RRF_K` | `60` | RRF 平滑因子 |
+| `FINAL_TOP_K`  | `5`  | 最终返回数      |
+| `RRF_K`        | `60` | RRF 平滑因子   |
 
 ### 入库与抽取
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `MAX_UPLOAD_SIZE_MB` | `100` | 上传文件大小上限（MB） |
-| `MAX_ELEMENTS_PER_DOC` | `1000` | 单文档解析元素上限 |
-| `LLM_ELEMENTS_BATCH_SIZE` | `40` | 单次 LLM 语义抽取的元素数上限 |
-| `LLM_BATCH_OVERLAP_RATIO` | `0.15` | 分批间重叠比例 |
-| `CONTEXT_WINDOW_TOKENS` | `256000` | LLM 上下文窗口上限 |
-| `EMBEDDING_BATCH_SIZE` | `32` | Embedding 批处理大小 |
-| `INDEX_UPSERT_BATCH_SIZE` | `100` | 索引批量写入大小 |
+| 变量                        | 默认值      | 说明                                        |
+| ------------------------- | -------- | ----------------------------------------- |
+| `MAX_UPLOAD_SIZE_MB`      | `100`    | 上传文件大小上限（MB）                              |
+| `CONTEXT_WINDOW_TOKENS`   | `256000` | LLM 上下文窗口大小（用于计算默认输入上限）                   |
+| `MAX_WINDOW_TOKENS`       | `102400` | 单次 LLM 语义抽取的输入 Token 上限（默认 context 的 40%） |
+| `EMBEDDING_BATCH_SIZE`    | `100`    | Embedding 批处理大小（与 INDEX_UPSERT_BATCH_SIZE 对齐） |
+| `INDEX_UPSERT_BATCH_SIZE` | `100`    | 索引批量写入大小                                  |
 
 ### 视觉理解与评测
 
@@ -413,38 +472,41 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## API 接口
 
-系统当前提供 **23 个活跃 v1 API**，所有 `/api/v1` 接口返回统一的 `{ data, meta, error }` 结构。
+系统当前提供 **27 个活跃 v1 API**，所有 `/api/v1` 接口返回统一的 `{ data, meta, error }` 结构。
 
 ### 接口速览
 
-| 分组 | 方法 | 路径 | 功能 |
-|------|------|------|------|
-| **健康检查** | `GET` | `/api/v1/health/live` | 进程存活检查 |
-| | `GET` | `/api/v1/health` | 核心依赖就绪检查 |
-| | `GET` | `/api/v1/health/dependencies` | 依赖状态详情 |
-| **文档管理** | `GET` | `/api/v1/documents` | 文档分页列表 |
-| | `POST` | `/api/v1/documents` | 创建文档 |
-| | `POST` | `/api/v1/documents/upload` | 上传文件并创建文档 |
-| | `GET` | `/api/v1/documents/ids` | 批量获取文档 ID |
-| | `GET` | `/api/v1/documents/{id}` | 文档详情 |
-| | `PATCH` | `/api/v1/documents/{id}` | 更新文档（乐观锁） |
-| | `GET` | `/api/v1/documents/{id}/elements` | 文档解析元素 |
-| | `DELETE` | `/api/v1/documents/{id}` | 软删除文档 |
-| | `POST` | `/api/v1/documents/{id}/restore` | 恢复文档 |
-| | `POST` | `/api/v1/documents/{id}/retry` | 重试入库 |
-| | `GET` | `/api/v1/documents/{id}/history` | 文档操作历史 |
-| **知识块** | `GET` | `/api/v1/chunks` | 知识块分页列表 |
-| | `POST` | `/api/v1/chunks` | 创建知识块 |
-| | `GET` | `/api/v1/chunks/ids` | 批量获取知识块 ID |
-| | `GET` | `/api/v1/chunks/{id}` | 知识块详情 |
-| | `PATCH` | `/api/v1/chunks/{id}` | 更新知识块 |
-| | `DELETE` | `/api/v1/chunks/{id}` | 软删除知识块 |
-| | `POST` | `/api/v1/chunks/{id}/restore` | 恢复知识块 |
-| | `POST` | `/api/v1/chunks/batch` | 批量状态操作 |
-| **检索** | `POST` | `/api/v1/search` | 混合检索（含 debug 模式） |
-| | `GET` | `/api/v1/search/filters` | 可用筛选项 |
+| 分组       | 方法       | 路径                                | 功能                                       |
+| -------- | -------- | --------------------------------- | ---------------------------------------- |
+| **健康检查** | `GET`    | `/api/v1/health/live`             | 进程存活检查（K8s liveness probe）               |
+|          | `GET`    | `/api/v1/health`                  | 整体状态 + 依赖详情（PG/Milvus/MinIO/LLM 四路并行探测）  |
+| **文档管理** | `GET`    | `/api/v1/documents`               | 文档分页列表                                   |
+|          | `POST`   | `/api/v1/documents`               | 创建文档                                     |
+|          | `POST`   | `/api/v1/documents/upload`        | 上传文件并创建文档                                |
+|          | `GET`    | `/api/v1/documents/ids`           | 批量获取文档 ID                                |
+|          | `GET`    | `/api/v1/documents/{id}`          | 文档详情                                     |
+|          | `PATCH`  | `/api/v1/documents/{id}`          | 更新文档（乐观锁）                                |
+|          | `GET`    | `/api/v1/documents/{id}/elements` | 文档解析元素                                   |
+|          | `DELETE` | `/api/v1/documents/{id}`          | 软删除文档                                    |
+|          | `POST`   | `/api/v1/documents/{id}/restore`  | 恢复文档                                     |
+|          | `POST`   | `/api/v1/documents/{id}/retry`    | 重新入队入库任务                                 |
+|          | `GET`    | `/api/v1/documents/{id}/history`  | 文档操作历史                                   |
+|          | `POST`   | `/api/v1/documents/batch-delete`  | 批量软删除文档                                  |
+|          | `POST`   | `/api/v1/documents/batch-retry`   | 批量重试入库                                   |
+|          | `POST`   | `/api/v1/documents/batch-restore` | 批量恢复文档                                   |
+| **知识块**  | `GET`    | `/api/v1/chunks`                  | 知识块分页列表                                  |
+|          | `POST`   | `/api/v1/chunks`                  | 创建知识块                                    |
+|          | `GET`    | `/api/v1/chunks/ids`              | 批量获取知识块 ID                               |
+|          | `GET`    | `/api/v1/chunks/{id}`             | 知识块详情                                    |
+|          | `PATCH`  | `/api/v1/chunks/{id}`             | 更新知识块                                    |
+|          | `DELETE` | `/api/v1/chunks/{id}`             | 软删除知识块                                   |
+|          | `POST`   | `/api/v1/chunks/{id}/restore`     | 恢复知识块                                    |
+|          | `POST`   | `/api/v1/chunks/batch`            | 批量状态操作                                   |
+| **检索**   | `POST`   | `/api/v1/search`                  | 混合检索（Milvus 全链路闭环，零 PG 查询）               |
+|          | `GET`    | `/api/v1/search/filters`          | 可用筛选项（分类/知识类型/知识块状态）                     |
+| **任务**   | `GET`    | `/api/v1/jobs/{job_id}/stream`    | SSE 实时进度推送（progress/completed/failed 事件） |
 
-详细接口文档见 [docs/API接口汇总.md](docs/API接口汇总.md)。
+详细接口文档见 [API接口汇总.md](API接口汇总.md)。
 
 ### 统一错误响应
 
@@ -488,26 +550,59 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
                     文档
                      │
               ┌──────▼──────┐
-              │  格式解析    │  → ParseResult（含元素 + 资产）
+              │  清理旧产物  │  → 删除旧知识块、元素、资产（幂等）
+              └──────┬──────┘
+                     │
+              ┌──────▼──────┐
+              │  格式解析    │  → ParseResult（含元素 + 资产列表）
+              └──────┬──────┘
+                     │
+              ┌──────▼──────┐
+              │  资产处理    │  → 图片/视频视觉理解（6 线程并行）+ MinIO 上传
               └──────┬──────┘
                      │
               ┌──────▼──────┐
               │  语义抽取    │  → LLM 知识块划分 + 摘要（分批重叠滑窗）
               └──────┬──────┘
                      │
-         ┌───────────┼───────────┐
-         │           │           │
-   ┌─────▼─────┐ ┌──▼───┐ ┌─────▼─────┐
-   │ HNSW 向量  │ │ BM25 │ │ 资产处理   │
-   │ (Embedding)│ │ 索引  │ │ (视觉理解) │
-   └───────────┘ └──────┘ └───────────┘
+         ┌───────────┴───────────┐
+         │                       │
+   ┌─────▼─────┐           ┌─────▼─────┐
+   │ HNSW 向量  │           │ BM25 索引  │
+   │ (Embedding)│           │ (Tantivy) │
+   └───────────┘           └───────────┘
 ```
 
-支持两种入库模式：
-- **`force`**：完整入库流程，重建全部知识块和索引
-- **`incremental`**：增量更新，仅更新变化部分并替换旧索引
+入库时先清理旧知识块、解析元素和资产，再走完整流水线（解析 → 资产处理 → 语义抽取 → 双路索引），保证幂等性。入库任务通过 **Dramatiq + Redis** 异步执行，自动重试、分段进度上报，前端通过 SSE 实时展示进度条。
 
-入库后台任务通过 `app/utils/thread_pool.py` 的全局线程池异步执行。
+### 异步任务系统 (app/tasks/)
+
+```
+用户上传文件 → 创建文档 + 入库任务 (job)
+                         │
+                  ┌──────▼──────┐
+                  │  FastAPI    │  入队到 Redis
+                  │  主进程      │ ──────────────▶  Redis Broker
+                  └─────────────┘
+                         │
+                  ┌──────▼──────┐
+                  │  GET /jobs/ │  EventSource 长连接
+                  │  {id}/stream│ ◀──────────────  前端 SSE 进度条
+                  └─────────────┘
+                         │ 每秒轮询 PG
+                  ┌──────▼──────────┐
+                  │ Dramatiq Worker │  消费队列 → 执行入库
+                  │ (Docker 容器)    │  解析→抽取→索引→资产处理
+                  └─────────────────┘
+```
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| Broker 配置 | `broker.py` | Redis Broker 连接，模块导入时自动初始化 |
+| 入库 Actor | `ingest.py` | `ingest_document` 异步任务，分段进度回调，最大重试 3 次，30 分钟硬超时 |
+| 任务仓储 | `db/repositories/jobs.py` | `ingest_jobs` 表 CRUD，SSE 端点每秒轮询 |
+| SSE 端点 | `api/v1/jobs.py` | `GET /api/v1/jobs/{id}/stream`，推送 progress/completed/failed 事件 |
+| Worker 镜像 | `Dockerfile.worker` | Python 3.12-slim，`dramatiq app.tasks --processes 2 --threads 4`，最多 8 并发 |
 
 ### 索引层 (indexing/)
 
@@ -552,40 +647,77 @@ Milvus Collection 存储全量标量字段（chunk_id / doc_id / doc_title / tit
 
 - **全链路可开关**：`rewrite` / `hybrid` / `rerank` 参数独立控制各阶段
 - **双路并行召回**：向量 + BM25 在同一请求内通过线程池并行执行，而非串行等待
+- **筛选纯 Milvus**：支持 `doc_ids` / `categories` / `knowledge_types` / `chunk_status` 过滤，全部走 Milvus 标量字段，零 PostgreSQL 查询
+- **资源 URL 外带**：搜索结果和知识块详情直接返回资源预签名 URL，前端可直接加载
 - **调试模式** (`POST /api/v1/search` 传入 `debug: true`)：额外返回每阶段候选列表和评分详情
-- **检索链路已去 PG 化**：Milvus 直接返回完整 SearchResult，零数据库回查
 
 ### LLM 客户端 (llm/)
 
 - **volcengine_client.py** — 火山引擎 SDK 封装，支持 `chat_json()` 自动重试与 JSON 提取、Embedding 批量向量化、视觉理解
 - **semantic_extractor.py** — 将解析元素智能划分为语义知识块，生成标题和摘要（分批重叠滑窗策略）
 - **prompts.py** — 集中管理所有 LLM 提示词模板
-- **query_rewriter.py** — 将用户查询重写为陈述句 + 关键词列表
-- **reranker.py** — 对融合结果进行深度语义重排序
+- **query_rewriter.py** — 将用户查询重写为陈述句 + 关键词列表（使用快速模型 mini）
+- **reranker.py** — 对融合结果进行深度语义重排序（使用快速模型 mini）
+
+> **双模型策略**：高质量任务（语义抽取）使用 `doubao-seed-2-0-pro`，高频低延迟任务（查询重写、Rerank）使用 `doubao-seed-2-0-mini`，兼顾效果与成本。
 
 ### 资产处理 (assets/)
 
 - **minio_store.py** — MinIO 对象存储，基于 SHA-256 内容寻址实现资产去重
 - **memory_store.py** — 本地文件存储（MinIO 不可用时回退）
-- **downloader.py** — HTTP/HTTPS 资源统一下载
+- **downloader.py** — HTTP/HTTPS 资源统一下载 + **微信微盘双路径下载**
 - **asset_processor.py** — 图片/视频视觉理解（LLM Vision），生成语义描述
+
+#### 资源对外访问
+
+知识块 API 和搜索 API 返回的 `asset_refs` 中直接携带 MinIO 预签名 URL（有效期 1 小时），前端可直接 `<img src="...">` 加载，无需再调下载接口。
+
+```
+内部链路                          公网链路（配 MINIO_PUBLIC_ENDPOINT）
+minio://kb-assets/xxx.png    →    https://kb.example.com/assets/xxx.png?X-Amz-Signature=...
+        ↑                                    ↑
+  MinIO 预签名 URL                    Nginx /assets/ → MinIO 验签后返回
+```
+
+- **不配公网端点**时 URL 为内部地址（`localhost:9000`），仅本地开发可用
+- **配置 `MINIO_PUBLIC_ENDPOINT`**后自动替换 host，外部用户可直接访问，Nginx 反向代理透传到 MinIO
+
+#### 微信微盘下载器
+
+`downloader.py` 内置微信微盘文件下载能力，支持三种路径：
+
+| 路径 | 适用场景 | 鉴权方式 |
+|------|----------|----------|
+| **企业 API 路径** | 管理员，配置了 `WECHAT_CORPID` + `WECHAT_CORPSECRET` | 企业微信开放 API，access_token 自动刷新 |
+| **浏览器自动化路径** | 非管理员 | Playwright 持久化浏览器会话（`~/.kb_wechat_profile/`），首次扫码 |
+| **公开分享路径** | 授权类型为 0 的公开分享 | 直接提取分享页面的 `download_url` |
+
+系统自动按优先级尝试：企业 API → 浏览器 Playwright → 公开直链。
 
 ### 运维脚本 (scripts/)
 
 - **setup_services.py** — 首次运行初始化：PostgreSQL 建表 + Milvus 建 Collection（HNSW + BM25 索引）+ MinIO 建 Bucket，全部幂等
 - **clear_services.py** — 清空所有外部服务数据（不可逆），用于测试环境重置
+- **import_folder.py** — 批量文件夹导入，递归扫描嵌套目录，通过 Dramatiq 异步入库
+- **cleanup_general_category.py** — 按分类清理文档，级联删除 PG 记录 + Milvus 向量 + 关联任务
+- **_analyze_eval.py** — 评测结果分析工具（来源分布、分桶、抽样）
+- **_check_similarity.py** — 跨文档语义相似度检查（采样、Embedding、余弦相似度）
 
-### 并发架构 (app/utils/thread_pool.py)
+### 并发架构
 
-后端采用**多业务线隔离的线程池体系**，避免不同业务相互争抢线程。所有池由 FastAPI lifespan 统一管理生命周期。
+后端采用**线程池 + 任务队列**双层并发体系：
+
+- **入库任务**：由 Dramatiq Worker（独立 Docker 容器）从 Redis 消费，与 API 主进程完全解耦。子文档链接（document_link）触发的新文档下载也通过 Dramatiq 异步入队，不再占用 API 线程池
+- **在线任务**：由 5 个专用线程池处理，多业务线隔离，避免相互争抢
+
+所有线程池由 FastAPI lifespan 统一管理生命周期。
 
 | 池名 | 线程数 | 用途 |
 |------|--------|------|
 | `health_executor` | 4 | 健康检查（4 路依赖并行探测） |
-| `upload_executor` | 8 | 文件上传入库（I/O 密集） |
+| `upload_executor` | 8 | 文件上传 + MinIO 写入（I/O 密集） |
 | `search_executor` | 8 | 检索任务隔离（每次搜索内部向量+BM25 双路并行） |
-| `asset_worker_pool` | 6 | 资产处理（图片/视频视觉理解 + MinIO 上传） |
-| `sub_ingest_pool` | 4 | 子文档异步入库（document_link 触发） |
+| `asset_worker_pool` | 6 | 资产处理六路并发（图片/视频/链接） |
 | `eval_gen_pool` | 8 | 评测数据异步生成（入库完成后 LLM 调用） |
 
 ---
@@ -641,8 +773,8 @@ pytest tests/integration/ -v
 
 | 类别 | 文件 | 说明 |
 |------|------|------|
-| **数据模型** | `test_models.py` (38KB) | 核心 Pydantic 模型全覆盖测试 |
-| **数据库模型** | `test_db_models.py` (35KB) | SQLAlchemy ORM 模型 + 仓库测试 |
+| **数据模型** | `test_models.py` (33KB) | 核心 Pydantic 模型全覆盖测试（12 个测试类） |
+| **数据库模型** | `test_db_models.py` (29KB) | SQLAlchemy ORM 模型 + JSONB 序列化测试（5 个测试类） |
 | **仓库层** | `test_db_repositories.py` | 文档/元素/知识块仓库单元测试 |
 | **解析器** | `test_*_parser.py` + `test_parser_*.py` | 各格式解析器 + 注册表 + 工具测试 |
 | **入库管道** | `test_ingestion_*.py` | 入库流程端到端测试 |
@@ -664,7 +796,7 @@ pytest tests/integration/ -v
 
 ### 核心能力
 
-- **自动生成** — 入库完成后后台异步调用 LLM 自动生成评测数据，查询风格多样化（疑问句/关键词/口语片段/陈述句）
+- **自动生成** — 入库完成后后台异步调用 LLM 自动生成评测数据，查询风格多样化（疑问句/关键词/口语片段/陈述句），已累积 **3,109 条标注查询**（覆盖 1,213 个文档）
 - **手动合并** — 分文档评测数据手动审核后合并到全局数据集，人工标注受保护
 - **多指标评估** — Recall@K（K 可配置）、MRR
 - **参数可控** — 命令行指定 rewrite/rerank/hybrid/top_k，同一数据集不同参数对比
@@ -691,7 +823,21 @@ python tests/evaluation/run_eval.py --no-rewrite --no-rerank --top-k 10
 
 ## CHANGELOG
 
-### v0.4.0 (当前)
+### v0.5.0 (当前)
+
+- ✅ Dramatiq + Redis 异步任务系统（入库与 API 主进程解耦，自动重试）
+- ✅ SSE 实时进度推送（前端 EventSource 长连接，分段进度条）
+- ✅ Nginx 反向代理（HTTP/2 前端，SSE 长连接兼容配置，128MB 上传限制）
+- ✅ Dramatiq Worker Docker 化（独立容器，2 进程 × 4 线程，最多 8 并发）
+- ✅ 微信微盘下载器（企业 API + Playwright 双路径策略，持久化浏览器会话）
+- ✅ LLM 双模型策略（pro 高质量任务 + mini 低延迟任务，兼顾效果与成本）
+- ✅ 文档批量操作端点（batch-delete / batch-retry / batch-restore，前端 8 并发上限）
+- ✅ 快速模型拆分（查询重写和 Rerank 从 pro 切换到 mini）
+- ✅ 批量文件夹导入脚本（import_folder.py，Dramatiq 异步入库）
+- ✅ 数据库索引优化 + 启动时 stale 文档/任务自动恢复
+- ✅ 前端 SSE 进度条 + 多文件上传 + 骨架屏优化
+
+### v0.4.0
 
 - ✅ MinerU PDF 精准解析器（布局分析、阅读顺序、公式识别，自动降级到 PyMuPDF）
 - ✅ PPTX/DOCX/XLSX 解析器重构（链接分类、嵌入媒体提取、超链接处理）
@@ -741,10 +887,8 @@ python tests/evaluation/run_eval.py --no-rewrite --no-rerank --top-k 10
 ## 相关文档
 
 - [API 接口汇总](docs/API接口汇总.md) — 全部 API 详细说明
-- [项目结构与调用关系分析](项目结构与调用关系分析.md)
-- [数据模型字段审计报告](数据模型字段审计报告.md)
-- [API 接口审计报告](API接口审计报告.md)
-- [全栈生产测试计划](全栈生产测试计划.md)
-- [接口改进计划](接口改进计划.md)
+- [开发文档](docs/develop.md) — 架构演进记录与设计决策
+- [开发日志 2026-06-30](docs/devlog-20260630.md) — Dramatiq/SSE/Nginx 架构决策日志
 - [知识库开发文档](KNOWLEDGE_BASE_DEVELOPMENT.md)
+- [全链路流程分析](全链路流程分析.md)
 - [评测系统 README](knowledge_base_system/tests/evaluation/README.md)

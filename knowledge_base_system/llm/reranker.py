@@ -36,7 +36,7 @@ def _score_batch(
         messages = build_rerank_batch_message(query, candidates)
         result = llm_client.chat_json(
             messages, schema=RERANK_BATCH_SCHEMA, model=settings.llm_fast_model,
-            max_tokens=2048,
+            max_tokens=4096,
         )
         scores = result.get("scores", [])
     except Exception:
@@ -84,7 +84,7 @@ def _score_one(query: str, chunk: KnowledgeChunk) -> dict[str, Any]:
         messages = build_rerank_message(query, chunk.content)
         result = llm_client.chat_json(
             messages, schema=RERANK_SCHEMA, model=settings.llm_fast_model,
-            max_tokens=512,
+            max_tokens=1024,
         )
         score = float(result.get("relevance_score", 0.0))
         return {

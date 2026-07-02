@@ -53,12 +53,10 @@ class SemanticExtractor:
 
     def __init__(self) -> None:
         self._max_tokens = settings.max_window_tokens
-        # 安全阈值：上下文窗口 × 0.8，给 prompt 模板和 LLM 输出留 20% buffer
-        self._safe_threshold = int(settings.context_window_tokens * 0.8)
-        # 单次 LLM 调用的元素数量上限（可通过 LLM_ELEMENTS_BATCH_SIZE 环境变量覆盖）
-        self._max_elements_per_batch = settings.max_elements_per_llm_batch
-        # 批次间重叠比例（可通过 LLM_BATCH_OVERLAP_RATIO 环境变量覆盖）
-        self._overlap_ratio = settings.llm_batch_overlap_ratio
+        # 单次 LLM 调用的输入 Token 上限（估算值，默认 102400 = context 的 40%）
+        # 实际发送时约 ×1.5（JSON 结构 + asset 描述）≈ 164K，占 context 64%
+        # + 输出 65536 (26%) + prompt 5000 (2%) → 总计 234K / 256K（92%），8% 余量
+        self._single_call_token_limit = settings.max_window_tokens
 
     # ── 公共入口 ─────────────────────────────────────────────────────
 
@@ -68,28 +66,23 @@ class SemanticExtractor:
         assets: list[Asset],
         category: str = "通用",
     ) -> list[KnowledgeChunk]:
-        """主入口：全文优先 → 元素数量/Token 双重判断 → 递进降级。
+        """主入口：Token 判定 → 单次或递归切分。
 
-        1. 元素数 ≤ 上限 且 token < 安全阈值 → 单次 LLM 调用（95%+ 文档走此路径）
-        2. 元素数 > 上限 → _batch_with_overlap 分批重叠滑窗
-        3. token ≥ 安全阈值 → _split_recursive 按标题层级递进切分
+        1. Token ≤ 上限 → 单次 LLM 调用（>99.9% 文档走此路径）
+        2. Token > 上限 → _split_recursive 按标题层级递进切分，最终兜底 Token 滑窗硬切
         """
         if not elements:
             return []
 
-        # 元素数量超限 → 分批重叠滑窗（先于 token 判断，避免超长 JSON 输出导致 LLM 失败）
-        if len(elements) > self._max_elements_per_batch:
-            logger.info(
-                "元素数量 %d 超过单批上限 %d，启用分批重叠处理",
-                len(elements), self._max_elements_per_batch,
-            )
-            return self._batch_with_overlap(elements, assets, category)
-
         estimated = self._estimate_tokens(elements)
-        if estimated < self._safe_threshold:
+
+        if estimated <= self._single_call_token_limit:
             return self._try_extract_or_fallback(elements, assets, category)
 
-        # 降级路径：按标题层级递进切分
+        logger.info(
+            "Token %d 超过单次上限 %d → 递归切分",
+            estimated, self._single_call_token_limit,
+        )
         return self._split_recursive(elements, assets, category, level=1)
 
     # ── LLM 抽取 + fallback 统一入口 ─────────────────────────────────
@@ -119,65 +112,6 @@ class SemanticExtractor:
         if not chunks:
             return False
         return any(c.content.strip() for c in chunks)
-
-    # ── 分批重叠处理 ──────────────────────────────────────────────
-
-    def _batch_with_overlap(
-        self,
-        elements: list[ParsedElement],
-        assets: list[Asset],
-        category: str,
-    ) -> list[KnowledgeChunk]:
-        """元素数量超限时，分批调用 LLM，批次间有重叠保持上下文连续性。
-
-        批次大小 = _max_elements_per_batch，重叠量 = batch_size × _overlap_ratio。
-        每批独立经过 _try_extract_or_fallback（LLM 成功则用 LLM 结果，失败则 fallback）。
-        最终按 content_hash 去重，避免重叠区域产生重复知识块。
-        """
-        batch_size = self._max_elements_per_batch
-        overlap = max(1, int(batch_size * self._overlap_ratio))
-        step = batch_size - overlap
-        # Ceil 除法: 批次数 = ⌈(len - overlap) / step⌉
-        total_batches = (len(elements) - overlap + step - 1) // step if len(elements) > overlap else 1
-
-        logger.info(
-            "分批处理: 共 %d 个元素 → %d 批（每批 %d 个，重叠 %d 个）",
-            len(elements), total_batches, batch_size, overlap,
-        )
-
-        all_chunks: list[KnowledgeChunk] = []
-        seen_hashes: set[str] = set()
-        start = 0
-        batch_idx = 0
-
-        while start < len(elements):
-            batch_idx += 1
-            batch = elements[start : start + batch_size]
-            logger.debug(
-                "第 %d/%d 批: 元素 %d~%d（共 %d 个）",
-                batch_idx, total_batches,
-                start, min(start + len(batch), len(elements)),
-                len(batch),
-            )
-
-            # 每批独立 LLM 抽取（失败自动 fallback）
-            batch_chunks = self._try_extract_or_fallback(batch, assets, category)
-
-            # 按 content_hash 去重（重叠区域可能产出相同知识的 chunk）
-            for chunk in batch_chunks:
-                ch = chunk.content_hash
-                if ch not in seen_hashes:
-                    seen_hashes.add(ch)
-                    all_chunks.append(chunk)
-
-            # 滑动窗口：前进 batch_size - overlap
-            start += batch_size - overlap
-
-        logger.info(
-            "分批处理完成: %d 批共产生 %d 个 chunk（已按 content_hash 去重）",
-            total_batches, len(all_chunks),
-        )
-        return all_chunks
 
     # ── 递进降级切分 ──────────────────────────────────────────────
 
@@ -226,7 +160,7 @@ class SemanticExtractor:
             return []
 
         estimated = self._estimate_tokens(elements)
-        if estimated < self._safe_threshold:
+        if estimated < self._single_call_token_limit:
             return self._try_extract_or_fallback(elements, assets, category)
 
         # 在当前层级切分
@@ -238,7 +172,7 @@ class SemanticExtractor:
         all_chunks: list[KnowledgeChunk] = []
         for section in sections:
             section_est = self._estimate_tokens(section)
-            if section_est < self._safe_threshold:
+            if section_est < self._single_call_token_limit:
                 all_chunks.extend(
                     self._try_extract_or_fallback(section, assets, category)
                 )
@@ -279,7 +213,7 @@ class SemanticExtractor:
                 all_chunks: list[KnowledgeChunk] = []
                 for sub in subsections:
                     sub_est = self._estimate_tokens(sub)
-                    if sub_est < self._safe_threshold:
+                    if sub_est < self._single_call_token_limit:
                         all_chunks.extend(
                             self._try_extract_or_fallback(sub, assets, category)
                         )
@@ -417,7 +351,7 @@ class SemanticExtractor:
 
     @staticmethod
     def _estimate_tokens(elements: list[ParsedElement]) -> int:
-        """粗略 token 估算：中文约 1.8 字符/token，计入 structured_data。"""
+        """粗略 token 估算：中文约 1.8 字符/token，除数 1.2 含 JSON 结构和 prompt 模板的补偿。"""
         parts: list[str] = []
         for el in elements:
             if el.text:
@@ -425,7 +359,7 @@ class SemanticExtractor:
             if el.structured_data:
                 parts.append(json.dumps(el.structured_data, ensure_ascii=False))
         text = " ".join(parts)
-        return max(1, int(len(text) / 1.8))
+        return max(1, int(len(text) / 1.2))
 
     # ── LLM 抽取 ─────────────────────────────────────────────────────
 

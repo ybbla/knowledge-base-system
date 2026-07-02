@@ -25,7 +25,7 @@
 
 ### 1. 入库文档 → 自动生成评测数据
 
-文档入库成功后，系统后台异步调用 LLM 生成评测数据，存入 `datasets/unmerged/` 目录（未合并）。超过 40 个知识块的大文档自动分片生成，每片独立生成 `AUTO_EVAL_QUERIES_PER_DOC` 条查询，总量上限为 `AUTO_EVAL_QUERIES_PER_DOC * 2`。
+文档入库成功后，系统后台异步调用 LLM 生成评测数据，存入 `datasets/unmerged/` 目录（未合并）。超过 80 个知识块的大文档自动分片生成，每片独立生成 `AUTO_EVAL_QUERIES_PER_DOC` 条查询，总量上限为 `AUTO_EVAL_QUERIES_PER_DOC * 2`。
 
 LLM 生成的查询涵盖多种真实检索风格：完整疑问句、关键词组合、口语片段、祈使/陈述句。
 

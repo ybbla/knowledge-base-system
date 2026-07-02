@@ -5,7 +5,7 @@
 
 工作流程:
     1. 入库完成后，后台线程调用 generate_for_chunks()
-    2. 将 chunk 列表分片（每批 ≤40 个），对每批调用 LLM 生成查询
+    2. 将 chunk 列表分片（每批 ≤80 个），对每批调用 LLM 生成查询
     3. LLM 生成查询 → 标注期望 chunk_id → 提取关键词
     4. _validate_annotations() 校验 chunk_id 合法性和关键词存在性
     5. 返回有效条目列表，供 storage.save_per_doc_dataset() 写入文件
@@ -25,7 +25,7 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 logger = logging.getLogger(__name__)
 
-LLM_INPUT_CHUNK_LIMIT = 40   # 单次 LLM 调用的 chunk 数量上限
+LLM_INPUT_CHUNK_LIMIT = 80   # 单次 LLM 调用的 chunk 数量上限
 BATCH_QUERY_COUNT = 2        # 每批生成的查询数（分批时降低单批数量以控制总量）
 
 # ── LLM 提示词 ──────────────────────────────────────────────────────
@@ -163,7 +163,7 @@ def generate_for_chunks(
     """为指定文档的知识块生成评测数据。
 
     入库流程调用的唯一入口。调用 LLM 生成查询和标注，校验后补充元数据字段。
-    超过 LLM_INPUT_CHUNK_LIMIT 的知识块列表自动分片生成（每批最多 40 个 chunk）。
+    超过 LLM_INPUT_CHUNK_LIMIT 的知识块列表自动分片生成（每批最多 80 个 chunk）。
 
     生成数量自适应：实际生成条数不超过 chunk 总数，避免小文档因知识点不足
     而产生同质化查询（例如 1 个 chunk 只生成 1 条，2 个 chunk 生成 2 条）。

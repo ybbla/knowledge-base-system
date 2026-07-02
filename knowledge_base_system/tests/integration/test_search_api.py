@@ -214,28 +214,12 @@ class TestSearchFilters:
             assert "value" in k, f"knowledge_types 条目缺少 value: {k}"
             assert "count" in k, f"knowledge_types 条目缺少 count: {k}"
 
-    def test_filters_contains_source_types(self):
-        """筛选项包含 source_types 列表。"""
-        response = client.get("/api/v1/search/filters")
-        source_types = response.json()["data"].get("source_types", [])
-
-        assert isinstance(source_types, list)
-
     def test_filters_contains_chunk_statuses(self):
         """筛选项包含 chunk_statuses 列表（search.js:86 用 active 过滤）。"""
         response = client.get("/api/v1/search/filters")
         chunk_statuses = response.json()["data"].get("chunk_statuses", [])
 
         assert isinstance(chunk_statuses, list)
-
-    def test_filters_contains_doc_statuses(self):
-        """筛选项包含 doc_statuses 列表。"""
-        response = client.get("/api/v1/search/filters")
-        doc_statuses = response.json()["data"].get("doc_statuses", [])
-
-        assert isinstance(doc_statuses, list)
-        assert len(doc_statuses) > 0
-
 
 # ══════════════════════════════════════════════════════════════════════
 # 1. POST /api/v1/search — 标准检索

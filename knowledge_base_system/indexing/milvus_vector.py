@@ -74,12 +74,10 @@ class MilvusCollectionManager:
         host: str | None = None,
         port: int | None = None,
         collection_name: str | None = None,
-        nlist: int | None = None,
     ) -> None:
         self.host = host or settings.milvus_host
         self.port = port or settings.milvus_port
         self.collection_name = collection_name or settings.milvus_collection
-        self.nlist = nlist or settings.milvus_nlist
         self.alias = f"kb_{self.collection_name}"
         self.collection: Any | None = None
         self._cache: dict[str, dict[str, Any]] = {}

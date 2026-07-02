@@ -32,13 +32,17 @@ class Settings(BaseSettings):
 
     # 入库处理限制
     max_upload_size_mb: int = Field(default=100, validation_alias="MAX_UPLOAD_SIZE_MB")  # 上传文件大小上限（MB），超限拒绝，防止 OOM
-    max_recursion_depth: int = 3
-    max_elements_per_doc: int = 1000
-    max_elements_per_llm_batch: int = Field(default=40, validation_alias="LLM_ELEMENTS_BATCH_SIZE")  # 单次 LLM 语义抽取的元素数量上限，超出则分批重叠滑窗
-    llm_batch_overlap_ratio: float = Field(default=0.15, validation_alias="LLM_BATCH_OVERLAP_RATIO")  # 分批间重叠比例，保持边界上下文连续性
-    max_window_tokens: int = 3000
-    context_window_tokens: int = Field(default=256000, validation_alias="CONTEXT_WINDOW_TOKENS")  # LLM 上下文窗口上限，语义抽取安全阈值 = 此值 × 0.8
-    embedding_batch_size: int = Field(default=32, validation_alias="EMBEDDING_BATCH_SIZE")
+    # LLM 上下文窗口大小（参与 max_window_tokens 默认值计算）
+    context_window_tokens: int = Field(default=256000, validation_alias="CONTEXT_WINDOW_TOKENS")
+    # 单次 LLM 语义抽取的输入 Token 上限，默认取 context_window_tokens 的 40%。
+    # context 预算分配（256K）：
+    #   输出(65536, 26%) + prompt(5000, 2%) + 输入实际(~164K, 64%) + 余量(~22K, 8%) = 256K
+    # 输入 102400 估算 × 1.5(JSON补偿) + asset描述(10000) ≈ 164K 实际。
+    # mini 模型 (32K) 需手动调小，如 context=32000 → max_window≈13000。
+    max_window_tokens: int = Field(
+        default=102400, validation_alias="MAX_WINDOW_TOKENS",
+    )
+    embedding_batch_size: int = Field(default=100, validation_alias="EMBEDDING_BATCH_SIZE")
     index_upsert_batch_size: int = Field(default=100, validation_alias="INDEX_UPSERT_BATCH_SIZE")
 
     # LLM 重试策略
@@ -58,13 +62,12 @@ class Settings(BaseSettings):
     milvus_collection: str = Field(
         default="knowledge_chunks", validation_alias="MILVUS_COLLECTION"
     )
-    milvus_nlist: int = Field(default=128, validation_alias="MILVUS_NLIST")
     # HNSW 索引参数
     milvus_hnsw_M: int = Field(default=16, validation_alias="MILVUS_HNSW_M")
     milvus_hnsw_ef_construction: int = Field(default=200, validation_alias="MILVUS_HNSW_EF_CONSTRUCTION")
-    milvus_hnsw_ef: int = Field(default=200, validation_alias="MILVUS_HNSW_EF")  # HNSW 搜索候选集大小，ef ≥ top_k×4 保证召回率（top_k=30 → 建议 ≥120）
+    milvus_hnsw_ef: int = Field(default=120, validation_alias="MILVUS_HNSW_EF")  # HNSW 搜索候选集大小，ef ≥ top_k×4 保证召回率（top_k=30 → 建议 ≥120）
     # BM25 检索参数
-    milvus_sparse_ef: int = Field(default=100, validation_alias="MILVUS_SPARSE_EF")  # 稀疏向量搜索候选集大小，ef ≥ top_k×2 保证召回率（top_k=30 → 建议 ≥60）
+    milvus_sparse_ef: int = Field(default=60, validation_alias="MILVUS_SPARSE_EF")  # 稀疏向量搜索候选集大小，ef ≥ top_k×2 保证召回率（top_k=30 → 建议 ≥60）
 
     # MinIO：必须启用并可连接。
     minio_enabled: bool = Field(default=True, validation_alias="MINIO_ENABLED")
@@ -85,6 +88,10 @@ class Settings(BaseSettings):
     minio_presigned_expiry: int = Field(
         default=3600, validation_alias="MINIO_PRESIGNED_EXPIRY"
     )
+    minio_public_endpoint: str = Field(
+        default="",
+        validation_alias="MINIO_PUBLIC_ENDPOINT",
+    )  # 预签名 URL 对外暴露的地址，如 https://kb.example.com；留空则使用内部地址
 
     # 多模态视觉理解
     image_vision_enabled: bool = Field(default=True, validation_alias="IMAGE_VISION_ENABLED")

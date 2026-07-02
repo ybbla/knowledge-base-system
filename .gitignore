@@ -52,3 +52,4 @@ test_e2e_report.*
 docs/
 knowledge_base_system/tests/evaluation/datasets/
 knowledge_base_system/tests/evaluation/results/
+/.obsidian/

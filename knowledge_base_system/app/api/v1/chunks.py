@@ -33,6 +33,7 @@ from app.core.deps import (
     vector_index,
 )
 from app.core.models import (
+    AssetRef,
     ChunkStatus,
     KnowledgeChunk,
     KnowledgeType,
@@ -132,26 +133,45 @@ def _chunk_to_list_item(
     }
 
 
+def _enrich_asset_ref(asset_ref: AssetRef) -> dict[str, Any]:
+    """将 AssetRef 扩充为含资源详情的字典，供前端直接使用。
+
+    返回的字典包含：
+    - asset_id, caption（原始字段）
+    - asset_type（image/video/document_link/web_link/...）
+    - storage_uri（预签名下载 URL，可直接加载）
+    """
+    item: dict[str, Any] = (
+        asset_ref.model_dump(mode="json")
+        if hasattr(asset_ref, "model_dump")
+        else dict(asset_ref)
+    )
+    if asset_store is not None and hasattr(asset_store, "get"):
+        asset = asset_store.get(asset_ref.asset_id)
+        if asset:
+            item["asset_type"] = (
+                asset.asset_type.value
+                if hasattr(asset.asset_type, "value")
+                else str(asset.asset_type)
+            )
+            item["storage_uri"] = asset.storage_uri or ""
+        else:
+            item["asset_type"] = "unknown"
+            item["storage_uri"] = ""
+    else:
+        item["asset_type"] = "unknown"
+        item["storage_uri"] = ""
+    return item
+
+
 def _chunk_to_detail(chunk: KnowledgeChunk) -> dict[str, Any]:
     """将知识块转为详情条目（含完整内容、来源、资源、时间）。
 
-    asset_refs 会附带资源的 asset_type（image/video/audio/attachment），
-    便于前端按类型分组展示。
+    asset_refs 会附带资源的 asset_type、storage_uri、file_name，
+    便于前端按类型分组展示并直接加载。
     """
     doc_id = _get_primary_doc_id(chunk)
-    enriched_assets: list[dict[str, Any]] = []
-    for r in (chunk.asset_refs or []):
-        item = r.model_dump(mode="json") if hasattr(r, "model_dump") else dict(r)
-        # 从资源存储中查找资源类型
-        if asset_store is not None and hasattr(asset_store, "get"):
-            asset = asset_store.get(r.asset_id)
-            if asset:
-                item["asset_type"] = asset.asset_type.value if hasattr(asset.asset_type, "value") else str(asset.asset_type)
-            else:
-                item["asset_type"] = "unknown"
-        else:
-            item["asset_type"] = "unknown"
-        enriched_assets.append(item)
+    enriched_assets = [_enrich_asset_ref(r) for r in (chunk.asset_refs or [])]
 
     return {
         "chunk_id": chunk.chunk_id,

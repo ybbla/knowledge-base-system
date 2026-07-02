@@ -131,12 +131,10 @@ class TestSearchFiltersEndpoint:
     """6.7 检索筛选项。"""
 
     def test_filters_response(self):
-        """筛选项包含分类、来源类型、知识类型、状态。"""
+        """筛选项包含分类、知识类型、知识块状态。"""
         resp = APIResponse(data={
             "categories": [{"value": "通用", "count": 10}],
-            "source_types": [{"value": "markdown", "count": 5}],
             "knowledge_types": [{"value": "declarative", "count": 8}],
-            "doc_statuses": [{"value": "active"}],
             "chunk_statuses": [{"value": "active", "count": 8}],
         })
         result = resp.model_dump(mode="json")
@@ -150,9 +148,7 @@ class TestSearchFiltersEndpoint:
                 {"value": "技术", "count": 15},
                 {"value": "通用", "count": 3},
             ],
-            "source_types": [],
             "knowledge_types": [],
-            "doc_statuses": [],
             "chunk_statuses": [],
         })
         result = resp.model_dump(mode="json")

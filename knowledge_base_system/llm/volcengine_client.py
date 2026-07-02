@@ -72,7 +72,7 @@ class LLMClient:
         schema: dict[str, Any] | None = None,
         temperature: float = 0.3,
         model: str | None = None,
-        max_tokens: int = 16384,
+        max_tokens: int = 65536,
         extra_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """发送聊天请求并返回解析后的 JSON dict。

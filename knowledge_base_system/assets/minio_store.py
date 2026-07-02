@@ -118,6 +118,7 @@ class MinioAssetStore(AssetStore):
         input_bucket: str | None = None,
         assets_bucket: str | None = None,
         presigned_expiry: int | None = None,
+        public_endpoint: str | None = None,
     ) -> None:
         self._metadata_store = metadata_store
         self.endpoint = endpoint or settings.minio_endpoint
@@ -127,6 +128,11 @@ class MinioAssetStore(AssetStore):
         self.input_bucket = input_bucket or settings.minio_bucket_input
         self.assets_bucket = assets_bucket or settings.minio_bucket_assets
         self.presigned_expiry = presigned_expiry or settings.minio_presigned_expiry
+        self.public_endpoint = (
+            public_endpoint
+            if public_endpoint is not None
+            else settings.minio_public_endpoint
+        )
         self._client: Any | None = None
 
     @property
@@ -243,6 +249,9 @@ class MinioAssetStore(AssetStore):
     def presign_uri(self, uri: str) -> str:
         """为 minio:// URI 生成带时效的预签名下载 URL。
 
+        若配置了 minio_public_endpoint，则将 URL 的 host 替换为公网地址，
+        使外部用户可直接访问；未配置时使用 MinIO 内部地址。
+
         Args:
             uri: minio://<bucket>/<key> 格式的 URI。
 
@@ -250,11 +259,27 @@ class MinioAssetStore(AssetStore):
             带签名的 HTTP(S) URL，有效期为 presigned_expiry 秒。
         """
         bucket, key = parse_minio_uri(uri)
-        return self.client.presigned_get_object(
+        raw_url = self.client.presigned_get_object(
             bucket,
             key,
             expires=timedelta(seconds=self.presigned_expiry),
         )
+        if self.public_endpoint:
+            from urllib.parse import urlparse, urlunparse
+
+            internal = urlparse(raw_url)
+            public = urlparse(self.public_endpoint)
+            # 路径中 /kb-assets/ → /assets/，匹配 nginx 反向代理规则
+            new_path = internal.path.replace(f"/{bucket}/", "/assets/", 1)
+            raw_url = urlunparse((
+                public.scheme,
+                public.netloc,
+                new_path,
+                internal.params,
+                internal.query,
+                internal.fragment,
+            ))
+        return raw_url
 
     def with_presigned_url(self, asset: Asset) -> Asset:
         """返回一个 storage_uri 替换为预签名 URL 的 Asset 深拷贝。"""

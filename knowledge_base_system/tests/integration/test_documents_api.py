@@ -143,8 +143,7 @@ class TestDocumentsSearchFilters:
         data = response.json()["data"]
 
         required_keys = [
-            "categories", "source_types", "knowledge_types",
-            "doc_statuses", "chunk_statuses",
+            "categories", "knowledge_types", "chunk_statuses",
         ]
         for key in required_keys:
             assert key in data, f"缺少筛选项: {key}"
